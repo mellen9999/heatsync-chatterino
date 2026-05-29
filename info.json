@@ -1,11 +1,11 @@
 {
   "$schema": "https://raw.githubusercontent.com/Chatterino/chatterino2/master/docs/plugin-info.schema.json",
   "name": "heatsync",
-  "description": "tab-complete your heatsync emote inventory from chatterino. type your 5000-slot inventory by name; heatsync-extension users in chat see them rendered.",
+  "description": "tab-complete your heatsync inventory + 7TV global (popularity-ranked) from chatterino. pair with the heatsync browser ext so other viewers see emotes rendered.",
   "authors": ["mellen"],
   "homepage": "https://heatsync.org",
-  "tags": ["emotes", "completion", "heatsync"],
-  "version": "0.1.0",
+  "tags": ["emotes", "completion", "7tv", "heatsync"],
+  "version": "0.2.0",
   "license": "MIT",
   "permissions": [
     { "type": "Network" }
