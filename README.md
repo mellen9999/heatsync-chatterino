@@ -32,9 +32,10 @@ the plugin auto-loads your inventory on boot using the currently selected twitch
 
 | command | what |
 |---|---|
-| `<tab>` after typing 1+ chars | own inventory first, then 7TV global (popularity desc). additive — does not hide twitch / native suggestions. |
+| `<tab>` after typing 1+ chars | own inventory first (sorted usage_count desc, alpha tiebreak), then 7TV global (TOP_ALL_TIME desc). additive — does not hide twitch / native suggestions. |
 | `/hsrefresh` | re-fetches your inventory from heatsync.org |
 | `/hsemotes` | prints loaded inventory count + 7TV query cache size |
+| `/hsclear` | clears the local 7TV search cache (rarely needed; cap is 64 queries with FIFO eviction) |
 
 leading `:` is optional — `:pog` and `pog` both match.
 
