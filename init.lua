@@ -1,4 +1,4 @@
--- heatsync chatterino plugin
+-- heatsync chatterino plugin — v0.4.0
 --
 -- Tab-completes against:
 --   1) your heatsync.org emote inventory  (own emotes first, usage-weighted)
@@ -32,6 +32,23 @@ local emote_index = {}
 local refreshing = false
 local last_login = nil
 
+-- ----- opportunistic background refresh state -----
+-- Chatterino's Lua plugin API (checked docs/wip-plugins.md, 2026-07) has no
+-- timer/scheduler of any kind — no c2.later, no tick event, nothing that
+-- fires on a clock. CompletionRequested (tab-complete) is the only callback
+-- that recurs on its own during normal use, so account-switch detection,
+-- the periodic full re-fetch, and the boot retry all piggyback on it via
+-- maybe_background_refresh() below. These only run while the user is
+-- actively typing — there is no true idle-time polling. /hsrefresh remains
+-- the manual escape hatch.
+local LOGIN_CHECK_INTERVAL_S = 60
+local FULL_REFRESH_INTERVAL_S = 15 * 60
+local BOOT_RETRY_BACKOFF_S = 10
+local last_login_check_ts = 0
+local last_full_refresh_ts = 0
+local last_refresh_failed_at = nil -- os.time() of a hop failure before first successful load
+local boot_retry_used = false
+
 -- ----- 7TV search cache -----
 -- search_cache[lowercase_query] = { ts, names } where ts is os.time() seconds
 -- and names is a list in upstream order (popularity desc). Aged out after
@@ -40,6 +57,7 @@ local search_cache = {}
 local search_cache_order = {} -- FIFO queue for eviction
 local search_inflight = {}    -- query → true while a fetch is open
 local SEARCH_CACHE_TTL_S = 10 * 60
+local SEARCH_ERROR_TTL_S = 30 -- short-lived negative cache so a flaky upstream self-heals fast
 local SEARCH_CACHE_MAX = 64   -- hard cap; oldest dropped when over
 local SEARCH_MIN_CHARS = 2
 local SEARCH_MAX_CHARS = 50   -- server validator
@@ -51,6 +69,33 @@ end
 
 local function log_warn(msg)
     c2.log(c2.LogLevel.Warning, "[heatsync] " .. msg)
+end
+
+-- Minimal percent-encoding for URL path/query segments. The charset
+-- regexes upstream (Twitch login pattern, is_sane_search_query) are the
+-- first gate; this is defense-in-depth so a stray character can never
+-- corrupt the request URL or get misread server-side.
+local function percent_encode(s)
+    return (string.gsub(tostring(s), "[^%w%-%.%_%~]", function(c)
+        return string.format("%%%02X", string.byte(c))
+    end))
+end
+
+-- Reads the current account defensively. Chatterino's API can throw (or
+-- the selected account can be invalid mid-session, e.g. removed in
+-- settings), so every access in the chain is pcall-guarded here once
+-- instead of ad-hoc at each call site. Returns the login string, or nil if
+-- there's no valid, signed-in, non-anon account.
+local function current_login_safe()
+    local ok_acc, acc = pcall(c2.current_account)
+    if not ok_acc or not acc then return nil end
+    local ok_valid, valid = pcall(function() return acc:is_valid() end)
+    if not ok_valid or not valid then return nil end
+    local ok_anon, anon = pcall(function() return acc:is_anon() end)
+    if not ok_anon or anon then return nil end
+    local ok_login, login = pcall(function() return acc:login() end)
+    if not ok_login or type(login) ~= "string" or login == "" then return nil end
+    return login
 end
 
 local function safe_json_parse(raw)
@@ -86,18 +131,21 @@ local function cache_evict_if_full()
     end
 end
 
-local function cache_put(q, names)
+-- is_error entries (failed upstream fetch) use a short TTL so a flaky
+-- 7TV/proxy hiccup doesn't negative-cache a query for the full 10 minutes.
+local function cache_put(q, names, is_error)
     if search_cache[q] == nil then
         table.insert(search_cache_order, q)
     end
-    search_cache[q] = { ts = os.time(), names = names or {} }
+    search_cache[q] = { ts = os.time(), names = names or {}, is_error = is_error or false }
     cache_evict_if_full()
 end
 
 local function cache_get_fresh(q)
     local hit = search_cache[q]
     if not hit then return nil end
-    if (os.time() - hit.ts) > SEARCH_CACHE_TTL_S then return nil end
+    local ttl = hit.is_error and SEARCH_ERROR_TTL_S or SEARCH_CACHE_TTL_S
+    if (os.time() - hit.ts) > ttl then return nil end
     return hit
 end
 
@@ -136,12 +184,31 @@ local function refresh_inventory(login)
     refreshing = true
     log_info("refreshing inventory for " .. login)
 
-    local profile_url = HEATSYNC_ORIGIN .. "/api/profile/" .. login
+    -- Explicit two-hop tracking: `refreshing` must stay true for the whole
+    -- profile→emotes chain, not just hop 1. hop2_started flips true only
+    -- once emotes_req is actually constructed and executing; profile_req's
+    -- finally (below) uses it to tell "hop 2 is in flight, let its own
+    -- finally reset `refreshing`" apart from "hop 2 never happened, reset
+    -- now" (profile error / shadow user / missing id).
+    local hop2_started = false
+
+    -- A transport-level failure before the very first successful load is
+    -- what the boot retry (see maybe_background_refresh) backs off and
+    -- retries once; a "no inventory yet" business response is not a
+    -- failure worth retrying, so that path does not set this.
+    local function note_possible_boot_failure()
+        if not boot_retry_used and next(emote_map) == nil then
+            last_refresh_failed_at = os.time()
+        end
+    end
+
+    local profile_url = HEATSYNC_ORIGIN .. "/api/profile/" .. percent_encode(login)
     local profile_req = c2.HTTPRequest.create(c2.HTTPMethod.Get, profile_url)
     profile_req:set_timeout(10000)
     profile_req:set_header("Accept", "application/json")
     profile_req:on_error(function(res)
         log_warn("profile fetch failed: " .. tostring(res:error()))
+        note_possible_boot_failure()
     end)
     profile_req:on_success(function(res)
         local data = safe_json_parse(res:data())
@@ -158,6 +225,7 @@ local function refresh_inventory(login)
         emotes_req:set_header("Accept", "application/json")
         emotes_req:on_error(function(res2)
             log_warn("emote fetch failed: " .. tostring(res2:error()))
+            note_possible_boot_failure()
         end)
         emotes_req:on_success(function(res2)
             local payload = safe_json_parse(res2:data())
@@ -184,20 +252,63 @@ local function refresh_inventory(login)
             log_info("loaded " .. tostring(count) .. " emotes for " .. login)
         end)
         emotes_req:finally(function() refreshing = false end)
+        hop2_started = true
         emotes_req:execute()
     end)
     -- Belt + suspenders: clear refreshing once the FIRST hop terminates
     -- if we never made it to the second. The inner `finally` above handles
     -- the typical happy / sad paths; this catches profile-side hangs that
-    -- never reach the emotes_req construction.
+    -- never reach the emotes_req construction. Gated on hop2_started (set
+    -- synchronously right before emotes_req:execute()) rather than the
+    -- always-true `refreshing` flag — checking `refreshing` here was dead
+    -- code that reset it the instant hop 1 finished, even while hop 2 was
+    -- still in flight, letting overlapping refreshes stomp on each other.
     profile_req:finally(function()
-        if not emote_map or refreshing then
-            -- If emotes_req was constructed, its finally will reset on its
-            -- own. Otherwise (profile error / shadow / missing id) reset now.
+        if not hop2_started then
             refreshing = false
         end
     end)
     profile_req:execute()
+end
+
+-- ----- opportunistic background refresh -----
+
+-- See the state block near the top of the file: Chatterino's Lua plugin
+-- API has no timer, so this piggybacks on CompletionRequested (the plugin's
+-- only self-recurring callback) to approximate account-switch detection, a
+-- periodic full re-fetch, and a one-shot boot retry.
+local function maybe_background_refresh()
+    -- One-shot boot retry: cheap to check, unthrottled, fires at most once
+    -- per session (boot_retry_used latches after).
+    if last_refresh_failed_at and not boot_retry_used
+        and (os.time() - last_refresh_failed_at) >= BOOT_RETRY_BACKOFF_S then
+        boot_retry_used = true
+        last_refresh_failed_at = nil
+        if last_login then
+            log_info("retrying boot inventory fetch after backoff")
+            refresh_inventory(last_login)
+        end
+    end
+
+    -- Account-switch + periodic full refresh, throttled so we're not
+    -- pcall'ing current_account() on every keystroke.
+    local now = os.time()
+    if (now - last_login_check_ts) < LOGIN_CHECK_INTERVAL_S then return end
+    last_login_check_ts = now
+
+    local login = current_login_safe()
+    if not login then return end
+    if login ~= last_login then
+        log_info("account switched to " .. login .. "; refreshing inventory")
+        last_login = login
+        last_full_refresh_ts = now
+        refresh_inventory(login)
+        return
+    end
+    if (now - last_full_refresh_ts) >= FULL_REFRESH_INTERVAL_S then
+        last_full_refresh_ts = now
+        refresh_inventory(login)
+    end
 end
 
 -- ----- 7TV search -----
@@ -207,12 +318,12 @@ local function kick_off_7tv_search(q)
     if cache_get_fresh(q) then return end
 
     search_inflight[q] = true
-    local url = HEATSYNC_ORIGIN .. "/api/emote-search?q=" .. q .. "&p=7tv"
+    local url = HEATSYNC_ORIGIN .. "/api/emote-search?q=" .. percent_encode(q) .. "&p=7tv"
     local req = c2.HTTPRequest.create(c2.HTTPMethod.Get, url)
     req:set_timeout(8000)
     req:set_header("Accept", "application/json")
     req:on_error(function(res)
-        cache_put(q, {}) -- negative cache to dampen retries on flaky upstream
+        cache_put(q, {}, true) -- short-TTL negative cache to dampen retries on flaky upstream
         log_warn("7tv search failed for '" .. q .. "': " .. tostring(res:error()))
     end)
     req:on_success(function(res)
@@ -251,6 +362,13 @@ end
 c2.register_callback(
     c2.EventType.CompletionRequested,
     function(event)
+        -- Best-effort; must never take down completions if something in
+        -- here throws.
+        local ok_bg, err_bg = pcall(maybe_background_refresh)
+        if not ok_bg then
+            log_warn("background refresh check failed: " .. tostring(err_bg))
+        end
+
         local query = event.query or ""
         if query == "" then
             return { hide_others = false, values = {} }
@@ -305,14 +423,19 @@ c2.register_callback(
 -- ----- commands -----
 
 c2.register_command("/hsrefresh", function(ctx)
-    local acc = c2.current_account()
-    if not acc or not acc:is_valid() or acc:is_anon() then
+    local login = current_login_safe()
+    if not login then
         ctx.channel:add_system_message("[heatsync] no signed-in twitch account; can't refresh")
         return
     end
-    local login = acc:login()
     last_login = login
-    refresh_inventory(login)
+    last_full_refresh_ts = os.time()
+    local ok, err = pcall(refresh_inventory, login)
+    if not ok then
+        log_warn("manual refresh failed: " .. tostring(err))
+        ctx.channel:add_system_message("[heatsync] refresh failed, see log")
+        return
+    end
     ctx.channel:add_system_message("[heatsync] refreshing inventory for " .. login .. "…")
 end)
 
@@ -340,10 +463,14 @@ end)
 
 -- ----- boot -----
 do
-    local ok, acc = pcall(c2.current_account)
-    if ok and acc and acc:is_valid() and not acc:is_anon() then
-        last_login = acc:login()
-        refresh_inventory(last_login)
+    local login = current_login_safe()
+    if login then
+        last_login = login
+        last_full_refresh_ts = os.time()
+        local ok, err = pcall(refresh_inventory, login)
+        if not ok then
+            log_warn("boot refresh failed: " .. tostring(err))
+        end
     else
         log_warn("no signed-in twitch account at boot; user can run /hsrefresh later")
     end

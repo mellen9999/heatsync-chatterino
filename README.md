@@ -30,6 +30,8 @@ requires chatterino built with `CHATTERINO_PLUGINS` enabled (nightly builds have
 
 the plugin auto-loads your inventory on boot using the currently selected twitch account. nothing to configure.
 
+it also keeps itself fresh while you chat: switch the selected twitch account in chatterino and it re-fetches for the new login, and it does a full re-fetch every ~15 minutes so inventory edits made on heatsync.org eventually show up without a manual `/hsrefresh`. chatterino's plugin API has no background timer, so these checks ride along on tab-completion — they fire while you're actively typing, not on a strict clock. `/hsrefresh` still exists if you want it sooner.
+
 | command | what |
 |---|---|
 | `<tab>` after typing 1+ chars | own inventory first (sorted usage_count desc, alpha tiebreak), then 7TV global (TOP_ALL_TIME desc). additive — does not hide twitch / native suggestions. |
@@ -45,7 +47,7 @@ mirrors the browser extension's spec: own emotes first, then 7TV by `TOP_ALL_TIM
 
 the completion callback is synchronous, so the **first** keystroke on a fresh query returns own-inventory only and kicks off the 7TV fetch in the background. the **next** keystroke (same query, ~50-500ms later) includes the 7TV block. this matches how browser tab-completions debounce.
 
-7TV search only fires for queries ≥ 2 characters to avoid hammering the proxy on every single keypress.
+7TV search only fires for queries ≥ 2 characters to avoid hammering the proxy on every single keypress. a failed search negative-caches for ~30 seconds (not the full 10 minutes) so a flaky upstream recovers quickly instead of staying "empty" for the whole cache window.
 
 ## permissions
 
