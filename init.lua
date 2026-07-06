@@ -102,40 +102,45 @@ local function strip_leading_colon(query)
     return query
 end
 
+local function build_completions(event)
+    -- best-effort; must never take down completions
+    if not caps.later then
+        pcall(piggyback_tick)
+    end
+
+    local query = event.query or ""
+    if query == "" then return {} end
+    local raw = strip_leading_colon(query)
+    local q = string.lower(raw)
+    local qlen = string.len(q)
+    if qlen < 1 then return {} end
+    if qlen > seventv.MAX_CHARS then
+        q = string.sub(q, 1, seventv.MAX_CHARS)
+        qlen = seventv.MAX_CHARS
+    end
+
+    local values = {}
+    local seen = {}
+    -- seed `seen` with locally-blocked names so neither the inventory nor
+    -- 7tv pass will surface them (both skip anything already in `seen`)
+    for _, name in ipairs(store.blocklist()) do seen[name] = true end
+    -- own inventory first (usage-weighted), then 7tv by popularity
+    local ok1, err1 = pcall(inventory.match_prefix, q, qlen, values, seen, COMPLETION_CAP)
+    if not ok1 then net.log_warn("inventory completion failed: " .. tostring(err1)) end
+    local ok2, err2 = pcall(seventv.append_matches, q, values, seen, COMPLETION_CAP)
+    if not ok2 then net.log_warn("7tv completion failed: " .. tostring(err2)) end
+    return values
+end
+
 c2.register_callback(
     c2.EventType.CompletionRequested,
     function(event)
-        -- best-effort; must never take down completions
-        if not caps.later then
-            pcall(piggyback_tick)
+        -- whole body guarded so a bug here can never take down completions
+        local ok, values = pcall(build_completions, event)
+        if not ok then
+            net.log_warn("completion handler failed: " .. tostring(values))
+            values = {}
         end
-
-        local query = event.query or ""
-        if query == "" then
-            return { hide_others = false, values = {} }
-        end
-        local raw = strip_leading_colon(query)
-        local q = string.lower(raw)
-        local qlen = string.len(q)
-        if qlen < 1 then
-            return { hide_others = false, values = {} }
-        end
-        if qlen > seventv.MAX_CHARS then
-            q = string.sub(q, 1, seventv.MAX_CHARS)
-            qlen = seventv.MAX_CHARS
-        end
-
-        local values = {}
-        local seen = {}
-        -- seed `seen` with locally-blocked names so neither the inventory nor
-        -- 7tv pass will surface them (both skip anything already in `seen`)
-        for _, name in ipairs(store.blocklist()) do seen[name] = true end
-        -- own inventory first (usage-weighted), then 7tv by popularity
-        local ok1, err1 = pcall(inventory.match_prefix, q, qlen, values, seen, COMPLETION_CAP)
-        if not ok1 then net.log_warn("inventory completion failed: " .. tostring(err1)) end
-        local ok2, err2 = pcall(seventv.append_matches, q, values, seen, COMPLETION_CAP)
-        if not ok2 then net.log_warn("7tv completion failed: " .. tostring(err2)) end
-
         return { hide_others = false, values = values }
     end
 )

@@ -49,10 +49,13 @@ end
 -- exact-case names (emotes are case-sensitive). per-provider: bump 1x → a
 -- higher-res variant for a crisp downscale to chat height, with that
 -- variant's pixel height (7tv/bttv/ffz normalize to a known-ish 1x height).
+-- pat/rep bump 1x → 2x; h_hi is the 2x height, h_lo the 1x fallback used when
+-- the url doesn't match the expected suffix (so we don't over-upscale a 1x url
+-- as if it were 2x).
 local PROVIDER = {
-    ["7tv"] = { hi = function(u) return (u:gsub("/1x%.webp$", "/2x.webp")) end, h = 64 },
-    bttv    = { hi = function(u) return (u:gsub("/1x%.(%a+)$", "/2x.%1")) end, h = 56 },
-    ffz     = { hi = function(u) return (u:gsub("/1$", "/2")) end, h = 56 },
+    ["7tv"] = { pat = "/1x%.webp$", rep = "/2x.webp", h_hi = 64, h_lo = 32 },
+    bttv    = { pat = "/1x%.(%a+)$", rep = "/2x.%1", h_hi = 56, h_lo = 28 },
+    ffz     = { pat = "/1$", rep = "/2", h_hi = 56, h_lo = 28 },
 }
 
 local render_cache = {}
@@ -62,7 +65,8 @@ local RENDER_MAX = 600
 local function cache_render(name, url1x, provider)
     if render_cache[name] then return end
     local p = PROVIDER[provider or "7tv"] or PROVIDER["7tv"]
-    render_cache[name] = { url = p.hi(url1x), h = p.h }
+    local hires, n = url1x:gsub(p.pat, p.rep)
+    render_cache[name] = { url = hires, h = (n > 0) and p.h_hi or p.h_lo }
     render_order[#render_order + 1] = name
     while #render_order > RENDER_MAX do
         local old = table.remove(render_order, 1)

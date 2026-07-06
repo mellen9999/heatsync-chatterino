@@ -98,7 +98,10 @@ function M.register(get_login)
                 seen[name] = true
             end
         end
-        seventv.search_all(q, function(list)
+        -- search with the lowercased query — search_all's sanity gate requires
+        -- lowercase, and the server matches case-insensitively (returns proper-
+        -- case names). passing raw `q` silently returned 0 for any capital.
+        seventv.search_all(ql, function(list)
             for _, e in ipairs(list) do
                 if #results >= FIND_CAP then break end
                 if not seen[e.name] then

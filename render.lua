@@ -233,6 +233,13 @@ end
 local function do_process(ch, msg, hint)
     local login = msg.login_name
     if type(login) ~= "string" or login == "" then return end
+    -- skip multichat-injected kick/youtube messages: they have an empty
+    -- channel_name (native twitch messages always carry it — same fact
+    -- maybe_relay relies on). running them through here would redundantly
+    -- rebuild them and, worse, a kick/yt username colliding with a cached
+    -- twitch HS login would false-flag them. multichat does its own emote
+    -- rendering, so there's nothing to gain here anyway.
+    if type(msg.channel_name) ~= "string" or msg.channel_name == "" then return end
     if (msg.flags & c2.MessageFlag.System) ~= 0 then return end
     local text = msg.message_text
     if type(text) ~= "string" or text == "" then return end
