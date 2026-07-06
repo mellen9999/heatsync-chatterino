@@ -19,6 +19,7 @@ local render = require("render")
 local commands = require("commands")
 local store = require("store")
 local multichat = require("multichat")
+local badges = require("badges")
 
 local COMPLETION_CAP = 25
 
@@ -211,6 +212,7 @@ if caps.tier == 2 then
     render.on_channel_gone = function(platform, channel)
         ws.leave(platform, channel)
     end
+    badges.load() -- fetch the chatterino badge list (rendered only if /hsbadges on)
     render.boot_fn = function()
         local n = inventory.count()
         local who = inventory.login and (" as " .. inventory.login) or ""

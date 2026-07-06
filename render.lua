@@ -14,6 +14,7 @@ local senders = require("senders")
 local store = require("store")
 local seventv = require("seventv")
 local ws = require("ws")
+local badges = require("badges")
 
 local FLAME = "🔥"
 
@@ -174,15 +175,23 @@ local function is_username_el(el)
     return ok and has
 end
 
+-- the marker row prepended before the username: chatterino badge (if opted in
+-- and the user has one) then the 🔥 heatsync marker.
+local function insert_markers(elems, msg, want_flame)
+    local badge = badges.element_for(msg.user_id)
+    if badge then table.insert(elems, badge) end
+    if want_flame then
+        table.insert(elems, { type = "text", text = FLAME, trailing_space = true })
+    end
+end
+
 local function build_replacement(msg, sender_map, want_flame)
     local elems = {}
-    local flame_done = not want_flame
+    local markers_done = false
     for _, el in ipairs(msg:elements()) do
-        -- drop the 🔥 marker before the username so HS users are tagged like a
-        -- badge. inserted once, right before the username element.
-        if not flame_done and is_username_el(el) then
-            table.insert(elems, { type = "text", text = FLAME, trailing_space = true })
-            flame_done = true
+        if not markers_done and is_username_el(el) then
+            insert_markers(elems, msg, want_flame)
+            markers_done = true
         end
         local ok, ty = pcall(function() return el.type end)
         if ok and ty == "text" then
@@ -193,9 +202,11 @@ local function build_replacement(msg, sender_map, want_flame)
             table.insert(elems, el)
         end
     end
-    -- fallback: no username element detected → prepend the flame at the start
-    if not flame_done then
-        table.insert(elems, 1, { type = "text", text = FLAME, trailing_space = true })
+    -- fallback: no username element detected → markers at the very start
+    if not markers_done then
+        local pre = {}
+        insert_markers(pre, msg, want_flame)
+        for i = #pre, 1, -1 do table.insert(elems, 1, pre[i]) end
     end
     local highlight = msg.highlight_color
     if highlight == "" then highlight = nil end
@@ -233,10 +244,10 @@ local function do_process(ch, msg, hint)
     local sender_map = senders.resolve(login, msg.user_id)
     if sender_map == false then sender_map = nil end
 
-    -- rebuild if the message has renderable HS content OR the sender is a known
-    -- HS user and the flame marker is on (tags them even on text-only lines).
+    -- rebuild if the message has renderable HS content, OR the sender is a
+    -- known HS user with the flame on, OR the sender has a chatterino badge.
     local want_flame = store.flame_enabled() and senders.is_known_hs(login)
-    if not has_hits(text, sender_map) and not want_flame then return end
+    if not has_hits(text, sender_map) and not want_flame and not badges.has(msg.user_id) then return end
 
     local repl = build_replacement(msg, sender_map, want_flame)
     if hint then

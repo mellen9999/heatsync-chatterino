@@ -50,8 +50,9 @@ heatsync users get a 🔥 before their name in any chat (yours too), so they're 
 | `/hsarchive on\|off` | opt-in: relay the public twitch chat you view into heatsync's archive (the corpus) |
 | `/hsblock <name>` \| `/hsunblock` \| `/hsblocklist` | locally hide an emote (render + tab-complete) |
 | `/hsflame on\|off` | toggle the 🔥 heatsync-user marker |
+| `/hsbadges on\|off` | show chatterino global badges on chatters (opt-in) |
 | `/hsmoments [hours]` | top live chat moments, clickable permalinks |
-| `/hslogs <user> [channel]` | link into the heatsync chat archive |
+| `/hslogs <user> [channel]` | chatter stats (messages, channels, active days) + archive link |
 | `/hsrefresh` · `/hsemotes` · `/hsstatus` · `/hsclear` · `/hsdump` | inventory refetch · counts · status · clear caches · element dump |
 
 leading `:` is optional — `:pog` and `pog` both match.

@@ -14,12 +14,14 @@ local BLOCKS_FILE = "blocks.txt"  -- newline-separated emote names
 local FLAME_FILE = "flame.txt"    -- "0" = off, anything else = on
 local ARCHIVE_FILE = "archive.txt" -- "1" = relay on (OFF by default, opt-in)
 local AUTOMC_FILE = "automulti.txt" -- "1" = auto-multichat on (OFF by default)
+local BADGES_FILE = "badges.txt"   -- "1" = badges on (OFF by default, opt-in)
 
 -- blocked[name] = true
 local blocked = {}
 local flame_on = true
 local archive_on = false
 local automc_on = false
+local badges_on = false
 
 -- ----- load on boot -----
 local function load()
@@ -41,6 +43,10 @@ local function load()
     local am = net.read_data(AUTOMC_FILE)
     if type(am) == "string" and string.match(am, "1") then
         automc_on = true
+    end
+    local bg = net.read_data(BADGES_FILE)
+    if type(bg) == "string" and string.match(bg, "1") then
+        badges_on = true
     end
 end
 
@@ -106,6 +112,16 @@ end
 function M.set_auto_multichat(on)
     automc_on = on and true or false
     net.write_data(AUTOMC_FILE, automc_on and "1" or "0")
+end
+
+-- ----- badges toggle (default off, opt-in) -----
+function M.badges_enabled()
+    return badges_on
+end
+
+function M.set_badges(on)
+    badges_on = on and true or false
+    net.write_data(BADGES_FILE, badges_on and "1" or "0")
 end
 
 load()

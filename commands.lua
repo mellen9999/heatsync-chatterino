@@ -317,6 +317,20 @@ function M.register(get_login)
         end
     end)
 
+    -- chatterino badges toggle (shows chatterino global badges on chatters)
+    c2.register_command("/hsbadges", function(ctx)
+        local arg = ctx.words[2]
+        if arg == "on" then
+            store.set_badges(true)
+            sysmsg(ctx, "chatterino badges ON — special badges shown before chatters' names")
+        elseif arg == "off" then
+            store.set_badges(false)
+            sysmsg(ctx, "chatterino badges OFF")
+        else
+            sysmsg(ctx, "chatterino badges are " .. (store.badges_enabled() and "on" or "off") .. " · /hsbadges on|off")
+        end
+    end)
+
     -- flame marker toggle (the 🔥 tag on heatsync users' messages)
     c2.register_command("/hsflame", function(ctx)
         local arg = ctx.words[2]
@@ -470,7 +484,7 @@ function M.register(get_login)
     c2.register_command("/hslogs", function(ctx)
         local user = ctx.words[2]
         if not is_valid_name(user) then
-            sysmsg(ctx, "usage: /hslogs <user> [channel] — opens the heatsync archive")
+            sysmsg(ctx, "usage: /hslogs <user> [channel] — chat history + archive link")
             return
         end
         local chan = ctx.words[3]
@@ -481,12 +495,24 @@ function M.register(get_login)
                 if is_valid_name(n) then chan = n end
             end)
         end
-        local url = net.ORIGIN .. "/logs/search?username=" .. net.percent_encode(string.lower(user)) ..
-            "&platform=twitch"
-        if chan then
-            url = url .. "&channel=" .. net.percent_encode(string.lower(chan))
-        end
-        linkmsg(ctx, "archive: " .. string.lower(user) .. (chan and (" in #" .. string.lower(chan)) or ""), url)
+        local luser = string.lower(user)
+        local url = net.ORIGIN .. "/logs/search?username=" .. net.percent_encode(luser) .. "&platform=twitch"
+        if chan then url = url .. "&channel=" .. net.percent_encode(string.lower(chan)) end
+        -- fetch cross-platform chat stats for a summary line; the archive link
+        -- is always shown even if stats are opted-out / unavailable.
+        net.get_json(net.ORIGIN .. "/api/chatter/twitch/" .. net.percent_encode(luser) .. "/stats", 8000, function(payload)
+            local t = payload and payload.totals
+            if t then
+                local bits = {}
+                if tonumber(t.messages) then bits[#bits + 1] = tostring(t.messages) .. " msgs" end
+                if tonumber(t.channels) then bits[#bits + 1] = "across " .. tostring(t.channels) .. " channels" end
+                if tonumber(t.activeDays) then bits[#bits + 1] = tostring(t.activeDays) .. " active days" end
+                local top = payload.topChannels and payload.topChannels[1]
+                if top and top.channel then bits[#bits + 1] = "most in #" .. tostring(top.channel) end
+                if #bits > 0 then sysmsg(ctx, luser .. ": " .. table.concat(bits, " · ")) end
+            end
+            linkmsg(ctx, "archive: " .. luser .. (chan and (" in #" .. string.lower(chan)) or ""), url)
+        end)
     end)
 end
 
