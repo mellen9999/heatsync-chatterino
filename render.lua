@@ -185,22 +185,39 @@ local function insert_markers(elems, msg, want_flame)
     end
 end
 
+-- is this element our own previously-inserted 🔥 flame text? (single word)
+local function is_flame_el(el)
+    local ok, w = pcall(function() return el.words end)
+    return ok and type(w) == "table" and #w == 1 and w[1] == FLAME
+end
+
 local function build_replacement(msg, sender_map, want_flame)
     local elems = {}
     local markers_done = false
     for _, el in ipairs(msg:elements()) do
-        if not markers_done and is_username_el(el) then
-            insert_markers(elems, msg, want_flame)
-            markers_done = true
-        end
         local ok, ty = pcall(function() return el.type end)
-        if ok and ty == "text" then
+        -- BEFORE the username, strip our own markers from a prior render so
+        -- re-processing (backpass) is idempotent — no stacked flames/badges.
+        -- our badge is the only scaling-image that can precede the username
+        -- (sender emotes live in the body); our flame is a lone-🔥 text run.
+        -- native twitch badges are badge-type elements, so they pass through.
+        if not markers_done then
+            if ty == "scaling-image" or (ty == "text" and is_flame_el(el)) then
+                goto continue
+            end
+            if is_username_el(el) then
+                insert_markers(elems, msg, want_flame)
+                markers_done = true
+            end
+        end
+        if ty == "text" then
             rebuild_text_element(elems, el, sender_map)
         else
             -- pass the object through; chatterino clones it (twitch emotes,
             -- badges, timestamps, mentions, reply curves stay verbatim)
             table.insert(elems, el)
         end
+        ::continue::
     end
     -- fallback: no username element detected → markers at the very start
     if not markers_done then
@@ -253,7 +270,11 @@ local function do_process(ch, msg, hint)
 
     -- rebuild if the message has renderable HS content, OR the sender is a
     -- known HS user with the flame on, OR the sender has a chatterino badge.
-    local want_flame = store.flame_enabled() and senders.is_known_hs(login)
+    -- the flame tags OTHER heatsync users so you can spot them — it's pointless
+    -- on your own messages, and skipping them avoids a needless rebuild that
+    -- would drop your native channel badges (e.g. your sub badge).
+    local want_flame = store.flame_enabled() and login ~= senders.own_login
+        and senders.is_known_hs(login)
     if not has_hits(text, sender_map) and not want_flame and not badges.has(msg.user_id) then return end
 
     local repl = build_replacement(msg, sender_map, want_flame)
