@@ -22,6 +22,8 @@
 --   yt status  → youtube:status { videoId, status, error?, channelId }
 local net = require("net")
 local ws = require("ws")
+local img = require("img")
+local caps = require("caps")
 
 local M = {}
 
@@ -29,6 +31,38 @@ local LINKS_FILE = "multichat.txt"
 local KICK_COLOR = "#53fc18"
 local YT_COLOR = "#ff0000"
 local DEDUP_MAX = 800
+-- kick emotes come embedded in the text as [emote:<id>:<name>] tokens and are
+-- a fixed 70x70 png/gif at this CDN path (verified — no size variants).
+local KICK_EMOTE_URL = "https://files.kick.com/emotes/%s/fullsize"
+
+-- split a kick message body on [emote:id:name] tokens into text runs +
+-- scaling-image emotes. returns nil if there are no emote tokens (caller uses
+-- a single plain-text element) — keeps the common path allocation-free.
+local function build_kick_body(content)
+    if type(content) ~= "string" or not content:find("[emote:", 1, true) then return nil end
+    local elems = {}
+    local last = 1
+    local found = false
+    for s, id, name, e in content:gmatch("()%[emote:(%d+):([^%]]+)%]()") do
+        found = true
+        if s > last then
+            local pre = content:sub(last, s - 1)
+            if pre ~= "" then elems[#elems + 1] = { type = "text", text = pre } end
+        end
+        local set = caps.images and img.for_url(string.format(KICK_EMOTE_URL, id), 70, 70) or nil
+        if set then
+            elems[#elems + 1] = { type = "scaling-image", images = set,
+                flags = c2.MessageElementFlag.EmoteImage, tooltip = name .. " · kick" }
+        else
+            elems[#elems + 1] = { type = "text", text = name }
+        end
+        last = e
+    end
+    if not found then return nil end
+    local tail = content:sub(last)
+    if tail ~= "" then elems[#elems + 1] = { type = "text", text = tail } end
+    return elems
+end
 
 -- links[cc_name] = { [source_key] = { platform=, channel= } }
 -- source_key = "kick/<slug>" | "yt/<routing-tag>"
@@ -171,6 +205,8 @@ local function inject(line)
     local tag = line.platform == "kick" and "[K]" or "[Y]"
     local tag_color = line.platform == "kick" and KICK_COLOR or YT_COLOR
     local uname_color = (type(line.color) == "string" and line.color ~= "") and line.color or tag_color
+    -- render kick's [emote:id:name] tokens as images (70x70 → chat height)
+    local body = line.platform == "kick" and build_kick_body(text) or nil
 
     for cc_name in pairs(targets) do
         pcall(function()
@@ -187,7 +223,11 @@ local function inject(line)
                 color = uname_color,
                 flags = c2.MessageElementFlag.Username,
             }
-            elems[#elems + 1] = { type = "text", text = text }
+            if body then
+                for _, be in ipairs(body) do elems[#elems + 1] = be end
+            else
+                elems[#elems + 1] = { type = "text", text = text }
+            end
             ch:add_message(c2.Message.new({
                 login_name = string.lower(line.username or display),
                 display_name = display,

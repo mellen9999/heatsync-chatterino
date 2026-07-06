@@ -25,40 +25,10 @@ local M = {
 }
 
 local hooked = {}   -- channel_name -> { handle, ch }
-local imagesets = {}    -- url -> c2.ImageSet
-local imageset_order = {}
-local IMAGESET_MAX = 400
-local TARGET_EMOTE_H = 28   -- twitch 1x emote height; hs sources scale down to it
 local processing = false
 local fail_count = 0
 
-local function imageset_for(url, w, h)
-    local set = imagesets[url]
-    if set then return set end
-    -- unknown dims → no image; a raw upload can be 1000px tall and there is
-    -- no post-load resize hook. text fallback is the honest degrade.
-    if not h or h <= 0 then return nil end
-    local scale = TARGET_EMOTE_H / h
-    if scale > 1 then scale = 1 end
-    if scale < 0.05 then scale = 0.05 end
-    local ok, built = pcall(function()
-        local img
-        if w and w > 0 then
-            img = c2.Image.from_url(url, scale, { w, h })
-        else
-            img = c2.Image.from_url(url, scale)
-        end
-        return c2.ImageSet.new(img)
-    end)
-    if not ok or not built then return nil end
-    imagesets[url] = built
-    table.insert(imageset_order, url)
-    while #imageset_order > IMAGESET_MAX do
-        local oldest = table.remove(imageset_order, 1)
-        if oldest then imagesets[oldest] = nil end
-    end
-    return built
-end
+local imageset_for = require("img").for_url
 
 local function thread_id(word)
     -- byte check first: keeps the per-word miss path to hash lookups only
