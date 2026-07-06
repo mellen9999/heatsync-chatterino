@@ -551,6 +551,28 @@ do
     check(link_ok, "click-to-insert: rendered emote carries an InsertText link with its name")
 end
 
+-- personal-emote dims: heatsync's stored width can disagree with the served 1x
+-- image (real case: wollip = 96x32 record, 32x32 image). the render must NOT
+-- hand chatterino an expected width or it stretches the emote — height-only
+-- scale (from_url gets no expected-size, so the actual image drives aspect).
+senders.feed_broadcast("wideuser", "wideMote",
+    { url = "https://cdn.7tv.app/emote/WIDE/1x.webp", width = 96, height = 32 })
+do
+    local wm = fake_msg("wideuser", "8008", "look wideMote here")
+    chan.msgs[#chan.msgs + 1] = wm
+    chan.appended_cb(wm, nil)
+    local rendered, no_stretch = false, false
+    for _, e in ipairs(chan.replaced[#chan.replaced].new.init.elements) do
+        if type(e) == "table" and e.type == "scaling-image" and type(e.images) == "table"
+            and type(e.images.i1) == "table" then
+            rendered = true
+            no_stretch = (e.images.i1.expected == nil)
+        end
+    end
+    check(rendered and no_stretch,
+        "personal-emote dims: mismatched-width emote renders by height, no stretched expected-width")
+end
+
 -- ===== multichat (v1.1) — kick/youtube injection =====
 local sock = sockets[#sockets]
 local function last_sent_has(...)

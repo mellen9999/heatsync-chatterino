@@ -120,9 +120,14 @@ local function rebuild_text_element(elems, el, sender_map)
     for _, word in ipairs(el.words) do
         local blocked = store.is_blocked(word)
         local emote = sender_map and sender_map[word]
-        -- store.is_blocked → treat a blocked emote as plain text (local block)
+        -- store.is_blocked → treat a blocked emote as plain text (local block).
+        -- w=nil: scale the ACTUAL loaded image by height, never the stored
+        -- width — heatsync's stored dims can disagree with the served 1x image
+        -- (e.g. a 96x32 record for a 32x32 emote), and a mismatched expected
+        -- width renders it stretched. same rule as kick/yt/searched-7tv. height
+        -- drives the scale; renderable() already guarantees emote.h > 0.
         local set = renderable(emote) and not blocked
-            and imageset_for(emote.url, emote.w, emote.h) or nil
+            and imageset_for(emote.url, nil, emote.h) or nil
         local tooltip, is_7tv = word .. " · heatsync", false
         if not set and not blocked then
             -- niche 7tv emote the user searched that chatterino didn't load
