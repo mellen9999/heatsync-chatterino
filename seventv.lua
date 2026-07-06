@@ -179,8 +179,4 @@ function M.clear()
     inflight = {}
 end
 
-function M.stats()
-    return #order, CACHE_MAX
-end
-
 return M

@@ -59,8 +59,13 @@ local function build_yt_body(text, emotes)
                 local pre = text:sub(last, s - 1)
                 if pre ~= "" then elems[#elems + 1] = { type = "text", text = pre } end
             end
-            local big = url:gsub("=w%d+%-h%d+", "=w48-h48")
-            local set = caps.images and img.for_url(big, 48, 48) or nil
+            -- bump the ggpht size param to 48px for a crisp downscale. only
+            -- assert {48,48} dims when the bump actually applied (we then know
+            -- the image is 48px); otherwise w=nil so chatterino scales the
+            -- real image to height — asserting a wrong size renders it huge
+            -- (the bug that hit kick's variable-size emotes).
+            local big, bumped = url:gsub("=w%d+%-h%d+", "=w48-h48")
+            local set = caps.images and img.for_url(big, bumped > 0 and 48 or nil, 48) or nil
             if set then
                 elems[#elems + 1] = { type = "scaling-image", images = set,
                     flags = c2.MessageElementFlag.EmoteImage, tooltip = tok .. " · youtube" }

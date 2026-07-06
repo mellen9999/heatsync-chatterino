@@ -8,7 +8,6 @@ local ws = require("ws")
 local render = require("render")
 local store = require("store")
 local multichat = require("multichat")
-local img = require("img")
 local picker = require("picker")
 local recents = require("recents")
 
