@@ -214,8 +214,8 @@ function M.register(get_login)
             store.set_archive(false)
             sysmsg(ctx, "archive relay OFF")
         else
-            sysmsg(ctx, "archive relay is " .. (store.archive_enabled() and "on" or "off") ..
-                " · /hsarchive on|off · relays only public twitch chat you're already viewing")
+            sysmsg(ctx, "archive relay is " .. (store.archive_enabled() and "on (default)" or "off") ..
+                " · /hsarchive on|off · relays only public twitch chat you're already viewing into heatsync's archive")
         end
     end)
 

@@ -47,7 +47,7 @@ heatsync users get a 🔥 before their name in any chat (yours too), so they're 
 | `/hsmulti kick:<slug>` \| `yt:<handle>` \| `off` \| `auto on\|off` | merge kick/youtube chat into this tab; `auto` links a stream's platforms automatically |
 | `/hshot` | hottest live streams right now (cross-platform, heat-ranked); click a twitch one to open it |
 | `/hswhois <user>` | heatsync profile card for any streamer (heat, followers, live, posts) |
-| `/hsarchive on\|off` | opt-in: relay the public twitch chat you view into heatsync's archive (the corpus) |
+| `/hsarchive on\|off` | relay the public twitch chat you view into heatsync's archive (on by default; `off` to opt out) |
 | `/hsblock <name>` \| `/hsunblock` \| `/hsblocklist` | locally hide an emote (render + tab-complete) |
 | `/hsflame on\|off` | toggle the 🔥 heatsync-user marker |
 | `/hsbadges on\|off` | show chatterino global badges on chatters (opt-in) |

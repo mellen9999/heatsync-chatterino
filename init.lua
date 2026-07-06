@@ -221,8 +221,9 @@ if caps.tier == 2 then
     render.boot_fn = function()
         local n = inventory.count()
         local who = inventory.login and (" as " .. inventory.login) or ""
+        local arch = store.archive_enabled() and " · archiving public chat to heatsync (/hsarchive off to opt out)" or ""
         return "🔥 heatsync active" .. who .. " · " .. tostring(n) ..
-            " emotes render inline · :name to tab-complete · /hsstatus /hsblock /hsflame"
+            " emotes render inline · :name to tab-complete · /hsstatus" .. arch
     end
     render.start()
 end
