@@ -84,6 +84,21 @@ function M.resolve(login, twitch_id)
     return nil
 end
 
+-- pure membership check (no lookup queued) for the flame marker: is this login
+-- a known heatsync user? true iff we already have a positive emote set for
+-- them — own login with a non-empty inventory, or a cached sender with a real
+-- map. an HS user we've never seen post an emote reads false until their first
+-- HS emote populates the cache (progressive, no lookup storm on silent chat).
+function M.is_known_hs(login)
+    if not login or login == "" then return false end
+    if M.own_login and login == M.own_login then
+        local map = M.own_map_fn and M.own_map_fn()
+        return type(map) == "table" and next(map) ~= nil
+    end
+    local hit = fresh(login)
+    return hit ~= nil and type(hit.map) == "table"
+end
+
 local function rows_to_map(rows)
     local map = {}
     local any = false

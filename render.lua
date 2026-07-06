@@ -11,11 +11,16 @@ local net = require("net")
 local caps = require("caps")
 local inventory = require("inventory")
 local senders = require("senders")
+local store = require("store")
+
+local FLAME = "🔥"
 
 local M = {
     started = false,
     on_channel_found = nil, -- fn(platform, channel) → ws join
     on_channel_gone = nil,  -- fn(platform, channel) → ws leave (tab closed)
+    boot_fn = nil,          -- fn() → one-time presence line for first channel
+    boot_done = false,
     replaced_count = 0,
 }
 
@@ -67,10 +72,11 @@ local function renderable(emote)
     return emote ~= nil and type(emote.h) == "number" and emote.h > 0
 end
 
--- prescan: any word this sender's inventory renders, or a threadlink?
+-- prescan: any word this sender's inventory renders (and isn't blocked), or a
+-- threadlink?
 local function has_hits(text, sender_map)
     for word in string.gmatch(text, "%S+") do
-        if sender_map and renderable(sender_map[word]) then return true end
+        if sender_map and renderable(sender_map[word]) and not store.is_blocked(word) then return true end
         if thread_id(word) then return true end
     end
     return false
@@ -105,7 +111,9 @@ local function rebuild_text_element(elems, el, sender_map)
     -- text elements, and pass through untouched, so nothing is lost here.
     for _, word in ipairs(el.words) do
         local emote = sender_map and sender_map[word]
-        local set = renderable(emote) and imageset_for(emote.url, emote.w, emote.h) or nil
+        -- store.is_blocked → treat a blocked emote as plain text (local block)
+        local set = renderable(emote) and not store.is_blocked(word)
+            and imageset_for(emote.url, emote.w, emote.h) or nil
         if set then
             flush_run(elems, run, src)
             table.insert(elems, {
@@ -142,9 +150,24 @@ local function rebuild_text_element(elems, el, sender_map)
     end
 end
 
-local function build_replacement(msg, sender_map)
+-- is this element the username? (bit-test the Username flag defensively)
+local function is_username_el(el)
+    local ok, has = pcall(function()
+        return (el.flags & c2.MessageElementFlag.Username) ~= 0
+    end)
+    return ok and has
+end
+
+local function build_replacement(msg, sender_map, want_flame)
     local elems = {}
+    local flame_done = not want_flame
     for _, el in ipairs(msg:elements()) do
+        -- drop the 🔥 marker before the username so HS users are tagged like a
+        -- badge. inserted once, right before the username element.
+        if not flame_done and is_username_el(el) then
+            table.insert(elems, { type = "text", text = FLAME, trailing_space = true })
+            flame_done = true
+        end
         local ok, ty = pcall(function() return el.type end)
         if ok and ty == "text" then
             rebuild_text_element(elems, el, sender_map)
@@ -153,6 +176,10 @@ local function build_replacement(msg, sender_map)
             -- badges, timestamps, mentions, reply curves stay verbatim)
             table.insert(elems, el)
         end
+    end
+    -- fallback: no username element detected → prepend the flame at the start
+    if not flame_done then
+        table.insert(elems, 1, { type = "text", text = FLAME, trailing_space = true })
     end
     local highlight = msg.highlight_color
     if highlight == "" then highlight = nil end
@@ -186,9 +213,13 @@ local function do_process(ch, msg, hint)
     -- twitch login_name is already canonical-lowercase; no string.lower alloc
     local sender_map = senders.resolve(login, msg.user_id)
     if sender_map == false then sender_map = nil end
-    if not has_hits(text, sender_map) then return end
 
-    local repl = build_replacement(msg, sender_map)
+    -- rebuild if the message has renderable HS content OR the sender is a known
+    -- HS user and the flame marker is on (tags them even on text-only lines).
+    local want_flame = store.flame_enabled() and senders.is_known_hs(login)
+    if not has_hits(text, sender_map) and not want_flame then return end
+
+    local repl = build_replacement(msg, sender_map, want_flame)
     if hint then
         ch:replace_message(msg, repl, hint)
     else
@@ -223,6 +254,14 @@ local function hook(ch, name)
     end)
     hooked[name] = { handle = handle, ch = ch }
     net.log_info("rendering hooked for #" .. name)
+    -- one-time presence line in the first hooked channel (discoverability)
+    if M.boot_fn and not M.boot_done then
+        M.boot_done = true
+        local ok, line = pcall(M.boot_fn)
+        if ok and type(line) == "string" and line ~= "" then
+            pcall(function() ch:add_system_message(line) end)
+        end
+    end
     if M.on_channel_found then
         pcall(M.on_channel_found, "twitch", name)
     end

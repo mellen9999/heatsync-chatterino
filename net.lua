@@ -115,6 +115,33 @@ function M.every(msec, fn)
     return function() cancelled = true end
 end
 
+-- ----- persistence (plugin data dir) -----
+-- chatterino sandboxes io.open() to Plugins/heatsync/data/ automatically, so
+-- a bare filename is all that's needed (needs FilesystemRead/Write perms in
+-- info.json). every call pcall-guarded — a missing file or denied permission
+-- degrades to nil/false, never throws.
+function M.read_data(filename)
+    local ok, content = pcall(function()
+        local f = io.open(filename, "r")
+        if not f then return nil end
+        local data = f:read("a")
+        f:close()
+        return data
+    end)
+    if not ok then return nil end
+    return content
+end
+
+function M.write_data(filename, content)
+    local ok = pcall(function()
+        local f = io.open(filename, "w")
+        if not f then return end
+        f:write(content or "")
+        f:close()
+    end)
+    return ok
+end
+
 -- arm the monotonic clock now that every() exists. one tick per second.
 M.every(1000, function() mono_s = mono_s + 1 end)
 

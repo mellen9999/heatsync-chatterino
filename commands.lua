@@ -6,6 +6,7 @@ local seventv = require("seventv")
 local senders = require("senders")
 local ws = require("ws")
 local render = require("render")
+local store = require("store")
 
 local M = {}
 
@@ -73,6 +74,59 @@ function M.register(get_login)
         seventv.clear()
         senders.clear()
         sysmsg(ctx, "search + sender caches cleared")
+    end)
+
+    -- local emote block: hides an emote from rendering + tab-complete. LOCAL
+    -- ONLY — the plugin is anonymous so it can't sync a block to your heatsync
+    -- account; use the website/extension for an account-wide block.
+    c2.register_command("/hsblock", function(ctx)
+        local name = ctx.words[2]
+        if not name or name == "" then
+            sysmsg(ctx, "usage: /hsblock <emote name> — hides it locally in chatterino")
+            return
+        end
+        if store.block(name) then
+            sysmsg(ctx, "blocked '" .. name .. "' locally (won't render or tab-complete)")
+        else
+            sysmsg(ctx, "'" .. name .. "' already blocked")
+        end
+    end)
+
+    c2.register_command("/hsunblock", function(ctx)
+        local name = ctx.words[2]
+        if not name or name == "" then
+            sysmsg(ctx, "usage: /hsunblock <emote name>")
+            return
+        end
+        if store.unblock(name) then
+            sysmsg(ctx, "unblocked '" .. name .. "'")
+        else
+            sysmsg(ctx, "'" .. name .. "' wasn't blocked")
+        end
+    end)
+
+    c2.register_command("/hsblocklist", function(ctx)
+        local names = store.blocklist()
+        if #names == 0 then
+            sysmsg(ctx, "no locally-blocked emotes")
+            return
+        end
+        sysmsg(ctx, #names .. " blocked: " .. table.concat(names, " "))
+    end)
+
+    -- flame marker toggle (the 🔥 tag on heatsync users' messages)
+    c2.register_command("/hsflame", function(ctx)
+        local arg = ctx.words[2]
+        if arg == "on" then
+            store.set_flame(true)
+            sysmsg(ctx, "🔥 marker on — heatsync users tagged in chat")
+        elseif arg == "off" then
+            store.set_flame(false)
+            sysmsg(ctx, "🔥 marker off")
+        else
+            sysmsg(ctx, "🔥 marker is " .. (store.flame_enabled() and "on" or "off") ..
+                " · usage: /hsflame on|off")
+        end
     end)
 
     c2.register_command("/hsstatus", function(ctx)

@@ -17,6 +17,7 @@ local senders = require("senders")
 local ws = require("ws")
 local render = require("render")
 local commands = require("commands")
+local store = require("store")
 
 local COMPLETION_CAP = 25
 
@@ -124,6 +125,9 @@ c2.register_callback(
 
         local values = {}
         local seen = {}
+        -- seed `seen` with locally-blocked names so neither the inventory nor
+        -- 7tv pass will surface them (both skip anything already in `seen`)
+        for _, name in ipairs(store.blocklist()) do seen[name] = true end
         -- own inventory first (usage-weighted), then 7tv by popularity
         local ok1, err1 = pcall(inventory.match_prefix, q, qlen, values, seen, COMPLETION_CAP)
         if not ok1 then net.log_warn("inventory completion failed: " .. tostring(err1)) end
@@ -178,6 +182,12 @@ if caps.tier == 2 then
     end
     render.on_channel_gone = function(platform, channel)
         ws.leave(platform, channel)
+    end
+    render.boot_fn = function()
+        local n = inventory.count()
+        local who = inventory.login and (" as " .. inventory.login) or ""
+        return "🔥 heatsync active" .. who .. " · " .. tostring(n) ..
+            " emotes render inline · :name to tab-complete · /hsstatus /hsblock /hsflame"
     end
     render.start()
 end
