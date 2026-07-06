@@ -55,6 +55,8 @@ local function imageset_for(url, w, h)
 end
 
 local function thread_id(word)
+    -- byte check first: keeps the per-word miss path to hash lookups only
+    if string.byte(word, 1) ~= 62 then return nil end -- '>'
     return string.match(word, "^>>([a-z0-9]+)$")
 end
 

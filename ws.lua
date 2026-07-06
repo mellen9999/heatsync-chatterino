@@ -20,12 +20,13 @@ local M = {
 local enabled = false
 local sock = nil
 local reconnect_scheduled = false
+local connect_started = 0
 local joined = {}       -- "platform/channel" -> {platform, channel}
 local watch_login = nil
 
 local BACKOFF_CAP_S = 60
-local HEARTBEAT_S = 25
 local WATCHDOG_IDLE_S = 90
+local HANDSHAKE_TIMEOUT_S = 30
 
 local function send(tbl)
     if not sock or not M.connected then return false end
@@ -72,7 +73,8 @@ local function handle_text(data)
 end
 
 function M.connect()
-    if not enabled or M.connected then return end
+    if not enabled or M.connected or sock then return end
+    connect_started = os.time()
     local ok, err = pcall(function()
         sock = c2.WebSocket.new(net.ORIGIN:gsub("^https", "wss") .. "/ws", {
             on_open = function()
@@ -107,15 +109,29 @@ function M.heartbeat()
 end
 
 function M.watchdog()
-    if not M.connected then return end
+    if not enabled then return end
+    -- a socket wedged mid-handshake never fires on_close on some stacks, so
+    -- the idle check alone would leave it stuck forever — recycle it too
+    if not M.connected then
+        if sock and (os.time() - connect_started) > HANDSHAKE_TIMEOUT_S then
+            net.log_warn("ws handshake stalled, recycling")
+            local s = sock
+            sock = nil
+            pcall(function() s:close() end)
+            schedule_reconnect()
+        elseif not sock and not reconnect_scheduled then
+            -- dead state that should be unreachable; self-heal anyway
+            schedule_reconnect()
+        end
+        return
+    end
     if os.time() - M.last_rx > WATCHDOG_IDLE_S then
         net.log_warn("ws stale (no rx for " .. tostring(WATCHDOG_IDLE_S) .. "s), recycling")
         local s = sock
-        pcall(function() s:close() end)
-        -- on_close drives the reconnect; belt-and-suspenders in case close
-        -- never fires on a wedged socket:
+        -- clear BEFORE close: on_close sees sock==nil and just schedules
         M.connected = false
         sock = nil
+        pcall(function() s:close() end)
         schedule_reconnect()
     end
 end

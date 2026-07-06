@@ -130,6 +130,48 @@ function M.register(get_login)
         end
     end)
 
+    -- end-to-end self-test: posts a synthetic client-side message from the
+    -- own login containing an inventory emote + a threadlink. add_message
+    -- fires the append hook synchronously, so on t2 this exercises the full
+    -- prescan → rebuild → replace pipeline and the result is visible in chat.
+    c2.register_command("/hstest", function(ctx)
+        local login = get_login() or inventory.login
+        if not login then
+            sysmsg(ctx, "no account; sign in first")
+            return
+        end
+        local first = inventory.index[1]
+        if not first then
+            sysmsg(ctx, "inventory empty — /hsrefresh first")
+            return
+        end
+        local text = "self-test: " .. first.name .. " >>selftest ok"
+        local ok, err = pcall(function()
+            ctx.channel:add_message(c2.Message.new({
+                login_name = login,
+                display_name = login,
+                message_text = text,
+                search_text = text,
+                username_color = "#ff8700",
+                elements = {
+                    { type = "text", text = login .. ":", color = "#ff8700" },
+                    { type = "text", text = text },
+                },
+            }))
+        end)
+        if not ok then
+            sysmsg(ctx, "self-test add failed: " .. tostring(err))
+            return
+        end
+        if caps.tier == 2 then
+            local _, replaced = render.stats()
+            sysmsg(ctx, "self-test posted — emote should render as an image (replacements so far: " ..
+                tostring(replaced) .. ")")
+        else
+            sysmsg(ctx, "self-test posted as text — rendering needs a nightly build (" .. caps.name() .. ")")
+        end
+    end)
+
     c2.register_command("/hsmoments", function(ctx)
         local hours = 24
         if ctx.words[2] then
