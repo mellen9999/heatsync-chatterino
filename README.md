@@ -103,6 +103,18 @@ for the full experience (rendering, the emote menu, multichat), use a build whos
 
 small single-purpose modules: `caps` (feature detection), `net` (http / json / timers / data files), `inventory` (your emotes), `seventv` (catalog search + render cache), `senders` (other chatters' sets), `recents` (learned usage), `picker` (clickable emote grids), `ws` (socket lifecycle), `multichat` (kick/youtube injection), `render` (hook → rebuild → replace), `store` (persisted toggles), `commands`, `init` (wiring). every hook is pcall-guarded and every capability is feature-detected, so a missing API degrades one feature instead of erroring. if chatterino ever exposes first-class plugin emote providers, `render.lua` is the only file that needs to change.
 
+## tests
+
+a headless harness stubs the chatterino API and drives the real modules — caps detection, completion, sender batching, ws dispatch/backoff, the render rebuild, the emote menu + recents, multichat. no chatterino needed, just `lua5.4`:
+
+```
+lua5.4 test/harness.lua              # full suite
+TIER=t1 lua5.4 test/harness-degrade.lua   # stable-build degradation
+TIER=t0 lua5.4 test/harness-degrade.lua   # old-build degradation
+```
+
+the sandbox mirror strips `os` (chatterino exposes none) so the harness also catches any `os.*` use that would abort load on the real client.
+
 ## license
 
 MIT

@@ -1,1 +1,3 @@
 /data/
+# harness writes plugin data files to its cwd when run from test/
+test/*.txt
