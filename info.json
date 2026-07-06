@@ -5,7 +5,7 @@
   "authors": ["mellen"],
   "homepage": "https://heatsync.org",
   "tags": ["emotes", "completion", "7tv", "heatsync"],
-  "version": "1.0.0",
+  "version": "1.5.0",
   "license": "MIT",
   "permissions": [
     { "type": "Network" },
