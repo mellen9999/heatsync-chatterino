@@ -13,14 +13,14 @@ local M = {}
 local BLOCKS_FILE = "blocks.txt"  -- newline-separated emote names
 local FLAME_FILE = "flame.txt"    -- "0" = off, anything else = on
 local ARCHIVE_FILE = "archive.txt" -- "0" = relay off (ON by default, opt-out)
-local AUTOMC_FILE = "automulti.txt" -- "1" = auto-multichat on (OFF by default)
+local AUTOMC_FILE = "automulti.txt" -- "0" = auto-multichat off (ON by default)
 local BADGES_FILE = "badges.txt"   -- "1" = badges on (OFF by default, opt-in)
 
 -- blocked[name] = true
 local blocked = {}
 local flame_on = true
 local archive_on = true -- default ON (opt-out) — archives public twitch chat
-local automc_on = false
+local automc_on = true -- default ON (opt-out) — auto-merges a stream's kick/yt chat when publicly linked
 local badges_on = false
 
 -- ----- load on boot -----
@@ -41,9 +41,10 @@ local function load()
     if type(arch) == "string" and string.match(arch, "0") then
         archive_on = false
     end
+    -- default ON: only an explicit "0" on disk turns auto-multichat off
     local am = net.read_data(AUTOMC_FILE)
-    if type(am) == "string" and string.match(am, "1") then
-        automc_on = true
+    if type(am) == "string" and string.match(am, "0") then
+        automc_on = false
     end
     local bg = net.read_data(BADGES_FILE)
     if type(bg) == "string" and string.match(bg, "1") then

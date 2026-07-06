@@ -222,8 +222,9 @@ if caps.tier == 2 then
         local n = inventory.count()
         local who = inventory.login and (" as " .. inventory.login) or ""
         local arch = store.archive_enabled() and " · archiving public chat to heatsync (/hsarchive off to opt out)" or ""
+        local am = store.auto_multichat_enabled() and " · auto-merging linked kick/yt chat (/hsmulti auto off)" or ""
         return "🔥 heatsync active" .. who .. " · " .. tostring(n) ..
-            " emotes render inline · :name to tab-complete · /hsstatus" .. arch
+            " emotes render inline · :name to tab-complete · /hsstatus" .. arch .. am
     end
     render.start()
 end
