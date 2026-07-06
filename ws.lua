@@ -61,7 +61,7 @@ local function schedule_reconnect()
 end
 
 local function handle_text(data)
-    M.last_rx = os.time()
+    M.last_rx = net.now()
     local msg = net.safe_json_parse(data)
     if type(msg) ~= "table" or type(msg.type) ~= "string" then return end
     if M.on_event then
@@ -74,13 +74,13 @@ end
 
 function M.connect()
     if not enabled or M.connected or sock then return end
-    connect_started = os.time()
+    connect_started = net.now()
     local ok, err = pcall(function()
         sock = c2.WebSocket.new(net.ORIGIN:gsub("^https", "wss") .. "/ws", {
             on_open = function()
                 M.connected = true
                 M.attempts = 0
-                M.last_rx = os.time()
+                M.last_rx = net.now()
                 net.log_info("ws connected")
                 replay_state()
             end,
@@ -113,7 +113,7 @@ function M.watchdog()
     -- a socket wedged mid-handshake never fires on_close on some stacks, so
     -- the idle check alone would leave it stuck forever — recycle it too
     if not M.connected then
-        if sock and (os.time() - connect_started) > HANDSHAKE_TIMEOUT_S then
+        if sock and (net.now() - connect_started) > HANDSHAKE_TIMEOUT_S then
             net.log_warn("ws handshake stalled, recycling")
             local s = sock
             sock = nil
@@ -125,7 +125,7 @@ function M.watchdog()
         end
         return
     end
-    if os.time() - M.last_rx > WATCHDOG_IDLE_S then
+    if net.now() - M.last_rx > WATCHDOG_IDLE_S then
         net.log_warn("ws stale (no rx for " .. tostring(WATCHDOG_IDLE_S) .. "s), recycling")
         local s = sock
         -- clear BEFORE close: on_close sees sock==nil and just schedules
@@ -168,8 +168,9 @@ end
 function M.start()
     if enabled then return end
     enabled = true
-    -- seed jitter; os.time granularity is fine for spreading reconnects
-    pcall(math.randomseed, os.time())
+    -- jitter uses math.random unseeded (default seed) — spreading reconnects
+    -- across a few hundred ms doesn't need a strong seed, and the sandbox has
+    -- no os.time to seed from anyway
     M.connect()
 end
 
@@ -183,7 +184,7 @@ function M.status()
     if not enabled then return "off" end
     if M.connected then
         return "connected · " .. tostring(M.joined_count()) .. " channels · rx " ..
-            tostring(os.time() - M.last_rx) .. "s ago"
+            tostring(net.now() - M.last_rx) .. "s ago"
     end
     return "reconnecting (attempt " .. tostring(M.attempts) .. ")"
 end

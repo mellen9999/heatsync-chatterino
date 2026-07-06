@@ -19,8 +19,9 @@ local M = {
 
 -- cache[login] = { map = {name -> {url,w,h,zw}} | false, ts }
 -- false = looked up, user has no heatsync emotes (negative cache)
+-- ts doubles as last-use time so eviction is true LRU (see evict_if_full).
 local cache = {}
-local order = {}          -- fifo for eviction
+local cache_count = 0
 local pending = {}        -- login -> twitch_id, waiting for the next flush
 local pending_count = 0
 local inflight = false
@@ -30,18 +31,28 @@ local POSITIVE_TTL_S = 15 * 60
 local NEGATIVE_TTL_S = 10 * 60
 local BATCH_MAX = 15      -- matches the extension's batch sizing (cf-safe)
 
+-- evict the least-recently-used entry (oldest ts) when over cap. O(n) scan,
+-- but only runs when inserting past CACHE_MAX — rare — so it stays cheap on
+-- the hot path (which only reads/touches, never evicts).
 local function evict_if_full()
-    while #order > CACHE_MAX do
-        local oldest = table.remove(order, 1)
-        if oldest then cache[oldest] = nil end
+    while cache_count > CACHE_MAX do
+        local victim, victim_ts = nil, nil
+        for login, entry in pairs(cache) do
+            if victim_ts == nil or entry.ts < victim_ts then
+                victim, victim_ts = login, entry.ts
+            end
+        end
+        if not victim then break end
+        cache[victim] = nil
+        cache_count = cache_count - 1
     end
 end
 
 local function put(login, map)
     if cache[login] == nil then
-        table.insert(order, login)
+        cache_count = cache_count + 1
     end
-    cache[login] = { map = map, ts = os.time() }
+    cache[login] = { map = map, ts = net.now() }
     evict_if_full()
 end
 
@@ -49,7 +60,8 @@ local function fresh(login)
     local hit = cache[login]
     if not hit then return nil end
     local ttl = (hit.map == false) and NEGATIVE_TTL_S or POSITIVE_TTL_S
-    if (os.time() - hit.ts) > ttl then return nil end
+    if (net.now() - hit.ts) > ttl then return nil end
+    hit.ts = net.now() -- touch: a read is a use, keeps active senders resident
     return hit
 end
 
@@ -146,7 +158,7 @@ function M.feed_broadcast(username, emote_name, emote_data)
     local map
     if hit and type(hit.map) == "table" then
         map = hit.map
-        hit.ts = os.time()
+        hit.ts = net.now()
     else
         map = {}
         put(login, map)
@@ -161,12 +173,12 @@ function M.feed_broadcast(username, emote_name, emote_data)
 end
 
 function M.stats()
-    return #order, pending_count
+    return cache_count, pending_count
 end
 
 function M.clear()
     cache = {}
-    order = {}
+    cache_count = 0
     pending = {}
     pending_count = 0
 end

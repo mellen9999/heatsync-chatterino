@@ -22,6 +22,22 @@ function M.percent_encode(s)
     end))
 end
 
+-- Monotonic clock. Chatterino's Lua sandbox exposes NO `os` library
+-- (only _G/io/math/string/table/utf8 per wip-plugins.md), so os.time() is
+-- unavailable — indexing it throws and aborts plugin load. Every time value
+-- in this plugin is a *difference* (ttls, backoff, throttles, idle windows),
+-- so a 0-based seconds counter driven by c2.later is an exact drop-in for
+-- os.time(). Starts at load; if c2.later is somehow absent it stays 0, which
+-- degrades (caches never expire) but never crashes.
+local mono_s = 0
+
+function M.now()
+    return mono_s
+end
+
+-- second half of M.every is defined below; the clock tick is armed at the
+-- bottom of this file once every() exists.
+
 function M.safe_json_parse(raw)
     if type(raw) ~= "string" or raw == "" then return nil end
     local ok, parsed = pcall(json.parse, raw)
@@ -98,5 +114,8 @@ function M.every(msec, fn)
     if not ok then return function() end end
     return function() cancelled = true end
 end
+
+-- arm the monotonic clock now that every() exists. one tick per second.
+M.every(1000, function() mono_s = mono_s + 1 end)
 
 return M

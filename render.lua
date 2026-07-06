@@ -15,6 +15,7 @@ local senders = require("senders")
 local M = {
     started = false,
     on_channel_found = nil, -- fn(platform, channel) → ws join
+    on_channel_gone = nil,  -- fn(platform, channel) → ws leave (tab closed)
     replaced_count = 0,
 }
 
@@ -84,7 +85,6 @@ local function flush_run(elems, run, src)
         style = src.style,
     }
     if src.flags then init.flags = src.flags end
-    if src.link then init.link = src.link end
     table.insert(elems, init)
     for i = #run, 1, -1 do run[i] = nil end
 end
@@ -96,9 +96,13 @@ local function rebuild_text_element(elems, el, sender_map)
         src.color = el.color
         src.style = el.style
         src.flags = el.flags
-        src.link = el.link
         src.trailing_space = el.trailing_space
     end)
+    -- deliberately do NOT copy el.link: a link-less chatterino text element
+    -- returns a Link{type=None} (not nil), which is a non-exposed type — re-
+    -- applying it to a rebuilt run throws "Invalid link type". real per-word
+    -- links (urls, mentions) are their own element types (link/mention), not
+    -- text elements, and pass through untouched, so nothing is lost here.
     for _, word in ipairs(el.words) do
         local emote = sender_map and sender_map[word]
         local set = renderable(emote) and imageset_for(emote.url, emote.w, emote.h) or nil
@@ -170,30 +174,35 @@ local function build_replacement(msg, sender_map)
     })
 end
 
+-- the per-message body, factored out so `process` can pcall it by reference
+-- instead of allocating a fresh closure on every appended message (hot path).
+local function do_process(ch, msg, hint)
+    local login = msg.login_name
+    if type(login) ~= "string" or login == "" then return end
+    if (msg.flags & c2.MessageFlag.System) ~= 0 then return end
+    local text = msg.message_text
+    if type(text) ~= "string" or text == "" then return end
+
+    -- twitch login_name is already canonical-lowercase; no string.lower alloc
+    local sender_map = senders.resolve(login, msg.user_id)
+    if sender_map == false then sender_map = nil end
+    if not has_hits(text, sender_map) then return end
+
+    local repl = build_replacement(msg, sender_map)
+    if hint then
+        ch:replace_message(msg, repl, hint)
+    else
+        ch:replace_message(msg, repl)
+    end
+    M.replaced_count = M.replaced_count + 1
+end
+
 -- shared by the live hook and the back-pass. hint is the 1-based index when
 -- known (live: the just-appended message is last).
 local function process(ch, msg, hint)
     if processing then return end
     processing = true
-    local ok, err = pcall(function()
-        local login = msg.login_name
-        if type(login) ~= "string" or login == "" then return end
-        if (msg.flags & c2.MessageFlag.System) ~= 0 then return end
-        local text = msg.message_text
-        if type(text) ~= "string" or text == "" then return end
-
-        local sender_map = senders.resolve(string.lower(login), msg.user_id)
-        if sender_map == false then sender_map = nil end
-        if not has_hits(text, sender_map) then return end
-
-        local repl = build_replacement(msg, sender_map)
-        if hint then
-            ch:replace_message(msg, repl, hint)
-        else
-            ch:replace_message(msg, repl)
-        end
-        M.replaced_count = M.replaced_count + 1
-    end)
+    local ok, err = pcall(do_process, ch, msg, hint)
     processing = false
     if not ok then
         -- a systemic failure (api drift) would fire per-message; log the
@@ -230,6 +239,9 @@ function M.discover()
         if not ok or not valid then
             pcall(function() h.handle:disconnect() end)
             hooked[name] = nil
+            -- drop from ws desired-state too, else reconnect rejoins a room
+            -- for a channel that's no longer open (joined{} would grow forever)
+            if M.on_channel_gone then pcall(M.on_channel_gone, "twitch", name) end
             net.log_info("rendering unhooked for #" .. name)
         end
     end
@@ -242,8 +254,16 @@ function M.discover()
                     if page then
                         for _, split in ipairs(page:splits()) do
                             local ch = split.channel
-                            if ch and ch:is_valid()
-                                and ch:get_type() == c2.ChannelType.Twitch then
+                            -- is_twitch_channel() is the robust predicate;
+                            -- get_type() == c2.ChannelType.Twitch is NOT — the
+                            -- ChannelType enum values aren't exposed as the
+                            -- typings imply (c2.ChannelType.Twitch reads nil at
+                            -- runtime), so that comparison never matched.
+                            local is_tw = false
+                            if ch and ch:is_valid() then
+                                pcall(function() is_tw = ch:is_twitch_channel() end)
+                            end
+                            if is_tw then
                                 if not caps.confirm_msg_hooks(ch) then return end
                                 local name = ch:get_name()
                                 if name ~= "" and not hooked[name] then

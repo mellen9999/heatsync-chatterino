@@ -29,7 +29,7 @@ local function put(q, names, is_error)
     if cache[q] == nil then
         table.insert(order, q)
     end
-    cache[q] = { ts = os.time(), names = names or {}, is_error = is_error or false }
+    cache[q] = { ts = net.now(), names = names or {}, is_error = is_error or false }
     evict_if_full()
 end
 
@@ -37,7 +37,7 @@ local function get_fresh(q)
     local hit = cache[q]
     if not hit then return nil end
     local ttl = hit.is_error and ERROR_TTL_S or TTL_S
-    if (os.time() - hit.ts) > ttl then return nil end
+    if (net.now() - hit.ts) > ttl then return nil end
     return hit
 end
 

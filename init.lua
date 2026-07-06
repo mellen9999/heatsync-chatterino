@@ -57,7 +57,7 @@ local last_full_refresh_ts = 0
 local function login_and_refresh_tick()
     -- one-shot boot retry after a transport failure before first load
     if inventory.boot_failed_at and not inventory.boot_retry_used
-        and (os.time() - inventory.boot_failed_at) >= BOOT_RETRY_BACKOFF_S then
+        and (net.now() - inventory.boot_failed_at) >= BOOT_RETRY_BACKOFF_S then
         inventory.boot_retry_used = true
         inventory.boot_failed_at = nil
         if last_login then
@@ -70,18 +70,18 @@ local function login_and_refresh_tick()
     if not login then return end
     if login ~= last_login then
         net.log_info("account switched to " .. login .. "; refreshing inventory")
-        last_full_refresh_ts = os.time()
+        last_full_refresh_ts = net.now()
         adopt_login(login)
         return
     end
-    if (os.time() - last_full_refresh_ts) >= FULL_REFRESH_INTERVAL_S then
-        last_full_refresh_ts = os.time()
+    if (net.now() - last_full_refresh_ts) >= FULL_REFRESH_INTERVAL_S then
+        last_full_refresh_ts = net.now()
         inventory.refresh(login)
     end
 end
 
 local function piggyback_tick()
-    local now = os.time()
+    local now = net.now()
     if (now - last_login_check_ts) < LOGIN_CHECK_INTERVAL_S then
         -- boot retry stays cheap + unthrottled
         if inventory.boot_failed_at then login_and_refresh_tick() end
@@ -176,13 +176,16 @@ if caps.tier == 2 then
     render.on_channel_found = function(platform, channel)
         ws.join(platform, channel)
     end
+    render.on_channel_gone = function(platform, channel)
+        ws.leave(platform, channel)
+    end
     render.start()
 end
 
 do
     local login = current_login_safe()
     if login then
-        last_full_refresh_ts = os.time()
+        last_full_refresh_ts = net.now()
         adopt_login(login)
     else
         net.log_warn("no signed-in twitch account at boot; will pick it up when you sign in")

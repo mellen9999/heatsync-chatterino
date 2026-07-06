@@ -51,7 +51,7 @@ end
 
 local function note_possible_boot_failure()
     if not M.boot_retry_used and next(M.map) == nil then
-        M.boot_failed_at = os.time()
+        M.boot_failed_at = net.now()
     end
 end
 
@@ -87,13 +87,17 @@ function M.refresh(login)
         net.log_warn("no account login; skipping refresh")
         return
     end
+    -- set M.login FIRST: on an account switch while a previous refresh is
+    -- still in flight, the early return below must not leave M.login pointing
+    -- at the old account (its done() would refetch the wrong inventory). the
+    -- in-flight callbacks close over their own `login` param, so this is safe.
+    M.login = login
     if refreshing then
         refresh_queued = true
         return
     end
     refreshing = true
-    last_refresh_ts = os.time()
-    M.login = login
+    last_refresh_ts = net.now()
     net.log_info("refreshing inventory for " .. login)
 
     local function done()
@@ -149,7 +153,7 @@ function M.refresh_soon()
         refresh_queued = true
         return
     end
-    if os.time() - last_refresh_ts < REFRESH_MIN_GAP_S then
+    if net.now() - last_refresh_ts < REFRESH_MIN_GAP_S then
         refresh_queued = true
         -- picked up by the in-flight done() or the next timer tick
         return
