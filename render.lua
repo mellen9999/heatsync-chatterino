@@ -15,6 +15,7 @@ local store = require("store")
 local seventv = require("seventv")
 local ws = require("ws")
 local badges = require("badges")
+local recents = require("recents")
 
 local FLAME = "🔥"
 
@@ -267,6 +268,11 @@ local function do_process(ch, msg, hint)
 
     -- opt-in archive relay (before render rebuild; independent of it)
     maybe_relay(msg)
+
+    -- learn recently-used emotes from your OWN outgoing messages — the only
+    -- usage signal the plugin can observe (click-to-insert has no callback).
+    -- feeds the recents row at the top of the /hsemotes menu.
+    if login == senders.own_login then recents.note(text) end
 
     -- twitch login_name is already canonical-lowercase; no string.lower alloc
     local sender_map = senders.resolve(login, msg.user_id)

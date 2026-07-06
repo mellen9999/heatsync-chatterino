@@ -1,11 +1,11 @@
 {
   "$schema": "https://raw.githubusercontent.com/Chatterino/chatterino2/master/docs/plugin-info.schema.json",
   "name": "heatsync",
-  "description": "heatsync in chatterino: inline emote rendering + >>threadlinks (nightly), live inventory sync, tab-complete from your inventory + 7TV global, /hsmoments, /hslogs.",
+  "description": "heatsync in chatterino: inline emote rendering, a click-to-insert emote menu (/hsemotes), >>threadlinks, kick+youtube multichat, live inventory sync, and tab-complete from your inventory + 7TV/BTTV/FFZ.",
   "authors": ["mellen"],
   "homepage": "https://heatsync.org",
   "tags": ["emotes", "completion", "7tv", "heatsync"],
-  "version": "1.5.0",
+  "version": "1.6.0",
   "license": "MIT",
   "permissions": [
     { "type": "Network" },

@@ -20,6 +20,7 @@ local commands = require("commands")
 local store = require("store")
 local multichat = require("multichat")
 local badges = require("badges")
+local recents = require("recents")
 
 local COMPLETION_CAP = 25
 
@@ -179,6 +180,7 @@ net.log_info("boot: " .. caps.name() ..
 
 commands.register(current_login_safe)
 senders.own_map_fn = function() return inventory.map end
+recents.load() -- restore recently-used emotes for the /hsemotes menu
 
 if caps.tier >= 1 then
     ws.on_event = on_ws_event
@@ -224,7 +226,7 @@ if caps.tier == 2 then
         local arch = store.archive_enabled() and " · archiving public chat to heatsync (/hsarchive off to opt out)" or ""
         local am = store.auto_multichat_enabled() and " · auto-merging linked kick/yt chat (/hsmulti auto off)" or ""
         return "🔥 heatsync active" .. who .. " · " .. tostring(n) ..
-            " emotes render inline · :name to tab-complete · /hsstatus" .. arch .. am
+            " emotes · /hsemotes menu · :name tab-complete · /hsfind search · /hsstatus" .. arch .. am
     end
     render.start()
 end

@@ -9,6 +9,8 @@ local render = require("render")
 local store = require("store")
 local multichat = require("multichat")
 local img = require("img")
+local picker = require("picker")
+local recents = require("recents")
 
 local M = {}
 
@@ -61,15 +63,69 @@ function M.register(get_login)
         sysmsg(ctx, "refreshing inventory for " .. login .. "…")
     end)
 
+    -- your emote menu: a clickable grid of YOUR inventory, recents-first then
+    -- usage-ordered, paginated. `/hsemotes` page 1 · `/hsemotes 2` next page ·
+    -- `/hsemotes <query>` filter to matching names. click any emote to insert.
+    local HSEMOTES_PER_PAGE = 50
     c2.register_command("/hsemotes", function(ctx)
         local own = inventory.count()
-        local cached, cap = seventv.stats()
         if own == 0 then
-            sysmsg(ctx, "inventory not loaded — try /hsrefresh")
+            sysmsg(ctx, "inventory not loaded — sign in at heatsync.org once, then /hsrefresh")
             return
         end
-        sysmsg(ctx, tostring(own) .. " inventory emotes · " .. tostring(cached) ..
-            " 7tv search queries cached (cap " .. tostring(cap) .. ")")
+        local arg = ctx.words[2]
+        local page, query = 1, nil
+        if arg and arg ~= "" then
+            local p = tonumber(arg)
+            if p and p >= 1 and math.floor(p) == p then page = p else query = string.lower(arg) end
+        end
+
+        -- ordered name list
+        local names, seen = {}, {}
+        if query then
+            for _, item in ipairs(inventory.index) do
+                if string.find(item.lower, query, 1, true) and not seen[item.name] then
+                    names[#names + 1] = item.name; seen[item.name] = true
+                end
+            end
+            if #names == 0 then sysmsg(ctx, "no inventory emotes matching '" .. arg .. "'"); return end
+        else
+            for _, n in ipairs(recents.names()) do
+                if not seen[n] then names[#names + 1] = n; seen[n] = true end
+            end
+            for _, item in ipairs(inventory.index) do
+                if not seen[item.name] then names[#names + 1] = item.name; seen[item.name] = true end
+            end
+        end
+
+        local total = #names
+        local pages = math.max(1, math.ceil(total / HSEMOTES_PER_PAGE))
+        if page > pages then page = pages end
+        local from = (page - 1) * HSEMOTES_PER_PAGE + 1
+        local to = math.min(total, from + HSEMOTES_PER_PAGE - 1)
+
+        local recent_set = {}
+        for _, n in ipairs(recents.names()) do recent_set[n] = true end
+        local items = {}
+        for i = from, to do
+            local n = names[i]
+            local e = inventory.resolve(n)
+            if e then
+                items[#items + 1] = { name = n, url = e.url, w = e.w, h = e.h,
+                    label = n .. (recent_set[n] and " · recent" or " · heatsync") }
+            end
+        end
+
+        local header
+        if query then
+            header = "[heatsync] " .. total .. " of your emotes matching '" .. arg .. "' — click to insert:"
+        else
+            local nav = pages > 1 and (" · page " .. page .. "/" .. pages ..
+                " · /hsemotes " .. (page < pages and page + 1 or 1) .. " for more") or ""
+            header = "[heatsync] your emotes (" .. own .. ")" .. nav ..
+                " · /hsemotes <query> to filter — click to insert:"
+        end
+        if not picker.render(ctx.channel, header, items) then sysmsg(ctx, "emote menu render failed") end
     end)
 
     c2.register_command("/hsclear", function(ctx)
@@ -110,28 +166,19 @@ function M.register(get_login)
                     seen[e.name] = true
                 end
             end
-            local ok = pcall(function()
-                if #results == 0 then
-                    ch:add_system_message("[heatsync] no emotes found for '" .. q .. "'")
-                    return
-                end
-                local elems = { { type = "text", text = "[heatsync] " .. #results ..
-                    " emotes for '" .. q .. "' — click to insert:", color = "system" } }
-                for _, r in ipairs(results) do
-                    local set = caps.images and r.url and img.for_url(r.url, r.w, r.h) or nil
-                    local link = { type = c2.LinkType.InsertText, value = r.name .. " " }
-                    if set then
-                        elems[#elems + 1] = { type = "scaling-image", images = set,
-                            flags = c2.MessageElementFlag.EmoteImage,
-                            tooltip = r.name .. " · " .. r.source, link = link }
-                    else
-                        elems[#elems + 1] = { type = "text", text = r.name,
-                            color = "link", tooltip = r.name .. " · " .. r.source, link = link }
-                    end
-                end
-                ch:add_message(c2.Message.new({ elements = elems }))
-            end)
-            if not ok then sysmsg(ctx, "picker render failed") end
+            if #results == 0 then
+                pcall(function() ch:add_system_message("[heatsync] no emotes found for '" .. q .. "'") end)
+                return
+            end
+            local items = {}
+            for _, r in ipairs(results) do
+                items[#items + 1] = { name = r.name, url = r.url, w = r.w, h = r.h,
+                    label = r.name .. " · " .. r.source }
+            end
+            if not picker.render(ch, "[heatsync] " .. #results ..
+                " emotes for '" .. q .. "' — click to insert:", items) then
+                sysmsg(ctx, "picker render failed")
+            end
         end)
     end)
 
