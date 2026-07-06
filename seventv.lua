@@ -45,6 +45,32 @@ function M.is_sane_query(q)
     return string.match(q, "^[a-z0-9_%-:%.]+$") ~= nil
 end
 
+-- ----- render cache: name → 7tv emote url (for render.lua) -----
+-- exact-case names (emotes are case-sensitive); 2x variant (64px tall) for a
+-- crisp downscale to chat height. capped LRU-ish (fifo).
+local render_cache = {}
+local render_order = {}
+local RENDER_MAX = 400
+
+local function cache_render(name, url1x)
+    if render_cache[name] then return end
+    -- 7tv urls are .../<id>/1x.webp — bump to 2x for crispness
+    local url2x = url1x:gsub("/1x%.webp$", "/2x.webp")
+    render_cache[name] = url2x
+    render_order[#render_order + 1] = name
+    while #render_order > RENDER_MAX do
+        local old = table.remove(render_order, 1)
+        if old then render_cache[old] = nil end
+    end
+end
+
+-- returns url, height for a searched 7tv emote name, or nil
+function M.resolve_render(word)
+    local url = render_cache[word]
+    if url then return url, 64 end
+    return nil
+end
+
 local function kick_off(q)
     if inflight[q] then return end
     if get_fresh(q) then return end
@@ -66,6 +92,11 @@ local function kick_off(q)
                 if name and not seen[name] then
                     table.insert(names, name)
                     seen[name] = true
+                    -- cache name→url so render.lua can draw niche 7tv emotes
+                    -- chatterino didn't load. first (most popular) result per
+                    -- name wins, matching the completion order.
+                    local eurl = net.pick_first_str(e, "url", "src")
+                    if eurl then cache_render(name, eurl) end
                 end
             end
         end

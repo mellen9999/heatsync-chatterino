@@ -200,6 +200,7 @@ function M.register(get_login)
         else
             sysmsg(ctx, "rendering: unavailable on this build (needs nightly)")
         end
+        sysmsg(ctx, "multichat: " .. tostring(multichat.stats()) .. " kick/youtube source(s) linked")
     end)
 
     -- dev aid: dump the last message's element types + flags to the log —

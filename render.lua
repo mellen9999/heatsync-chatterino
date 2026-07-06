@@ -12,6 +12,7 @@ local caps = require("caps")
 local inventory = require("inventory")
 local senders = require("senders")
 local store = require("store")
+local seventv = require("seventv")
 
 local FLAME = "🔥"
 
@@ -42,11 +43,14 @@ local function renderable(emote)
     return emote ~= nil and type(emote.h) == "number" and emote.h > 0
 end
 
--- prescan: any word this sender's inventory renders (and isn't blocked), or a
--- threadlink?
+-- prescan: any word this sender's inventory renders, a searched 7tv emote
+-- chatterino didn't load, or a threadlink? (all skip blocked names)
 local function has_hits(text, sender_map)
     for word in string.gmatch(text, "%S+") do
-        if sender_map and renderable(sender_map[word]) and not store.is_blocked(word) then return true end
+        if not store.is_blocked(word) then
+            if sender_map and renderable(sender_map[word]) then return true end
+            if seventv.resolve_render(word) then return true end
+        end
         if thread_id(word) then return true end
     end
     return false
@@ -80,18 +84,28 @@ local function rebuild_text_element(elems, el, sender_map)
     -- links (urls, mentions) are their own element types (link/mention), not
     -- text elements, and pass through untouched, so nothing is lost here.
     for _, word in ipairs(el.words) do
+        local blocked = store.is_blocked(word)
         local emote = sender_map and sender_map[word]
         -- store.is_blocked → treat a blocked emote as plain text (local block)
-        local set = renderable(emote) and not store.is_blocked(word)
+        local set = renderable(emote) and not blocked
             and imageset_for(emote.url, emote.w, emote.h) or nil
+        local tooltip, is_7tv = word .. " · heatsync", false
+        if not set and not blocked then
+            -- niche 7tv emote the user searched that chatterino didn't load
+            local url7, h7 = seventv.resolve_render(word)
+            if url7 then
+                set = imageset_for(url7, nil, h7)
+                tooltip, is_7tv = word .. " · 7tv", true
+            end
+        end
         if set then
             flush_run(elems, run, src)
             table.insert(elems, {
                 type = "scaling-image",
                 images = set,
                 flags = c2.MessageElementFlag.EmoteImage,
-                tooltip = word .. " · heatsync",
-                link = { type = c2.LinkType.Url, value = net.ORIGIN .. "/emote-search?q=" .. net.percent_encode(word) },
+                tooltip = tooltip,
+                link = { type = c2.LinkType.Url, value = net.ORIGIN .. "/emote-search?q=" .. net.percent_encode(word) .. (is_7tv and "&p=7tv" or "") },
             })
         else
             local tid = thread_id(word)

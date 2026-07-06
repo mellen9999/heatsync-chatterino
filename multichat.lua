@@ -35,6 +35,46 @@ local DEDUP_MAX = 800
 -- a fixed 70x70 png/gif at this CDN path (verified — no size variants).
 local KICK_EMOTE_URL = "https://files.kick.com/emotes/%s/fullsize"
 
+-- youtube delivers per-message emotes as {alt=":shortcode:", url} and embeds
+-- the shortcodes in the text. render each shortcode present in the emote map
+-- as an image (bumped to 48px via the ggpht size params for crispness).
+local function build_yt_body(text, emotes)
+    if type(text) ~= "string" or type(emotes) ~= "table" or #emotes == 0 then return nil end
+    local map = {}
+    for _, em in ipairs(emotes) do
+        if type(em) == "table" and type(em.alt) == "string" and type(em.url) == "string" then
+            map[em.alt] = em.url
+        end
+    end
+    if not next(map) then return nil end
+    local elems = {}
+    local last = 1
+    local found = false
+    for s, tok, e in text:gmatch("()(:[%w_+%-]+:)()") do
+        local url = map[tok]
+        if url then
+            found = true
+            if s > last then
+                local pre = text:sub(last, s - 1)
+                if pre ~= "" then elems[#elems + 1] = { type = "text", text = pre } end
+            end
+            local big = url:gsub("=w%d+%-h%d+", "=w48-h48")
+            local set = caps.images and img.for_url(big, 48, 48) or nil
+            if set then
+                elems[#elems + 1] = { type = "scaling-image", images = set,
+                    flags = c2.MessageElementFlag.EmoteImage, tooltip = tok .. " · youtube" }
+            else
+                elems[#elems + 1] = { type = "text", text = tok }
+            end
+            last = e
+        end
+    end
+    if not found then return nil end
+    local tail = text:sub(last)
+    if tail ~= "" then elems[#elems + 1] = { type = "text", text = tail } end
+    return elems
+end
+
 -- split a kick message body on [emote:id:name] tokens into text runs +
 -- scaling-image emotes. returns nil if there are no emote tokens (caller uses
 -- a single plain-text element) — keeps the common path allocation-free.
@@ -205,8 +245,14 @@ local function inject(line)
     local tag = line.platform == "kick" and "[K]" or "[Y]"
     local tag_color = line.platform == "kick" and KICK_COLOR or YT_COLOR
     local uname_color = (type(line.color) == "string" and line.color ~= "") and line.color or tag_color
-    -- render kick's [emote:id:name] tokens as images (70x70 → chat height)
-    local body = line.platform == "kick" and build_kick_body(text) or nil
+    -- render platform emotes as images: kick's [emote:id:name] tokens,
+    -- youtube's per-message shortcode+url list
+    local body
+    if line.platform == "kick" then
+        body = build_kick_body(text)
+    elseif line.platform == "yt" then
+        body = build_yt_body(text, line.emotes)
+    end
 
     for cc_name in pairs(targets) do
         pcall(function()
@@ -273,6 +319,7 @@ local function handle_yt(m, routing_tag)
         text = text,
         color = m.color,
         time_ms = tonumber(m.timestamp),
+        emotes = m.emotes,
     })
 end
 
