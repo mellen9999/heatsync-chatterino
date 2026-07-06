@@ -138,7 +138,11 @@ local function rebuild_text_element(elems, el, sender_map)
                 images = set,
                 flags = c2.MessageElementFlag.EmoteImage,
                 tooltip = tooltip,
-                link = { type = c2.LinkType.Url, value = net.ORIGIN .. "/emote-search?q=" .. net.percent_encode(word) .. (is_7tv and "&p=7tv" or "") },
+                -- left-click any emote WE render → paste it into your input (like
+                -- the /hsfind picker + how 7tv/bttv work in-browser). only emotes
+                -- the plugin draws get this; chatterino owns clicks on emotes it
+                -- renders natively (the plugin API can't override those).
+                link = { type = c2.LinkType.InsertText, value = word .. " " },
             })
         else
             local tid = thread_id(word)
