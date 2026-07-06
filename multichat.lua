@@ -32,7 +32,8 @@ local KICK_COLOR = "#53fc18"
 local YT_COLOR = "#ff0000"
 local DEDUP_MAX = 800
 -- kick emotes come embedded in the text as [emote:<id>:<name>] tokens and are
--- a fixed 70x70 png/gif at this CDN path (verified — no size variants).
+-- a png/gif at this CDN path, sized within a 70px box (width varies per
+-- emote/frame; not a fixed 70x70 — animated frames differ, some are smaller).
 local KICK_EMOTE_URL = "https://files.kick.com/emotes/%s/fullsize"
 
 -- youtube delivers per-message emotes as {alt=":shortcode:", url} and embeds
@@ -89,7 +90,11 @@ local function build_kick_body(content)
             local pre = content:sub(last, s - 1)
             if pre ~= "" then elems[#elems + 1] = { type = "text", text = pre } end
         end
-        local set = caps.images and img.for_url(string.format(KICK_EMOTE_URL, id), 70, 70) or nil
+        -- w=nil so chatterino scales the ACTUAL loaded image to line height
+        -- (like the 7tv path). kick emotes aren't a fixed 70x70 — widths vary
+        -- per frame and some are smaller — so passing explicit {70,70} forced a
+        -- literal 70px (huge/stretched) render. h=70 = the emote box max height.
+        local set = caps.images and img.for_url(string.format(KICK_EMOTE_URL, id), nil, 70) or nil
         if set then
             elems[#elems + 1] = { type = "scaling-image", images = set,
                 flags = c2.MessageElementFlag.EmoteImage, tooltip = name .. " · kick" }

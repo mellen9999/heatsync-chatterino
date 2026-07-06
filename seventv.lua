@@ -139,13 +139,36 @@ function M.append_matches(q, values, seen, cap)
     if string.len(q) < M.MIN_CHARS or not M.is_sane_query(q) then return end
     kick_off(q)
     local hit = get_fresh(q)
-    if hit and type(hit.names) == "table" then
-        for _, name in ipairs(hit.names) do
-            if #values >= cap then break end
-            if not seen[name] then
-                table.insert(values, name)
-                seen[name] = true
+    if hit then
+        -- exact query is cached (authoritative, upstream popularity order)
+        if type(hit.names) == "table" then
+            for _, name in ipairs(hit.names) do
+                if #values >= cap then break end
+                if not seen[name] then
+                    table.insert(values, name)
+                    seen[name] = true
+                end
             end
+        end
+        return
+    end
+    -- exact query's search is still in flight (fired this keystroke). surface
+    -- the freshest cached PREFIX — a search fired a keystroke or two earlier —
+    -- filtered to names that still match the full query, so 7tv results show up
+    -- as you finish typing instead of only after an extra keystroke. (chatterino
+    -- tab-CYCLES a static list and never re-requests completion on tab, so this
+    -- is the only way async results reach the popup for the word you just typed.)
+    for n = string.len(q) - 1, M.MIN_CHARS, -1 do
+        local ph = get_fresh(string.sub(q, 1, n))
+        if ph and type(ph.names) == "table" then
+            for _, name in ipairs(ph.names) do
+                if #values >= cap then break end
+                if not seen[name] and string.find(string.lower(name), q, 1, true) then
+                    table.insert(values, name)
+                    seen[name] = true
+                end
+            end
+            break -- only the single freshest (longest) prefix
         end
     end
 end
