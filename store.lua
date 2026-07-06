@@ -12,10 +12,14 @@ local M = {}
 
 local BLOCKS_FILE = "blocks.txt"  -- newline-separated emote names
 local FLAME_FILE = "flame.txt"    -- "0" = off, anything else = on
+local ARCHIVE_FILE = "archive.txt" -- "1" = relay on (OFF by default, opt-in)
+local AUTOMC_FILE = "automulti.txt" -- "1" = auto-multichat on (OFF by default)
 
 -- blocked[name] = true
 local blocked = {}
 local flame_on = true
+local archive_on = false
+local automc_on = false
 
 -- ----- load on boot -----
 local function load()
@@ -29,6 +33,14 @@ local function load()
     local flame = net.read_data(FLAME_FILE)
     if type(flame) == "string" and string.match(flame, "0") then
         flame_on = false
+    end
+    local arch = net.read_data(ARCHIVE_FILE)
+    if type(arch) == "string" and string.match(arch, "1") then
+        archive_on = true
+    end
+    local am = net.read_data(AUTOMC_FILE)
+    if type(am) == "string" and string.match(am, "1") then
+        automc_on = true
     end
 end
 
@@ -74,6 +86,26 @@ end
 function M.set_flame(on)
     flame_on = on and true or false
     net.write_data(FLAME_FILE, flame_on and "1" or "0")
+end
+
+-- ----- archive relay toggle (default off, opt-in) -----
+function M.archive_enabled()
+    return archive_on
+end
+
+function M.set_archive(on)
+    archive_on = on and true or false
+    net.write_data(ARCHIVE_FILE, archive_on and "1" or "0")
+end
+
+-- ----- auto-multichat toggle (default off) -----
+function M.auto_multichat_enabled()
+    return automc_on
+end
+
+function M.set_auto_multichat(on)
+    automc_on = on and true or false
+    net.write_data(AUTOMC_FILE, automc_on and "1" or "0")
 end
 
 load()

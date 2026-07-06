@@ -183,9 +183,30 @@ if caps.tier >= 1 then
     ws.start()
 end
 
+-- auto-multichat: when a twitch channel is hooked, look up its heatsync
+-- profile and link the streamer's kick/youtube chat if they're publicly known
+-- (the profile endpoint only reveals cross-platform links for opted-in or
+-- shadow streamers to anonymous callers).
+local function try_auto_multichat(channel)
+    if not store.auto_multichat_enabled() then return end
+    net.get_json(net.ORIGIN .. "/api/profile/" .. net.percent_encode(channel) .. "?platform=twitch", 8000, function(payload)
+        local p = payload and payload.profile
+        if not p then return end
+        if type(p.kick_username) == "string" and p.kick_username ~= "" then
+            if multichat.link(channel, "kick", p.kick_username) then
+                net.log_info("auto-multichat: linked kick:" .. p.kick_username .. " → #" .. channel)
+            end
+        end
+        if type(p.youtube_username) == "string" and p.youtube_username ~= "" then
+            multichat.link(channel, "yt", p.youtube_username)
+        end
+    end)
+end
+
 if caps.tier == 2 then
     render.on_channel_found = function(platform, channel)
         ws.join(platform, channel)
+        if platform == "twitch" then try_auto_multichat(channel) end
     end
     render.on_channel_gone = function(platform, channel)
         ws.leave(platform, channel)

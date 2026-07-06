@@ -13,8 +13,40 @@ local inventory = require("inventory")
 local senders = require("senders")
 local store = require("store")
 local seventv = require("seventv")
+local ws = require("ws")
 
 local FLAME = "🔥"
+
+-- archive relay throttle (server accepts 60/s per socket, drops the rest)
+local relay_sec = 0
+local relay_count = 0
+
+-- relay a native twitch PRIVMSG into heatsync's archive (opt-in, moat). only
+-- native messages (real twitch id) — injected kick/yt messages have no id.
+local function maybe_relay(msg)
+    if not store.archive_enabled() then return end
+    local id = msg.id
+    if type(id) ~= "string" or id == "" then return end -- injected/synthetic
+    local channel = msg.channel_name
+    local login = msg.login_name
+    local text = msg.message_text
+    if type(channel) ~= "string" or channel == "" then return end
+    if type(login) ~= "string" or login == "" then return end
+    if type(text) ~= "string" or text == "" then return end
+    local now = net.now()
+    if now ~= relay_sec then relay_sec = now; relay_count = 0 end
+    if relay_count >= 60 then return end
+    relay_count = relay_count + 1
+    ws.send({
+        type = "twitch:chat:relay",
+        channel = string.lower(channel),
+        username = string.lower(login),
+        message = text,
+        message_id = id,
+        display_name = msg.display_name,
+        timestamp = msg.server_received_time,
+    })
+end
 
 local M = {
     started = false,
@@ -193,6 +225,9 @@ local function do_process(ch, msg, hint)
     if (msg.flags & c2.MessageFlag.System) ~= 0 then return end
     local text = msg.message_text
     if type(text) ~= "string" or text == "" then return end
+
+    -- opt-in archive relay (before render rebuild; independent of it)
+    maybe_relay(msg)
 
     -- twitch login_name is already canonical-lowercase; no string.lower alloc
     local sender_map = senders.resolve(login, msg.user_id)

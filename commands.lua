@@ -8,6 +8,7 @@ local ws = require("ws")
 local render = require("render")
 local store = require("store")
 local multichat = require("multichat")
+local img = require("img")
 
 local M = {}
 
@@ -77,6 +78,144 @@ function M.register(get_login)
         sysmsg(ctx, "search + sender caches cleared")
     end)
 
+    -- visual emote picker: searches your inventory + 7tv/bttv/ffz, shows the
+    -- matches as clickable images — clicking inserts the name into your input.
+    local FIND_CAP = 40
+    c2.register_command("/hsfind", function(ctx)
+        local q = ctx.words[2]
+        if not q or string.len(q) < 2 then
+            sysmsg(ctx, "usage: /hsfind <query> — searches your inventory + 7tv/bttv/ffz; click an emote to insert it")
+            return
+        end
+        local ch = ctx.channel
+        local results = {} -- { name, url, w, h, source }
+        local seen = {}
+        local ql = string.lower(q)
+        -- own inventory (prefix + substring)
+        for name, e in pairs(inventory.map) do
+            if not seen[name] and string.find(string.lower(name), ql, 1, true) then
+                results[#results + 1] = { name = name, url = e.url, w = e.w, h = e.h, source = "hs" }
+                seen[name] = true
+            end
+        end
+        seventv.search_all(q, function(list)
+            for _, e in ipairs(list) do
+                if #results >= FIND_CAP then break end
+                if not seen[e.name] then
+                    local url, h = seventv.resolve_render(e.name)
+                    results[#results + 1] = { name = e.name, url = url, h = h, source = e.provider }
+                    seen[e.name] = true
+                end
+            end
+            local ok = pcall(function()
+                if #results == 0 then
+                    ch:add_system_message("[heatsync] no emotes found for '" .. q .. "'")
+                    return
+                end
+                local elems = { { type = "text", text = "[heatsync] " .. #results ..
+                    " emotes for '" .. q .. "' — click to insert:", color = "system" } }
+                for _, r in ipairs(results) do
+                    local set = caps.images and r.url and img.for_url(r.url, r.w, r.h) or nil
+                    local link = { type = c2.LinkType.InsertText, value = r.name .. " " }
+                    if set then
+                        elems[#elems + 1] = { type = "scaling-image", images = set,
+                            flags = c2.MessageElementFlag.EmoteImage,
+                            tooltip = r.name .. " · " .. r.source, link = link }
+                    else
+                        elems[#elems + 1] = { type = "text", text = r.name,
+                            color = "link", tooltip = r.name .. " · " .. r.source, link = link }
+                    end
+                end
+                ch:add_message(c2.Message.new({ elements = elems }))
+            end)
+            if not ok then sysmsg(ctx, "picker render failed") end
+        end)
+    end)
+
+    -- hottest live streams right now (cross-platform, heat-ranked). click a
+    -- twitch one to open it in chatterino.
+    c2.register_command("/hshot", function(ctx)
+        net.get_json(net.ORIGIN .. "/api/live/top?limit=10", 8000, function(payload, err)
+            if not payload or type(payload.streams) ~= "table" then
+                sysmsg(ctx, "hot streams unavailable: " .. tostring(err))
+                return
+            end
+            sysmsg(ctx, "🔥 hottest live now:")
+            for i, s in ipairs(payload.streams) do
+                if i > 10 then break end
+                local plat = tostring(s.platform or "?")
+                local name = tostring(s.displayName or s.username or s.channel or "?")
+                local viewers = tonumber(s.viewerCount) or 0
+                local cat = s.gameName or s.category or ""
+                local text = string.format("%s · %s · %s viewers%s",
+                    plat, name, tostring(viewers), cat ~= "" and (" · " .. cat) or "")
+                -- twitch → jump to the channel in chatterino; else open on the platform
+                local link
+                if plat == "twitch" and type(s.channel or s.username) == "string" then
+                    link = { type = c2.LinkType.JumpToChannel, value = string.lower(s.channel or s.username) }
+                else
+                    link = { type = c2.LinkType.Url, value = net.ORIGIN .. "/u/" .. net.percent_encode(name) }
+                end
+                pcall(function()
+                    ctx.channel:add_message(c2.Message.new({ elements = {
+                        { type = "text", text = "[heatsync]", color = "system" },
+                        { type = "text", text = text, color = "link", link = link },
+                    } }))
+                end)
+            end
+        end)
+    end)
+
+    -- heatsync profile card for any streamer (works for non-hs streamers too)
+    c2.register_command("/hswhois", function(ctx)
+        local user = ctx.words[2]
+        if not user or user == "" then
+            sysmsg(ctx, "usage: /hswhois <user>")
+            return
+        end
+        net.get_json(net.ORIGIN .. "/api/profile/" .. net.percent_encode(string.lower(user)), 8000, function(payload, err)
+            local p = payload and payload.profile
+            if not p then
+                sysmsg(ctx, "no profile for '" .. user .. "'" .. (err and (" (" .. tostring(err) .. ")") or ""))
+                return
+            end
+            local name = tostring(p.display_name or p.username or user)
+            local st = p.stats or {}
+            local bits = {}
+            if tonumber(st.user_heat) then bits[#bits + 1] = "heat " .. tostring(math.floor(tonumber(st.user_heat))) end
+            if tonumber(st.total_posts) then bits[#bits + 1] = tostring(st.total_posts) .. " posts" end
+            if tonumber(st.followers) then bits[#bits + 1] = tostring(st.followers) .. " hs-followers" end
+            if p.twitch_is_live or p.kick_is_live then bits[#bits + 1] = "LIVE" end
+            if tonumber(p.twitch_followers) then bits[#bits + 1] = tostring(p.twitch_followers) .. " twitch-followers" end
+            local line = name .. (p.is_shadow_profile and " (not on heatsync)" or "") ..
+                (#bits > 0 and (" · " .. table.concat(bits, " · ")) or "")
+            pcall(function()
+                ctx.channel:add_message(c2.Message.new({ elements = {
+                    { type = "text", text = "[heatsync]", color = "system" },
+                    { type = "text", text = line, color = "link",
+                      link = { type = c2.LinkType.Url, value = net.ORIGIN .. "/u/" .. net.percent_encode(name) } },
+                } }))
+            end)
+        end)
+    end)
+
+    -- archive relay: mirror the public twitch chat you see into heatsync's
+    -- searchable archive (the corpus moat). OFF by default + opt-in — it sends
+    -- public PRIVMSGs you already see to heatsync (first-party, no whispers).
+    c2.register_command("/hsarchive", function(ctx)
+        local arg = ctx.words[2]
+        if arg == "on" then
+            store.set_archive(true)
+            sysmsg(ctx, "archive relay ON — public twitch chat you view now feeds heatsync's searchable archive (first-party, PRIVMSG only, dedup'd)")
+        elseif arg == "off" then
+            store.set_archive(false)
+            sysmsg(ctx, "archive relay OFF")
+        else
+            sysmsg(ctx, "archive relay is " .. (store.archive_enabled() and "on" or "off") ..
+                " · /hsarchive on|off · relays only public twitch chat you're already viewing")
+        end
+    end)
+
     -- local emote block: hides an emote from rendering + tab-complete. LOCAL
     -- ONLY — the plugin is anonymous so it can't sync a block to your heatsync
     -- account; use the website/extension for an account-wide block.
@@ -136,6 +275,19 @@ function M.register(get_login)
         if arg == "off" then
             local n = multichat.unlink(cc_name)
             sysmsg(ctx, n > 0 and ("unlinked " .. n .. " source(s) from #" .. cc_name) or "nothing linked here")
+            return
+        end
+        if arg == "auto" then
+            local sub = ctx.words[3]
+            if sub == "on" then
+                store.set_auto_multichat(true)
+                sysmsg(ctx, "auto-multichat ON — opening a twitch stream auto-merges its kick/youtube chat (when publicly linked)")
+            elseif sub == "off" then
+                store.set_auto_multichat(false)
+                sysmsg(ctx, "auto-multichat OFF")
+            else
+                sysmsg(ctx, "auto-multichat is " .. (store.auto_multichat_enabled() and "on" or "off") .. " · /hsmulti auto on|off")
+            end
             return
         end
         local platform, channel = string.match(arg, "^(%a+):(.+)$")

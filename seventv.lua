@@ -45,18 +45,24 @@ function M.is_sane_query(q)
     return string.match(q, "^[a-z0-9_%-:%.]+$") ~= nil
 end
 
--- ----- render cache: name → 7tv emote url (for render.lua) -----
--- exact-case names (emotes are case-sensitive); 2x variant (64px tall) for a
--- crisp downscale to chat height. capped LRU-ish (fifo).
+-- ----- render cache: name → {url,h} (for render.lua + /hsfind picker) -----
+-- exact-case names (emotes are case-sensitive). per-provider: bump 1x → a
+-- higher-res variant for a crisp downscale to chat height, with that
+-- variant's pixel height (7tv/bttv/ffz normalize to a known-ish 1x height).
+local PROVIDER = {
+    ["7tv"] = { hi = function(u) return (u:gsub("/1x%.webp$", "/2x.webp")) end, h = 64 },
+    bttv    = { hi = function(u) return (u:gsub("/1x%.(%a+)$", "/2x.%1")) end, h = 56 },
+    ffz     = { hi = function(u) return (u:gsub("/1$", "/2")) end, h = 56 },
+}
+
 local render_cache = {}
 local render_order = {}
-local RENDER_MAX = 400
+local RENDER_MAX = 600
 
-local function cache_render(name, url1x)
+local function cache_render(name, url1x, provider)
     if render_cache[name] then return end
-    -- 7tv urls are .../<id>/1x.webp — bump to 2x for crispness
-    local url2x = url1x:gsub("/1x%.webp$", "/2x.webp")
-    render_cache[name] = url2x
+    local p = PROVIDER[provider or "7tv"] or PROVIDER["7tv"]
+    render_cache[name] = { url = p.hi(url1x), h = p.h }
     render_order[#render_order + 1] = name
     while #render_order > RENDER_MAX do
         local old = table.remove(render_order, 1)
@@ -64,42 +70,60 @@ local function cache_render(name, url1x)
     end
 end
 
--- returns url, height for a searched 7tv emote name, or nil
+-- returns url, height for a searched emote name (any provider), or nil
 function M.resolve_render(word)
-    local url = render_cache[word]
-    if url then return url, 64 end
+    local hit = render_cache[word]
+    if hit then return hit.url, hit.h end
     return nil
+end
+
+-- one search, all providers. /api/emote-search with no `p` returns
+-- {results:{7tv:[],bttv:[],ffz:[]}}. seeds the render cache and returns a
+-- merged list {name, provider, url, animated} ordered 7tv→bttv→ffz (7tv is
+-- the biggest catalog so it leads). cb receives the list.
+local PROVIDER_ORDER = { "7tv", "bttv", "ffz" }
+function M.search_all(q, cb)
+    if type(q) ~= "string" or string.len(q) < M.MIN_CHARS or not M.is_sane_query(q) then
+        cb({}); return
+    end
+    local url = net.ORIGIN .. "/api/emote-search?q=" .. net.percent_encode(q)
+    net.get_json(url, 8000, function(payload, err)
+        if not payload or type(payload.results) ~= "table" then
+            net.log_warn("emote search failed for '" .. q .. "': " .. tostring(err))
+            cb({}); return
+        end
+        local out = {}
+        local seen = {}
+        for _, provider in ipairs(PROVIDER_ORDER) do
+            local items = payload.results[provider]
+            if type(items) == "table" then
+                for _, e in ipairs(items) do
+                    local name = net.pick_first_str(e, "name", "code")
+                    local eurl = net.pick_first_str(e, "url", "src")
+                    if name and eurl and not seen[name] then
+                        seen[name] = true
+                        cache_render(name, eurl, provider)
+                        out[#out + 1] = { name = name, provider = provider, url = eurl, animated = e.animated == true }
+                    end
+                end
+            end
+        end
+        cb(out)
+    end)
 end
 
 local function kick_off(q)
     if inflight[q] then return end
     if get_fresh(q) then return end
     inflight[q] = true
-    local url = net.ORIGIN .. "/api/emote-search?q=" .. net.percent_encode(q) .. "&p=7tv"
-    net.get_json(url, 8000, function(payload, err)
+    M.search_all(q, function(results)
         inflight[q] = nil
-        if not payload then
+        if #results == 0 then
             put(q, {}, true)
-            net.log_warn("7tv search failed for '" .. q .. "': " .. tostring(err))
             return
         end
-        local items = payload.results and payload.results["7tv"]
         local names = {}
-        local seen = {}
-        if type(items) == "table" then
-            for _, e in ipairs(items) do
-                local name = net.pick_first_str(e, "name", "code")
-                if name and not seen[name] then
-                    table.insert(names, name)
-                    seen[name] = true
-                    -- cache name→url so render.lua can draw niche 7tv emotes
-                    -- chatterino didn't load. first (most popular) result per
-                    -- name wins, matching the completion order.
-                    local eurl = net.pick_first_str(e, "url", "src")
-                    if eurl then cache_render(name, eurl) end
-                end
-            end
-        end
+        for _, e in ipairs(results) do names[#names + 1] = e.name end
         put(q, names)
     end)
 end

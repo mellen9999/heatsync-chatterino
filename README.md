@@ -19,6 +19,9 @@ no fork, no patched binary. one lua plugin, feature-detected per build:
 - **`>>a1b2c3` threadlinks** — clickable, opens the heatsync.org thread
 - twitch emotes, badges, timestamps, replies pass through untouched — messages with no heatsync content are never rebuilt (two hash lookups per word, zero allocation on miss)
 
+- **7TV / BTTV / FFZ you searched** — a niche emote from `/hsfind` or tab-complete that chatterino didn't load renders inline (chatterino-active ones are already emote elements, so no double-render — the plugin only fills the gaps)
+- **kick + youtube emotes** in merged multichat — kick's `[emote:id:name]` tokens and youtube's shortcode emotes render as images
+
 known limits: zero-width overlay emotes render as normal images; username paints don't render (no plugin api for it — not faked with colored text).
 
 ## multichat — kick + youtube in your twitch tab
@@ -39,17 +42,17 @@ heatsync users get a 🔥 before their name in any chat (yours too), so they're 
 
 | command | what |
 |---|---|
-| `<tab>` | own inventory first (usage-weighted), then 7TV global (popularity-ranked) |
-| `/hsmulti kick:<slug>` \| `yt:<handle>` \| `off` | merge kick/youtube chat into this tab |
+| `<tab>` | own inventory first (usage-weighted), then 7TV/BTTV/FFZ (one search, popularity-ranked) |
+| `/hsfind <query>` | **visual emote picker** — inventory + 7tv/bttv/ffz shown as images; click one to insert it |
+| `/hsmulti kick:<slug>` \| `yt:<handle>` \| `off` \| `auto on\|off` | merge kick/youtube chat into this tab; `auto` links a stream's platforms automatically |
+| `/hshot` | hottest live streams right now (cross-platform, heat-ranked); click a twitch one to open it |
+| `/hswhois <user>` | heatsync profile card for any streamer (heat, followers, live, posts) |
+| `/hsarchive on\|off` | opt-in: relay the public twitch chat you view into heatsync's archive (the corpus) |
 | `/hsblock <name>` \| `/hsunblock` \| `/hsblocklist` | locally hide an emote (render + tab-complete) |
 | `/hsflame on\|off` | toggle the 🔥 heatsync-user marker |
 | `/hsmoments [hours]` | top live chat moments, clickable permalinks |
 | `/hslogs <user> [channel]` | link into the heatsync chat archive |
-| `/hsrefresh` | manual inventory re-fetch |
-| `/hsemotes` | inventory + cache counts |
-| `/hsstatus` | tier, capability flags, websocket state, render stats |
-| `/hsclear` | clear 7tv search + sender caches |
-| `/hsdump` | dump last message's elements to the log (dev aid) |
+| `/hsrefresh` · `/hsemotes` · `/hsstatus` · `/hsclear` · `/hsdump` | inventory refetch · counts · status · clear caches · element dump |
 
 leading `:` is optional — `:pog` and `pog` both match.
 
