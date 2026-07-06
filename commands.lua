@@ -7,6 +7,7 @@ local senders = require("senders")
 local ws = require("ws")
 local render = require("render")
 local store = require("store")
+local multichat = require("multichat")
 
 local M = {}
 
@@ -112,6 +113,56 @@ function M.register(get_login)
             return
         end
         sysmsg(ctx, #names .. " blocked: " .. table.concat(names, " "))
+    end)
+
+    -- multichat: pull kick/youtube live chat into THIS chatterino tab
+    c2.register_command("/hsmulti", function(ctx)
+        local cc_name
+        pcall(function() cc_name = ctx.channel:get_name() end)
+        if type(cc_name) ~= "string" or cc_name == "" then
+            sysmsg(ctx, "run /hsmulti inside a twitch channel tab")
+            return
+        end
+        local arg = ctx.words[2]
+        if not arg or arg == "" then
+            local sources = multichat.list(cc_name)
+            if #sources == 0 then
+                sysmsg(ctx, "no kick/youtube chat linked here · usage: /hsmulti kick:<slug> | yt:<handle> | off")
+            else
+                sysmsg(ctx, "linked into #" .. cc_name .. ": " .. table.concat(sources, " "))
+            end
+            return
+        end
+        if arg == "off" then
+            local n = multichat.unlink(cc_name)
+            sysmsg(ctx, n > 0 and ("unlinked " .. n .. " source(s) from #" .. cc_name) or "nothing linked here")
+            return
+        end
+        local platform, channel = string.match(arg, "^(%a+):(.+)$")
+        if platform == "kick" then
+            if not string.match(channel, "^[a-z0-9_-]+$") then
+                sysmsg(ctx, "invalid kick slug")
+                return
+            end
+            if multichat.link(cc_name, "kick", channel) then
+                sysmsg(ctx, "🔥 kick chat from '" .. channel .. "' now merging into #" .. cc_name .. " [K]")
+            else
+                sysmsg(ctx, "kick:" .. channel .. " already linked here")
+            end
+        elseif platform == "yt" or platform == "youtube" then
+            if #channel > 200 or string.match(channel, "%s") then
+                sysmsg(ctx, "invalid youtube handle/url")
+                return
+            end
+            if multichat.link(cc_name, "yt", channel) then
+                sysmsg(ctx, "🔥 youtube chat '" .. channel .. "' linking into #" .. cc_name ..
+                    " [Y] — needs the channel to be live now")
+            else
+                sysmsg(ctx, "yt:" .. channel .. " already linked here")
+            end
+        else
+            sysmsg(ctx, "usage: /hsmulti kick:<slug> | yt:<handle-or-url> | off")
+        end
     end)
 
     -- flame marker toggle (the 🔥 tag on heatsync users' messages)

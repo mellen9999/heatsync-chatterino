@@ -14,7 +14,8 @@ local M = {
     connected = false,
     attempts = 0,
     last_rx = 0,
-    on_event = nil, -- fn(data) for parsed server messages
+    on_event = nil,     -- fn(data) for parsed server messages
+    on_reconnect = nil, -- fn() after desired-state replay (multichat re-subs)
 }
 
 local enabled = false
@@ -43,6 +44,13 @@ local function replay_state()
     if watch_login then
         send({ type = "emote:watch", login = watch_login })
     end
+    -- multichat re-subscribes its YouTube pollers (kick rides channel:join above)
+    if M.on_reconnect then pcall(M.on_reconnect) end
+end
+
+-- public raw send for multichat (youtube:subscribe etc). returns bool sent.
+function M.send(tbl)
+    return send(tbl)
 end
 
 local function schedule_reconnect()

@@ -18,6 +18,7 @@ local ws = require("ws")
 local render = require("render")
 local commands = require("commands")
 local store = require("store")
+local multichat = require("multichat")
 
 local COMPLETION_CAP = 25
 
@@ -140,6 +141,8 @@ c2.register_callback(
 
 -- ----- websocket event dispatch -----
 local function on_ws_event(msg)
+    -- multichat (kick/yt live chat injection) claims its own message types
+    if multichat.dispatch(msg) then return end
     local t = msg.type
     if t == "emote:added" or t == "emote:removed" or t == "emotes:refresh" then
         -- own-inventory delta (emote:watch room): one debounced re-fetch
@@ -173,6 +176,10 @@ senders.own_map_fn = function() return inventory.map end
 
 if caps.tier >= 1 then
     ws.on_event = on_ws_event
+    -- multichat needs only stable APIs (add_message + by_name), so it rides
+    -- tier>=1 alongside ws. re-subscribe its sources whenever the ws (re)connects.
+    multichat.load()
+    ws.on_reconnect = multichat.on_ws_up
     ws.start()
 end
 
