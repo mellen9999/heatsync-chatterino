@@ -64,7 +64,7 @@ heatsync users get a 🔥 before their name in any chat, so they're identifiable
 | `/hsbadges on\|off` | show chatterino global badges on chatters (opt-in) |
 | `/hsmoments [hours]` | top live chat moments, clickable permalinks |
 | `/hslogs <user> [channel]` | chatter stats (messages, channels, active days) + archive link |
-| `/hsrefresh` · `/hsstatus` · `/hsclear` · `/hsdump` | inventory refetch · status · clear caches · element dump |
+| `/hsrefresh` · `/hsstatus` · `/hsclear` · `/hsdump` · `/hstest` | inventory refetch · capability/status report · clear caches · dump last message's elements to the log · post a render self-test |
 
 a leading `:` is optional — `:pog` and `pog` both match.
 
