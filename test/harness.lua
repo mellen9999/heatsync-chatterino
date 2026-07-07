@@ -519,37 +519,26 @@ check(not sawblocked, "block: peepoHS filtered from tab-complete")
 commands["/hsunblock"]({ words = { "/hsunblock", "peepoHS" }, channel = chan })
 check(not store.is_blocked("peepoHS"), "block: /hsunblock clears it")
 
--- ===== searched 7tv emote rendering (v1.3) =====
--- a 7tv search caches name→url; that emote then renders in any message even
--- from a non-HS sender chatterino didn't load it for.
-completion_cb({ query = "nichEmote" }) -- kicks off a 7tv search
+-- ===== global-catalog words do NOT inline-render ('lost' false-positive fix) =====
+-- a search caches name→url for the /hsfind picker, but a word that merely
+-- matches that cache must NOT render inline in a message — common english words
+-- are also emote names (e.g. 'lost' is a 7tv cat), and rendering them turned
+-- plain sentences into random emotes. only the SENDER's heatsync inventory
+-- renders inline (extension parity); native chatterino handles real 7tv/bttv/ffz.
+completion_cb({ query = "nichEmote" }) -- populates the search/render cache
 http_answer("/api/emote-search?q=nichemote", { results = { ["7tv"] = {
     { name = "nichEmote", url = "https://cdn.7tv.app/emote/01ABC/1x.webp", animated = false },
+    { name = "lost", url = "https://cdn.7tv.app/emote/01LOST/1x.webp", animated = true },
 } } })
 local seventv = require("seventv")
-check(select(1, seventv.resolve_render("nichEmote")) ~= nil, "7tv-render: searched emote cached with url")
-local sm = fake_msg("rando", "9999", "look nichEmote here")
+check(select(1, seventv.resolve_render("nichEmote")) ~= nil, "search: emote still cached for the /hsfind picker")
+-- a non-HS sender posts words that are ONLY in the global search cache → the
+-- message must NOT be rebuilt (no false-positive inline render).
+local sm = fake_msg("rando", "9999", "i totally lost the game nichEmote")
 chan.msgs[#chan.msgs + 1] = sm
 rc = #chan.replaced
 chan.appended_cb(sm, nil)
-check(#chan.replaced == rc + 1, "7tv-render: message with searched 7tv emote rebuilt")
-do
-    local imgs = 0
-    for _, e in ipairs(chan.replaced[#chan.replaced].new.init.elements) do
-        if type(e) == "table" and e.type == "scaling-image" then imgs = imgs + 1 end
-    end
-    check(imgs >= 1, "7tv-render: searched 7tv emote rendered as image")
-end
-do
-    local link_ok = false
-    for _, e in ipairs(chan.replaced[#chan.replaced].new.init.elements) do
-        if type(e) == "table" and e.type == "scaling-image" and type(e.link) == "table"
-            and e.link.type == c2.LinkType.InsertText and e.link.value == "nichEmote " then
-            link_ok = true
-        end
-    end
-    check(link_ok, "click-to-insert: rendered emote carries an InsertText link with its name")
-end
+check(#chan.replaced == rc, "no-false-positive: global-cache-only words don't trigger an inline render")
 
 -- personal-emote dims: heatsync's stored width can disagree with the served 1x
 -- image (real case: wollip = 96x32 record, 32x32 image). the render must NOT
@@ -561,16 +550,19 @@ do
     local wm = fake_msg("wideuser", "8008", "look wideMote here")
     chan.msgs[#chan.msgs + 1] = wm
     chan.appended_cb(wm, nil)
-    local rendered, no_stretch = false, false
+    local rendered, no_stretch, click_ok = false, false, false
     for _, e in ipairs(chan.replaced[#chan.replaced].new.init.elements) do
         if type(e) == "table" and e.type == "scaling-image" and type(e.images) == "table"
             and type(e.images.i1) == "table" then
             rendered = true
             no_stretch = (e.images.i1.expected == nil)
+            click_ok = type(e.link) == "table" and e.link.type == c2.LinkType.InsertText
+                and e.link.value == "wideMote "
         end
     end
     check(rendered and no_stretch,
         "personal-emote dims: mismatched-width emote renders by height, no stretched expected-width")
+    check(click_ok, "click-to-insert: a rendered sender emote carries an InsertText link with its name")
 end
 
 -- ===== multichat (v1.1) — kick/youtube injection =====

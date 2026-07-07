@@ -12,10 +12,11 @@ local caps = require("caps")
 local inventory = require("inventory")
 local senders = require("senders")
 local store = require("store")
-local seventv = require("seventv")
 local ws = require("ws")
 local badges = require("badges")
 local recents = require("recents")
+-- NOTE: render no longer requires `seventv` — it renders only the sender's
+-- heatsync inventory; native chatterino handles 7tv/bttv/ffz. see has_hits.
 
 local FLAME = "🔥"
 
@@ -77,13 +78,13 @@ local function renderable(emote)
     return emote ~= nil and type(emote.h) == "number" and emote.h > 0
 end
 
--- prescan: any word this sender's inventory renders, a searched 7tv emote
--- chatterino didn't load, or a threadlink? (all skip blocked names)
+-- prescan: any word this sender's heatsync inventory renders, or a threadlink?
+-- (skips blocked names). NB: we deliberately do NOT match the global 7tv/bttv/
+-- ffz search cache here — see rebuild_text_element for why.
 local function has_hits(text, sender_map)
     for word in string.gmatch(text, "%S+") do
-        if not store.is_blocked(word) then
-            if sender_map and renderable(sender_map[word]) then return true end
-            if seventv.resolve_render(word) then return true end
+        if not store.is_blocked(word) and sender_map and renderable(sender_map[word]) then
+            return true
         end
         if thread_id(word) then return true end
     end
@@ -120,30 +121,24 @@ local function rebuild_text_element(elems, el, sender_map)
     for _, word in ipairs(el.words) do
         local blocked = store.is_blocked(word)
         local emote = sender_map and sender_map[word]
-        -- store.is_blocked → treat a blocked emote as plain text (local block).
-        -- w=nil: scale the ACTUAL loaded image by height, never the stored
-        -- width — heatsync's stored dims can disagree with the served 1x image
-        -- (e.g. a 96x32 record for a 32x32 emote), and a mismatched expected
-        -- width renders it stretched. same rule as kick/yt/searched-7tv. height
-        -- drives the scale; renderable() already guarantees emote.h > 0.
+        -- render a word ONLY if the SENDER's heatsync inventory has it (extension
+        -- parity). we deliberately do NOT render words that merely match the
+        -- global 7tv/bttv/ffz search cache: common english words are also emote
+        -- names (e.g. "lost" is a 7tv cat), so that turned plain sentences into
+        -- random emotes. native chatterino already renders the real 7tv/bttv/ffz
+        -- emotes a sender actually uses — the plugin's job is the heatsync layer.
+        -- w=nil scales the ACTUAL image by height (stored width can be wrong,
+        -- e.g. a 96x32 record for a 32x32 image → stretched); renderable()
+        -- guarantees emote.h > 0.
         local set = renderable(emote) and not blocked
             and imageset_for(emote.url, nil, emote.h) or nil
-        local tooltip, is_7tv = word .. " · heatsync", false
-        if not set and not blocked then
-            -- niche 7tv emote the user searched that chatterino didn't load
-            local url7, h7 = seventv.resolve_render(word)
-            if url7 then
-                set = imageset_for(url7, nil, h7)
-                tooltip, is_7tv = word .. " · 7tv", true
-            end
-        end
         if set then
             flush_run(elems, run, src)
             table.insert(elems, {
                 type = "scaling-image",
                 images = set,
                 flags = c2.MessageElementFlag.EmoteImage,
-                tooltip = tooltip,
+                tooltip = word .. " · heatsync",
                 -- left-click any emote WE render → paste it into your input (like
                 -- the /hsfind picker + how 7tv/bttv work in-browser). only emotes
                 -- the plugin draws get this; chatterino owns clicks on emotes it
