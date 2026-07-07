@@ -28,7 +28,11 @@ local inflight = false
 
 local CACHE_MAX = 500
 local POSITIVE_TTL_S = 15 * 60
-local NEGATIVE_TTL_S = 10 * 60
+-- negative TTL is deliberately SHORT: a false entry is the window where a
+-- sender's brand-new heatsync emote renders as plain text for this client if
+-- the live emote:broadcast was missed (ws hiccup, busy channel). 90s bounds
+-- that blind spot; positive entries stay long — they self-heal via broadcast.
+local NEGATIVE_TTL_S = 90
 local BATCH_MAX = 15      -- matches the extension's batch sizing (cf-safe)
 
 -- evict the least-recently-used entry (oldest ts) when over cap. O(n) scan,
