@@ -186,17 +186,42 @@ local function is_dup(id)
 end
 
 -- ----- linking -----
-function M.link(cc_name, platform, channel)
+-- auto=true marks an ephemeral auto-multichat link (re-derived when the twitch
+-- tab opens, reaped when it closes); it is never written to disk. a manual
+-- /hsmulti link (auto nil) is persistent.
+function M.link(cc_name, platform, channel, auto)
     if type(cc_name) ~= "string" or cc_name == "" then return false end
     if type(channel) ~= "string" or channel == "" then return false end
     local key = source_key(platform, channel)
     links[cc_name] = links[cc_name] or {}
-    if links[cc_name][key] then return false end
-    links[cc_name][key] = { platform = platform, channel = string.lower(channel) }
+    local existing = links[cc_name][key]
+    if existing then
+        -- manual intent promotes an existing ephemeral link to persistent
+        if existing.auto and not auto then existing.auto = nil; persist() end
+        return false
+    end
+    links[cc_name][key] = { platform = platform, channel = string.lower(channel), auto = auto or nil }
     add_route(key, cc_name)
-    persist()
+    if not auto then persist() end
     subscribe(platform, string.lower(channel))
     return true
+end
+
+-- reap the ephemeral auto-multichat links for a twitch tab that just closed.
+-- manual (/hsmulti) links are persistent and left intact — this only prevents
+-- auto links + their ws subscriptions growing unbounded across a long session
+-- of opening and closing channels.
+function M.unlink_auto(cc_name)
+    local srcs = links[cc_name]
+    if not srcs then return end
+    for key, s in pairs(srcs) do
+        if s.auto then
+            srcs[key] = nil
+            drop_route(key, cc_name)
+            if not routes[key] then unsubscribe(s.platform, s.channel) end
+        end
+    end
+    if next(srcs) == nil then links[cc_name] = nil end
 end
 
 -- unlink one source, or ALL sources for a tab if platform is nil

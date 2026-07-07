@@ -49,15 +49,17 @@ local function adopt_login(login)
 end
 
 -- ----- t0 fallback: completion-piggybacked refresh -----
--- pre-2.5.5 builds have no timer, so account-switch detection, the periodic
--- re-fetch, and the boot retry ride CompletionRequested (the only callback
--- that recurs during normal use). /hsrefresh is the manual escape hatch.
-local LOGIN_CHECK_INTERVAL_S = 60
+-- pre-2.5.5 builds have neither timers nor a clock: without c2.later, net.now()
+-- is frozen at 0 (see net.lua), so every elapsed-seconds throttle is dead. the
+-- t0 path therefore COUNTS completion callbacks (the only thing that recurs
+-- during normal use) and reconciles on a count cadence instead of wall-clock.
+-- when the user never types nothing refreshes — no clock exists to drive it and
+-- a busy-loop is not acceptable; /hsrefresh is the manual escape hatch.
 local FULL_REFRESH_INTERVAL_S = 15 * 60
 local BOOT_RETRY_BACKOFF_S = 10
-local last_login_check_ts = 0
 local last_full_refresh_ts = 0
 
+-- t1/t2 elapsed-seconds reconcile, armed by net.every (net.now() advances).
 local function login_and_refresh_tick()
     -- one-shot boot retry after a transport failure before first load
     if inventory.boot_failed_at and not inventory.boot_retry_used
@@ -84,15 +86,35 @@ local function login_and_refresh_tick()
     end
 end
 
+-- t0 count-based reconcile: rides the completion callback since no clock ticks.
+local COMPLETIONS_PER_CHECK = 20     -- account-switch cadence
+local COMPLETIONS_PER_REFRESH = 400  -- periodic re-fetch (t0 has no ws deltas)
+local piggyback_ticks = 0
+
 local function piggyback_tick()
-    local now = net.now()
-    if (now - last_login_check_ts) < LOGIN_CHECK_INTERVAL_S then
-        -- boot retry stays cheap + unthrottled
-        if inventory.boot_failed_at then login_and_refresh_tick() end
+    piggyback_ticks = piggyback_ticks + 1
+    -- recover a failed first load quickly, without waiting a full check cycle
+    if inventory.boot_failed_at and not inventory.boot_retry_used
+        and (piggyback_ticks % 3) == 0 then
+        inventory.boot_retry_used = true
+        inventory.boot_failed_at = nil
+        if last_login then
+            net.log_info("retrying boot inventory fetch after backoff")
+            inventory.refresh(last_login)
+        end
+    end
+    if (piggyback_ticks % COMPLETIONS_PER_CHECK) ~= 0 then return end
+    local login = current_login_safe()
+    if not login then return end
+    if login ~= last_login then
+        net.log_info("account switched to " .. login .. "; refreshing inventory")
+        adopt_login(login)
         return
     end
-    last_login_check_ts = now
-    login_and_refresh_tick()
+    if piggyback_ticks >= COMPLETIONS_PER_REFRESH then
+        piggyback_ticks = 0
+        inventory.refresh(login)
+    end
 end
 
 -- ----- completion hook -----
@@ -201,12 +223,12 @@ local function try_auto_multichat(channel)
         local p = payload and payload.profile
         if not p then return end
         if type(p.kick_username) == "string" and p.kick_username ~= "" then
-            if multichat.link(channel, "kick", p.kick_username) then
+            if multichat.link(channel, "kick", p.kick_username, true) then
                 net.log_info("auto-multichat: linked kick:" .. p.kick_username .. " → #" .. channel)
             end
         end
         if type(p.youtube_username) == "string" and p.youtube_username ~= "" then
-            multichat.link(channel, "yt", p.youtube_username)
+            multichat.link(channel, "yt", p.youtube_username, true)
         end
     end)
 end
@@ -218,6 +240,8 @@ if caps.tier == 2 then
     end
     render.on_channel_gone = function(platform, channel)
         ws.leave(platform, channel)
+        -- twitch tab closed → drop its ephemeral auto-multichat subscriptions
+        if platform == "twitch" then multichat.unlink_auto(channel) end
     end
     badges.load() -- fetch the chatterino badge list (rendered only if /hsbadges on)
     render.boot_fn = function()

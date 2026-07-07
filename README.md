@@ -96,8 +96,14 @@ for the full experience (rendering, the emote menu, multichat), use a build whos
 
 | permission | why |
 |---|---|
-| `Network` | public, read-only heatsync.org endpoints (`/api/profile`, `/api/users/<id>/emotes`, `/api/users/emotes/batch`, `/api/emote-search`, `/api/moments`, `/api/live/top`) plus one anonymous websocket for live sync and multichat. no auth tokens ever leave chatterino, no writes, nothing sent about you beyond the twitch login of the selected account. |
+| `Network` | public heatsync.org endpoints (`/api/profile`, `/api/users/<id>/emotes`, `/api/users/emotes/batch`, `/api/emote-search`, `/api/moments`, `/api/live/top`) plus one anonymous websocket for live sync and multichat. |
 | `FilesystemRead` / `FilesystemWrite` | remembers your settings, block list, multichat links, and recently-used emotes in the plugin's own data folder. local only. |
+
+**what leaves chatterino:**
+
+- your twitch login (of the selected account) — so the server can sync your emote inventory.
+- while `/hsarchive` is **on** (the default, render-capable builds only): the public twitch chat you're viewing — message text, sender login, channel, message id, timestamp — relayed into heatsync's public, searchable archive. `/hsarchive off` stops it. only chat you can already see is ever sent.
+- nothing else. no auth tokens (the socket is anonymous), no whispers/DMs, no browsing history, no telemetry.
 
 ## architecture
 
