@@ -318,6 +318,11 @@ local function process(ch, msg, hint)
                 net.log_warn("render errors continue; suppressing further logs")
             end
         end
+    elseif fail_count > 0 then
+        -- a clean process (a miss counts) means the failures were transient, not
+        -- systemic drift — re-arm logging so a genuinely NEW fault still surfaces
+        -- instead of being permanently muted by a long-past blip.
+        fail_count = 0
     end
 end
 
