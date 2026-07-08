@@ -951,6 +951,31 @@ commands["/hssearch"]({ words = { "/hssearch", "voidquery" }, channel = chan })
 http_answer("/api/search?q=voidquery", { results = {} })
 check(added_text_has("no heatsync posts", #chan.added - sb), "hssearch: empty result is an honest line")
 
+-- /hschat: search the chat archive → deep-permalinked lines, narrow via @user
+sb = #chan.added
+commands["/hschat"]({ words = { "/hschat", "kappa", "@someviewer" }, channel = chan })
+http_answer("/api/archive/search", { results = {
+    { message_id = "uuid-1", platform = "twitch", channel = "forsen", username = "someviewer",
+      display_name = "SomeViewer", message = "kappa kappa kappa", timestamp = "2026-07-02T04:42:00.775Z" },
+} })
+check(#chan.added >= sb + 2, "hschat: header + result line added")
+check(added_link_has("/logs/twitch/forsen/2026-07-02?m=uuid-1", 3), "hschat: deep permalink with ?m= message anchor")
+-- bare query defaults to the current tab (fast, relevant) not a global scan
+sb = #chan.added
+commands["/hschat"]({ words = { "/hschat", "voidterm" }, channel = chan })
+local hschat_url = http_answer("/api/archive/search", { results = {} })
+check(hschat_url ~= nil and hschat_url:find("channel=somechannel", 1, true) ~= nil,
+    "hschat: bare query scopes to the current channel")
+check(added_text_has("no archived lines", #chan.added - sb), "hschat: empty result is an honest line")
+-- short query → usage, no request
+commands["/hschat"]({ words = { "/hschat", "a" }, channel = chan })
+check(added_text_has("usage:", 1), "hschat: sub-2-char query shows usage")
+-- 503 / failure path advises narrowing
+sb = #chan.added
+commands["/hschat"]({ words = { "/hschat", "broadterm", "#bigchan" }, channel = chan })
+http_fail("/api/archive/search")
+check(added_text_has("narrow it", #chan.added - sb), "hschat: timeout/failure suggests narrowing")
+
 -- /hsinv: browse anyone's inventory → click-to-insert grid
 sb = #chan.added
 commands["/hsinv"]({ words = { "/hsinv", "grace" }, channel = chan })

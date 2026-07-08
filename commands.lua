@@ -544,6 +544,80 @@ function M.register(get_login)
         end
     end)
 
+    -- search the twitch-chat archive (the relay corpus) from chat — the other
+    -- half of the flywheel: the relay writes chat in, /hschat reads it back.
+    -- filters: @user #channel, everything else is the query text. the server's
+    -- /api/archive/search is instant when narrowed to a user or a rare term; a
+    -- broad common word across the ~40M-row corpus can hit the 10s ceiling and
+    -- 503 — so a bare query defaults to the current channel, and the failure
+    -- path tells you to narrow. results deep-link to the exact archived line.
+    c2.register_command("/hschat", function(ctx)
+        local qparts, user, chan = {}, nil, nil
+        for i = 2, #ctx.words do
+            local w = ctx.words[i]
+            if type(w) == "string" and w ~= "" then
+                local at = string.match(w, "^@(.+)$")
+                local hash = string.match(w, "^#(.+)$")
+                if at then user = string.lower(at)
+                elseif hash then chan = string.lower(hash)
+                else qparts[#qparts + 1] = w end
+            end
+        end
+        local q = table.concat(qparts, " ")
+        if string.len(q) < 2 then
+            sysmsg(ctx, "usage: /hschat <query> [@user] [#channel] — search the chat archive; narrow with @user or #channel (broad terms may time out)")
+            return
+        end
+        if user and not is_valid_name(user) then sysmsg(ctx, "invalid @user"); return end
+        if chan and not is_valid_name(chan) then sysmsg(ctx, "invalid #channel"); return end
+        -- unnarrowed bare query → scope to the current tab so it stays fast +
+        -- relevant instead of scanning the whole corpus (a broad common term
+        -- across every channel is exactly what times out server-side).
+        if not chan and not user then
+            pcall(function()
+                local n = ctx.channel:get_name()
+                if is_valid_name(n) then chan = string.lower(n) end
+            end)
+        end
+        local url = net.ORIGIN .. "/api/archive/search?limit=8&q=" .. net.percent_encode(q)
+        if user then url = url .. "&username=" .. net.percent_encode(user) end
+        if chan then url = url .. "&channel=" .. net.percent_encode(chan) end
+        net.get_json(url, 12000, function(payload, err)
+            -- a 10s statement-timeout 503 also lands here (get_json only sees
+            -- success/failure); the narrow-it advice is the right answer for both.
+            if not payload or type(payload.results) ~= "table" then
+                sysmsg(ctx, "archive search failed or timed out — narrow it with @user or #channel (" .. tostring(err) .. ")")
+                return
+            end
+            local rows = payload.results
+            local scope = (user and (" @" .. user) or "") .. (chan and (" #" .. chan) or "")
+            if #rows == 0 then
+                sysmsg(ctx, "no archived lines for '" .. q .. "'" .. scope)
+                return
+            end
+            sysmsg(ctx, #rows .. " archived line(s) for '" .. q .. "'" .. scope .. ":")
+            for _, r in ipairs(rows) do
+                if type(r) == "table" and type(r.message_id) == "string" then
+                    local plat = tostring(r.platform or "twitch")
+                    local rchan = tostring(r.channel or "?")
+                    local who = tostring(r.display_name or r.username or "?")
+                    local body = who .. " · #" .. rchan .. ": " .. preview(r.message, 80)
+                    -- timestamp is ISO ("2026-07-02T04:42:00.775Z") → the SSR log
+                    -- page path wants the UTC date (first 10 chars), ?m=<id> anchors
+                    -- the exact message. no os.date needed (sandbox has no os).
+                    local date = type(r.timestamp) == "string" and r.timestamp:sub(1, 10) or nil
+                    if date and date:match("^%d%d%d%d%-%d%d%-%d%d$") then
+                        linkmsg(ctx, body, net.ORIGIN .. "/logs/" .. net.percent_encode(plat) ..
+                            "/" .. net.percent_encode(rchan) .. "/" .. date ..
+                            "?m=" .. net.percent_encode(r.message_id))
+                    else
+                        sysmsg(ctx, body)
+                    end
+                end
+            end
+        end)
+    end)
+
     c2.register_command("/hsstatus", function(ctx)
         local sc, pend = senders.stats()
         local lines = caps.name() ..
@@ -575,7 +649,7 @@ function M.register(get_login)
     c2.register_command("/hshelp", function(ctx)
         sysmsg(ctx, "heatsync commands · build " .. caps.name())
         sysmsg(ctx, "emotes: :name tab-complete · /hsemotes menu · /hsfind <q> search · /hsinv <user>")
-        sysmsg(ctx, "archive: /hssearch <q> posts · /hslogs <user> [chan] · /hsmoments [h] [plat] [pg] · /hshot [plat] [pg] · /hswhois <user>")
+        sysmsg(ctx, "archive: /hssearch <q> posts · /hschat <q> [@user] [#chan] chat-logs · /hslogs <user> [chan] · /hsmoments [h] [plat] [pg] · /hshot [plat] [pg] · /hswhois <user>")
         sysmsg(ctx, "chat: /hsmulti kick:<slug>|yt:<handle>|off|auto on|off · /hsflame · /hsbadges · /hsblock <name>")
         sysmsg(ctx, "system: /hsstatus · /hsrefresh · /hsarchive on|off · /hsclear")
         if caps.tier < 2 then

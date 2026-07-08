@@ -128,5 +128,10 @@ local hb = #added
 commands["/hshelp"](ctx)
 check(#added > hb, "/hshelp alive on " .. MODE)
 
+-- /hschat is a net+sysmsg command → works on every tier; usage path fires no request
+hb = #added
+commands["/hschat"]({ words = { "/hschat", "a" }, channel = ctx.channel })
+check(#added > hb, "/hschat alive on " .. MODE)
+
 print(failures == 0 and "ALL PASS (" .. MODE .. ")" or (failures .. " FAILURES (" .. MODE .. ")"))
 host_os.exit(failures == 0 and 0 or 1)

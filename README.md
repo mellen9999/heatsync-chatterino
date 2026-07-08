@@ -1,6 +1,6 @@
 # heatsync chatterino plugin
 
-heatsync inside chatterino. your emote inventory tab-completes everywhere and — on a render-capable build — heatsync emotes **render as real images** in chat (yours and every other heatsync user's), you get a **click-to-insert emote menu**, you can **browse any chatter's emotes** and **search heatsync's post archive** without leaving chat, plus clickable `>>id` threadlinks, a 🔥 marker on heatsync users, and **kick + youtube chat merged into your twitch tabs**.
+heatsync inside chatterino. your emote inventory tab-completes everywhere and — on a render-capable build — heatsync emotes **render as real images** in chat (yours and every other heatsync user's), you get a **click-to-insert emote menu**, you can **browse any chatter's emotes** and **search heatsync's post + chat-log archive** (the relay writes chat in, `/hschat` reads it back) without leaving chat, plus clickable `>>id` threadlinks, a 🔥 marker on heatsync users, and **kick + youtube chat merged into your twitch tabs**.
 
 no fork, no patched binary. one lua plugin that feature-detects the host build and degrades a capability at a time instead of breaking:
 
@@ -56,7 +56,8 @@ heatsync users get a 🔥 before their name in any chat, so they're identifiable
 | `/hsemotes [page\|query]` | **your emote menu** — clickable inventory grid, recents-first; page or filter it |
 | `/hsfind <query>` | **catalog search** — inventory + 7TV/BTTV/FFZ shown as images; click one to insert |
 | `/hsinv <user>` | **browse anyone's inventory** — a user's heatsync emotes as a click-to-insert grid |
-| `/hssearch <query>` | **search the archive** — heatsync posts; click a result to open the thread |
+| `/hssearch <query>` | **search heatsync posts** — click a result to open the thread |
+| `/hschat <query> [@user] [#channel]` | **search the chat archive** — the relayed twitch-chat corpus; click a line to open it at the exact message. narrow with `@user`/`#channel` (a bare query scopes to the current tab) |
 | `/hsmulti kick:<slug>` \| `yt:<handle>` \| `off` \| `auto on\|off` | merge kick/youtube chat into this tab; `auto` links a stream's platforms automatically |
 | `/hshot [platform] [page]` | hottest live streams right now (cross-platform, heat-ranked); filter by platform, page through; click a twitch one to open it |
 | `/hswhois <user>` | heatsync profile card for any streamer (heat, followers, live, posts) |
@@ -99,7 +100,7 @@ for the full experience (rendering, the emote menu, multichat), use a build whos
 
 | permission | why |
 |---|---|
-| `Network` | public heatsync.org endpoints (`/api/profile`, `/api/users/<id>/emotes`, `/api/users/emotes/batch`, `/api/emote-search`, `/api/search`, `/api/moments`, `/api/live/top`, `/api/chatter/<...>/stats`) plus one anonymous websocket for live sync and multichat. |
+| `Network` | public heatsync.org endpoints (`/api/profile`, `/api/users/<id>/emotes`, `/api/users/emotes/batch`, `/api/emote-search`, `/api/search`, `/api/archive/search`, `/api/moments`, `/api/live/top`, `/api/chatter/<...>/stats`) plus one anonymous websocket for live sync and multichat. |
 | `FilesystemRead` / `FilesystemWrite` | remembers your settings, block list, multichat links, and recently-used emotes in the plugin's own data folder. local only. |
 
 **what leaves chatterino:**
