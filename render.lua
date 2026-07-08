@@ -24,7 +24,7 @@ local FLAME = "🔥"
 local relay_sec = 0
 local relay_count = 0
 
--- relay a native twitch PRIVMSG into heatsync's archive (opt-in, moat). only
+-- relay a native twitch PRIVMSG into heatsync's archive (default on, opt-out). only
 -- native messages (real twitch id) — injected kick/yt messages have no id.
 local function maybe_relay(msg)
     if not store.archive_enabled() then return end
@@ -271,7 +271,7 @@ local function do_process(ch, msg, hint)
     local text = msg.message_text
     if type(text) ~= "string" or text == "" then return end
 
-    -- opt-in archive relay (before render rebuild; independent of it)
+    -- archive relay (default on, opt-out; before render rebuild, independent of it)
     maybe_relay(msg)
 
     -- learn recently-used emotes from your OWN outgoing messages — the only

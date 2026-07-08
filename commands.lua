@@ -249,7 +249,7 @@ function M.register(get_login)
     end)
 
     -- archive relay: mirror the public twitch chat you see into heatsync's
-    -- searchable archive (the corpus moat). OFF by default + opt-in — it sends
+    -- searchable archive (the corpus moat). ON by default, opt-out — it sends
     -- public PRIVMSGs you already see to heatsync (first-party, no whispers).
     c2.register_command("/hsarchive", function(ctx)
         local arg = ctx.words[2]
