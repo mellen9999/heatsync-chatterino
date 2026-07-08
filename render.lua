@@ -64,7 +64,10 @@ local hooked = {}   -- channel_name -> { handle, ch }
 local processing = false
 local fail_count = 0
 
-local imageset_for = require("img").for_url
+-- sender emotes come from the heatsync inventory: native-height dims but a 1x
+-- url, so they render through for_hs_emote (clamps the scale basis to the served
+-- 1x line height — see img.lua) rather than the raw for_url.
+local hs_imageset = require("img").for_hs_emote
 
 local function thread_id(word)
     -- byte check first: keeps the per-word miss path to hash lookups only
@@ -127,11 +130,13 @@ local function rebuild_text_element(elems, el, sender_map)
         -- names (e.g. "lost" is a 7tv cat), so that turned plain sentences into
         -- random emotes. native chatterino already renders the real 7tv/bttv/ffz
         -- emotes a sender actually uses — the plugin's job is the heatsync layer.
-        -- w=nil scales the ACTUAL image by height (stored width can be wrong,
-        -- e.g. a 96x32 record for a 32x32 image → stretched); renderable()
-        -- guarantees emote.h > 0.
+        -- for_hs_emote scales the ACTUAL 1x image by height: the stored dims are
+        -- the emote's NATIVE size (e.g. 128x128) but the url is the cdn's 1x tier
+        -- (served <=32px tall), so both the stored width AND a stored height above
+        -- the 1x line height would mis-scale it — a 128-tall record rendered a 32px
+        -- image at ~7px, i.e. invisible. renderable() guarantees emote.h > 0.
         local set = renderable(emote) and not blocked
-            and imageset_for(emote.url, nil, emote.h) or nil
+            and hs_imageset(emote.url, emote.h) or nil
         if set then
             flush_run(elems, run, src)
             table.insert(elems, {

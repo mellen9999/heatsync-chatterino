@@ -110,7 +110,7 @@ function M.register(get_login)
             local n = names[i]
             local e = inventory.resolve(n)
             if e then
-                items[#items + 1] = { name = n, url = e.url, w = e.w, h = e.h,
+                items[#items + 1] = { name = n, url = e.url, w = e.w, h = e.h, hs = true,
                     label = n .. (recent_set[n] and " · recent" or " · heatsync") }
             end
         end
@@ -172,7 +172,7 @@ function M.register(get_login)
             local items = {}
             for _, r in ipairs(results) do
                 items[#items + 1] = { name = r.name, url = r.url, w = r.w, h = r.h,
-                    label = r.name .. " · " .. r.source }
+                    hs = r.source == "hs", label = r.name .. " · " .. r.source }
             end
             if not picker.render(ch, "[heatsync] " .. #results ..
                 " emotes for '" .. q .. "' — click to insert:", items) then

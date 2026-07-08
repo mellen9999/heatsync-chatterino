@@ -343,7 +343,10 @@ end
 -- timestamp obj, username obj, text "hello", scaling-image, text "world"
 check(#elems == 5, "render: rebuilt into 5 elements (got " .. #elems .. ": " .. table.concat(kinds, ",") .. ")")
 check(elems[4] ~= nil and elems[4].type == "scaling-image", "render: emote became scaling-image")
-check(elems[4].images.i1.scale == 0.25, "render: 112px source scaled to 28px (0.25)")
+-- inventory stores NATIVE dims (peepoHS = 112) but the url is a 1x tier served
+-- at <=32px, so the scale basis is clamped to the 1x line height: 28/32 = 0.875,
+-- not the naive 28/112 = 0.25 that would render the 32px image at ~7px (invisible).
+check(elems[4].images.i1.scale == 0.875, "render: native-height record clamped to 1x line height (0.875)")
 check(elems[3].type == "text" and elems[3].text == "hello", "render: leading text run preserved")
 
 -- threadlink in a message from a non-hs user (unknown sender, no emotes)
@@ -563,6 +566,27 @@ do
     check(rendered and no_stretch,
         "personal-emote dims: mismatched-width emote renders by height, no stretched expected-width")
     check(click_ok, "click-to-insert: a rendered sender emote carries an InsertText link with its name")
+end
+
+-- tall-emote invisibility (real case: 42% of an inventory stored native 128 on a
+-- 1x url served at ~32px). scaling by the stored height renders the 32px image at
+-- 28/128 ≈ 0.219 → ~7px, invisible ("posted frierenfernComfy, wollip can't see
+-- it"). the scale basis must clamp to the 1x line height → 28/32 = 0.875.
+senders.feed_broadcast("talluser", "frierenfernComfy",
+    { url = "https://cdn.frankerfacez.com/emote/773952/1", width = 128, height = 128 })
+do
+    local tm = fake_msg("talluser", "9090", "look frierenfernComfy here")
+    chan.msgs[#chan.msgs + 1] = tm
+    chan.appended_cb(tm, nil)
+    local scale = nil
+    for _, e in ipairs(chan.replaced[#chan.replaced].new.init.elements) do
+        if type(e) == "table" and e.type == "scaling-image" and type(e.images) == "table"
+            and type(e.images.i1) == "table" then
+            scale = e.images.i1.scale
+        end
+    end
+    check(scale == 0.875,
+        "tall-emote: native-128 record on a 1x url clamps to 0.875, not 0.219 (invisible)")
 end
 
 -- ===== multichat (v1.1) — kick/youtube injection =====

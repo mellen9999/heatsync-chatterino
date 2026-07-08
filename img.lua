@@ -41,4 +41,22 @@ function M.for_url(url, w, h, target_h)
     return built
 end
 
+-- heatsync inventory stores an emote's NATIVE height (commonly 128) but the url
+-- it references is always the provider's 1x tier, which the cdns normalize to a
+-- fixed line height — 7tv/ffz serve 1x at 32px, bttv at 28px — regardless of the
+-- native size. so the served image is <=32px tall no matter the stored height;
+-- scaling by the stored native height shrinks tall emotes to ~7px, i.e. invisible
+-- ("can't see it"). clamp the scale basis to the 1x line height so the served
+-- image lands at the chat line height, and never pass the stored width (it can
+-- disagree with the served 1x image and stretch it — cf. the 96x32-record /
+-- 32x32-image case). searched-7tv results go through for_url directly instead:
+-- seventv.lua keeps their url+height in the same tier, so they're already
+-- consistent and must not be clamped.
+local HS_1X_MAX_H = 32
+function M.for_hs_emote(url, h, target_h)
+    if type(h) ~= "number" or h <= 0 then return nil end
+    if h > HS_1X_MAX_H then h = HS_1X_MAX_H end
+    return M.for_url(url, nil, h, target_h)
+end
+
 return M
