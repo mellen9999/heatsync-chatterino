@@ -905,5 +905,142 @@ check(inventory.boot_failed_at == nil or type(inventory.boot_failed_at) == "numb
 local res4 = completion_cb({ query = "peepo" })
 check(type(res4) == "table", "completion: still alive after http failure")
 
+-- ===== v1.7 features =====
+local multichat = require("multichat")
+-- chan.added holds strings (from add_system_message) OR message tables (from
+-- add_message); this scans the last n entries of either kind for a substring.
+local function added_text_has(frag, n)
+    for i = math.max(1, #chan.added - n + 1), #chan.added do
+        local m = chan.added[i]
+        if type(m) == "string" then
+            if m:find(frag, 1, true) then return true end
+        elseif type(m) == "table" and m.init and m.init.elements then
+            for _, e in ipairs(m.init.elements) do
+                if type(e) == "table" and e.type == "text" and type(e.text) == "string"
+                    and e.text:find(frag, 1, true) then return true end
+            end
+        end
+    end
+    return false
+end
+local function added_link_has(urlfrag, n)
+    for i = math.max(1, #chan.added - n + 1), #chan.added do
+        local m = chan.added[i]
+        if type(m) == "table" and m.init and m.init.elements then
+            for _, e in ipairs(m.init.elements) do
+                if type(e) == "table" and type(e.link) == "table"
+                    and tostring(e.link.value):find(urlfrag, 1, true) then return true end
+            end
+        end
+    end
+    return false
+end
+
+-- /hssearch: heatsync posts → clickable /thread/ links + preview + heat
+local sb = #chan.added
+commands["/hssearch"]({ words = { "/hssearch", "clip" }, channel = chan })
+http_answer("/api/search?q=clip", { results = {
+    { base36_id = "00001o", display_name = "mellen", content = "embedtest clip here", heat = 3 },
+    { base36_id = "00002x", username = "someone", content = "another one", heat = 0 },
+} })
+check(#chan.added >= sb + 3, "hssearch: header + 2 result lines added")
+check(added_link_has("/thread/00001o", 3), "hssearch: result carries a /thread/ permalink")
+check(added_text_has("heat 3", 3), "hssearch: heat surfaced (no fire emoji)")
+sb = #chan.added
+commands["/hssearch"]({ words = { "/hssearch", "voidquery" }, channel = chan })
+http_answer("/api/search?q=voidquery", { results = {} })
+check(added_text_has("no heatsync posts", #chan.added - sb), "hssearch: empty result is an honest line")
+
+-- /hsinv: browse anyone's inventory → click-to-insert grid
+sb = #chan.added
+commands["/hsinv"]({ words = { "/hsinv", "grace" }, channel = chan })
+http_answer("/api/profile/grace", { profile = { id = 555, display_name = "Grace" } })
+http_answer("/api/users/555/emotes", { emotes = {
+    { custom_name = "graceEmote", url = "https://cdn.heatsync.org/e/g.webp", width = 64, height = 64 },
+} })
+check(#chan.added > sb, "hsinv: emote grid emitted")
+check(#picker_links(chan.added[#chan.added]) == 1, "hsinv: emote is click-to-insert")
+sb = #chan.added
+commands["/hsinv"]({ words = { "/hsinv", "nobody" }, channel = chan })
+http_answer("/api/profile/nobody", { profile = { id = "u_nobody" } }) -- shadow id, not numeric
+check(added_text_has("no heatsync profile", #chan.added - sb), "hsinv: shadow/non-numeric id → honest line, no crash")
+
+-- /hshot: platform filter + heat, twitch excluded
+sb = #chan.added
+commands["/hshot"]({ words = { "/hshot", "kick" }, channel = chan })
+http_answer("/api/live/top?limit=50", { streams = {
+    { platform = "twitch", username = "tw1", displayName = "TW1", viewerCount = 100, category = "Chat", heat = 50 },
+    { platform = "kick", username = "kk1", displayName = "KK1", viewerCount = 200, category = "Slots", heat = 80 },
+    { platform = "kick", username = "kk2", displayName = "KK2", viewerCount = 50, heat = 10 },
+} })
+check(#chan.added == sb + 3, "hshot: kick filter → header + 2 kick lines")
+check(added_text_has("heat 80", 3), "hshot: heat surfaced")
+check(not added_text_has("TW1", 3), "hshot: platform filter excludes twitch")
+
+-- /hsmoments: hours + platform filter + platform prefix
+sb = #chan.added
+commands["/hsmoments"]({ words = { "/hsmoments", "48", "kick" }, channel = chan })
+http_answer("/api/moments?limit=30&hours=48", { moments = {
+    { id = "ma", platform = "kick", channel = "cageero", rate = 28, baseline = "0.4" },
+    { id = "mb", platform = "twitch", channel = "forsen", rate = 10, baseline = "1" },
+    { id = "mc", platform = "kick", channel = "trainwreck", rate = 5, baseline = "1" },
+} })
+check(#chan.added == sb + 3, "hsmoments: 48h kick filter → header + 2 kick moments")
+check(added_text_has("kick:#cageero", 3), "hsmoments: platform prefix shown")
+check(not added_text_has("#forsen", 3), "hsmoments: platform filter excludes twitch moment")
+
+-- /hslogs: top-channels breakdown (up to 3)
+sb = #chan.added
+commands["/hslogs"]({ words = { "/hslogs", "topuser" }, channel = chan })
+http_answer("/api/chatter/twitch/topuser/stats", { totals = { messages = 1000, channels = 5, activeDays = 20 },
+    topChannels = { { channel = "a", messages = 500 }, { channel = "b", messages = 300 },
+                    { channel = "c", messages = 100 }, { channel = "d", messages = 50 } } })
+check(added_text_has("top channels:", #chan.added - sb), "hslogs: top-channels line emitted")
+check(added_text_has("#a (500)", #chan.added - sb), "hslogs: top channel with message count")
+check(not added_text_has("#d", #chan.added - sb), "hslogs: capped at 3 channels")
+
+-- /hshelp: tier-gated command index
+sb = #chan.added
+commands["/hshelp"]({ words = { "/hshelp" }, channel = chan })
+check(#chan.added >= sb + 5, "hshelp: lists command groups")
+check(added_text_has("/hssearch", #chan.added - sb), "hshelp: mentions /hssearch")
+check(added_text_has("/hsinv", #chan.added - sb), "hshelp: mentions /hsinv")
+
+-- multichat dedup ring buffer: >DEDUP_MAX unique ids evict the oldest in O(1);
+-- an evicted id re-injects, a still-resident recent id stays deduped.
+local msock = sockets[#sockets]
+commands["/hsmulti"]({ words = { "/hsmulti", "kick:ring" }, channel = chan })
+for i = 1, 900 do
+    msock.opts.on_text(register_payload({ type = "kick-chat-message",
+        data = { platform = "kick", channel = "ring", id = "r" .. i, username = "u", content = "m" .. i } }))
+end
+local a = #chan.added
+msock.opts.on_text(register_payload({ type = "kick-chat-message",
+    data = { platform = "kick", channel = "ring", id = "r1", username = "u", content = "evicted replay" } }))
+check(#chan.added == a + 1, "dedup ring: id evicted past DEDUP_MAX re-injects")
+local b = #chan.added
+msock.opts.on_text(register_payload({ type = "kick-chat-message",
+    data = { platform = "kick", channel = "ring", id = "r900", username = "u", content = "recent dup" } }))
+check(#chan.added == b, "dedup ring: still-resident recent id stays deduped")
+
+-- multichat dropped counter: line to a gone tab, and a malformed (channel-less) line
+local ghost = { get_name = function() return "closedtab" end }
+commands["/hsmulti"]({ words = { "/hsmulti", "kick:gone" }, channel = ghost })
+local d0 = multichat.dropped
+msock.opts.on_text(register_payload({ type = "kick-chat-message",
+    data = { platform = "kick", channel = "gone", id = "g1", username = "u", content = "to nowhere" } }))
+check(multichat.dropped == d0 + 1, "dropped: inject to a gone tab is counted")
+d0 = multichat.dropped
+msock.opts.on_text(register_payload({ type = "kick-chat-message",
+    data = { platform = "kick", id = "nochan", username = "u", content = "x" } }))
+check(multichat.dropped == d0 + 1, "dropped: malformed channel-less line is counted")
+
+-- /hsstatus: multichat summary + per-tab detail legible
+sb = #chan.added
+commands["/hsstatus"]({ words = { "/hsstatus" }, channel = chan })
+check(added_text_has("source(s) across", #chan.added - sb), "status: multichat summary line")
+check(added_text_has("dropped", #chan.added - sb), "status: dropped count surfaced when > 0")
+check(added_text_has("kick/ring", #chan.added - sb), "status: per-tab source breakdown shown")
+
 print(failures == 0 and "\nALL PASS" or ("\n" .. failures .. " FAILURES"))
 host_os.exit(failures == 0 and 0 or 1)

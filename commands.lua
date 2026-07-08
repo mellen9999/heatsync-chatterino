@@ -46,6 +46,26 @@ local function is_valid_name(s)
         and string.match(s, "^[a-zA-Z0-9_]+$") ~= nil
 end
 
+-- shared arg parse for the paginated live/moments commands: any recognized
+-- platform token sets a filter, any positive integer sets the page. order-free
+-- so `/hshot kick 2` and `/hshot 2 kick` both work.
+local PLAT_ALIAS = { twitch = "twitch", kick = "kick", youtube = "youtube", yt = "youtube" }
+local function parse_plat_page(words, start)
+    local plat, page = nil, 1
+    for i = start, #words do
+        local w = words[i]
+        if type(w) == "string" and w ~= "" then
+            local n = tonumber(w)
+            if n and n >= 1 and math.floor(n) == n then
+                page = math.floor(n)
+            elseif PLAT_ALIAS[string.lower(w)] then
+                plat = PLAT_ALIAS[string.lower(w)]
+            end
+        end
+    end
+    return plat, page
+end
+
 function M.register(get_login)
     c2.register_command("/hsrefresh", function(ctx)
         local login = get_login()
@@ -182,22 +202,47 @@ function M.register(get_login)
     end)
 
     -- hottest live streams right now (cross-platform, heat-ranked). click a
-    -- twitch one to open it in chatterino.
+    -- twitch one to open it in chatterino. `/hshot` top page · `/hshot 2` next
+    -- page · `/hshot kick` filter to a platform · `/hshot kick 2` both.
+    -- we over-fetch once and filter+page CLIENT-SIDE — no unverified server
+    -- params — so a platform filter and paging cost nothing extra.
+    local HOT_PER_PAGE = 10
     c2.register_command("/hshot", function(ctx)
-        net.get_json(net.ORIGIN .. "/api/live/top?limit=10", 8000, function(payload, err)
+        local plat_filter, page = parse_plat_page(ctx.words, 2)
+        net.get_json(net.ORIGIN .. "/api/live/top?limit=50", 8000, function(payload, err)
             if not payload or type(payload.streams) ~= "table" then
                 sysmsg(ctx, "hot streams unavailable: " .. tostring(err))
                 return
             end
-            sysmsg(ctx, "🔥 hottest live now:")
-            for i, s in ipairs(payload.streams) do
-                if i > 10 then break end
+            local rows = {}
+            for _, s in ipairs(payload.streams) do
+                if type(s) == "table" and (not plat_filter or tostring(s.platform) == plat_filter) then
+                    rows[#rows + 1] = s
+                end
+            end
+            local total = #rows
+            if total == 0 then
+                sysmsg(ctx, "no live streams" .. (plat_filter and (" on " .. plat_filter) or ""))
+                return
+            end
+            local pages = math.max(1, math.ceil(total / HOT_PER_PAGE))
+            if page > pages then page = pages end
+            local from = (page - 1) * HOT_PER_PAGE + 1
+            local to = math.min(total, from + HOT_PER_PAGE - 1)
+            local nav = pages > 1 and (" · page " .. page .. "/" .. pages ..
+                " · /hshot " .. (plat_filter and (plat_filter .. " ") or "") .. (page < pages and page + 1 or 1) .. " for more") or ""
+            sysmsg(ctx, "🔥 hottest live now" .. (plat_filter and (" · " .. plat_filter) or "") .. nav .. ":")
+            for i = from, to do
+                local s = rows[i]
                 local plat = tostring(s.platform or "?")
                 local name = tostring(s.displayName or s.username or s.channel or "?")
                 local viewers = tonumber(s.viewerCount) or 0
                 local cat = s.gameName or s.category or ""
-                local text = string.format("%s · %s · %s viewers%s",
-                    plat, name, tostring(viewers), cat ~= "" and (" · " .. cat) or "")
+                local heat = tonumber(s.heat)
+                local text = string.format("%s · %s · %s viewers%s%s",
+                    plat, name, tostring(viewers),
+                    cat ~= "" and (" · " .. cat) or "",
+                    (heat and heat > 0) and (" · heat " .. tostring(math.floor(heat))) or "")
                 -- twitch → jump to the channel in chatterino; else open on the platform
                 local link
                 if plat == "twitch" and type(s.channel or s.username) == "string" then
@@ -244,6 +289,110 @@ function M.register(get_login)
                     { type = "text", text = line, color = "link",
                       link = { type = c2.LinkType.Url, value = net.ORIGIN .. "/u/" .. net.percent_encode(name) } },
                 } }))
+            end)
+        end)
+    end)
+
+    -- read the archive back: search heatsync's public post corpus from chatterino
+    -- and get clickable thread permalinks + an inline preview. this closes the
+    -- flywheel — the archive relay writes chat in, /hssearch reads posts back out.
+    -- (note: this searches heatsync POSTS via /api/search; the relayed twitch-chat
+    -- log corpus is a separate, web-only surface with no fast json api yet.)
+    local SEARCH_LIMIT = 8
+    local function join_args(words)
+        local parts = {}
+        for i = 2, #words do parts[#parts + 1] = words[i] end
+        return table.concat(parts, " ")
+    end
+    local function preview(s, n)
+        s = tostring(s or ""):gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+        if utf8 and utf8.len then
+            local len = utf8.len(s)
+            if len and len > n then
+                local cut = utf8.offset(s, n + 1)
+                if cut then return s:sub(1, cut - 1) .. "…" end
+            end
+            return s
+        end
+        if #s > n then return s:sub(1, n - 1) .. "…" end
+        return s
+    end
+    c2.register_command("/hssearch", function(ctx)
+        local q = join_args(ctx.words)
+        if string.len(q) < 2 then
+            sysmsg(ctx, "usage: /hssearch <query> — searches heatsync posts; click a result to open the thread")
+            return
+        end
+        local url = net.ORIGIN .. "/api/search?q=" .. net.percent_encode(q) .. "&limit=" .. tostring(SEARCH_LIMIT)
+        net.get_json(url, 8000, function(payload, err)
+            local rows = payload and payload.results
+            if type(rows) ~= "table" then
+                sysmsg(ctx, "search failed: " .. tostring(err))
+                return
+            end
+            if #rows == 0 then
+                sysmsg(ctx, "no heatsync posts for '" .. q .. "'")
+                return
+            end
+            sysmsg(ctx, #rows .. " heatsync post(s) for '" .. q .. "':")
+            for i, r in ipairs(rows) do
+                if i > SEARCH_LIMIT then break end
+                local id = type(r) == "table" and net.pick_first_str(r, "base36_id", "id")
+                if id then
+                    local who = tostring(r.display_name or r.username or "?")
+                    local heat = tonumber(r.heat)
+                    local suffix = (heat and heat > 0) and (" · heat " .. tostring(math.floor(heat))) or ""
+                    linkmsg(ctx, who .. ": " .. preview(r.content, 80) .. suffix,
+                        net.ORIGIN .. "/thread/" .. net.percent_encode(id))
+                end
+            end
+        end)
+    end)
+
+    -- browse anyone's heatsync inventory (whois, for emotes): resolve the login
+    -- to its heatsync id, fetch that user's emote set, show it as a click-to-
+    -- insert grid. uses the same public endpoints the sender-emote path already
+    -- reads (see senders.lua) — nothing private, and it never feeds the render
+    -- path (privacy invariant: only the SENDER's own inventory renders inline).
+    c2.register_command("/hsinv", function(ctx)
+        local user = ctx.words[2]
+        if not is_valid_name(user) then
+            sysmsg(ctx, "usage: /hsinv <user> — shows a user's heatsync emotes; click to insert")
+            return
+        end
+        local luser = string.lower(user)
+        net.get_json(net.ORIGIN .. "/api/profile/" .. net.percent_encode(luser), 8000, function(payload, err)
+            local p = payload and payload.profile
+            local uid = p and p.id
+            local ok_id = (type(uid) == "number" and uid > 0)
+                or (type(uid) == "string" and string.match(uid, "^%d+$") ~= nil)
+            if not p or not ok_id then
+                sysmsg(ctx, "no heatsync profile for '" .. user .. "'" .. (err and (" (" .. tostring(err) .. ")") or ""))
+                return
+            end
+            local who = tostring(p.display_name or p.username or luser)
+            net.get_json(net.ORIGIN .. "/api/users/" .. tostring(uid) .. "/emotes", 10000, function(pl, err2)
+                local rows = pl and (pl.emotes or pl.data or pl.items)
+                if type(rows) ~= "table" then
+                    sysmsg(ctx, "couldn't load " .. who .. "'s emotes" .. (err2 and (" (" .. tostring(err2) .. ")") or ""))
+                    return
+                end
+                local items = {}
+                for _, e in ipairs(rows) do
+                    local name = net.pick_first_str(e, "custom_name", "name", "code")
+                    local eurl = net.pick_first_str(e, "url", "src")
+                    if name and eurl then
+                        items[#items + 1] = { name = name, url = eurl,
+                            w = net.pick_first_num(e, "width"), h = net.pick_first_num(e, "height"),
+                            hs = true, label = name .. " · " .. who }
+                    end
+                end
+                if #items == 0 then
+                    sysmsg(ctx, who .. " has no heatsync emotes")
+                    return
+                end
+                local header = "[heatsync] " .. who .. "'s emotes (" .. #items .. ") — click to insert:"
+                if not picker.render(ctx.channel, header, items) then sysmsg(ctx, "inventory render failed") end
             end)
         end)
     end)
@@ -415,7 +564,23 @@ function M.register(get_login)
         else
             sysmsg(ctx, "rendering: unavailable on this build (needs nightly)")
         end
-        sysmsg(ctx, "multichat: " .. tostring(multichat.stats()) .. " kick/youtube source(s) linked")
+        sysmsg(ctx, "multichat: " .. multichat.summary())
+        -- per-tab link breakdown so a merge is legible, not just a count
+        local links = multichat.detail()
+        for _, l in ipairs(links) do sysmsg(ctx, "  #" .. l.tab .. " ← " .. l.sources) end
+    end)
+
+    -- what can this build do? a single discoverable index of every command,
+    -- grouped, with a tier note so it's honest about what's unavailable here.
+    c2.register_command("/hshelp", function(ctx)
+        sysmsg(ctx, "heatsync commands · build " .. caps.name())
+        sysmsg(ctx, "emotes: :name tab-complete · /hsemotes menu · /hsfind <q> search · /hsinv <user>")
+        sysmsg(ctx, "archive: /hssearch <q> posts · /hslogs <user> [chan] · /hsmoments [h] [plat] [pg] · /hshot [plat] [pg] · /hswhois <user>")
+        sysmsg(ctx, "chat: /hsmulti kick:<slug>|yt:<handle>|off|auto on|off · /hsflame · /hsbadges · /hsblock <name>")
+        sysmsg(ctx, "system: /hsstatus · /hsrefresh · /hsarchive on|off · /hsclear")
+        if caps.tier < 2 then
+            sysmsg(ctx, "note: inline emote rendering + the /hsemotes/hsfind image menus need a nightly build — this is " .. caps.name() .. " (tab-complete + commands work)")
+        end
     end)
 
     -- dev aid: dump the last message's element types + flags to the log —
@@ -493,39 +658,66 @@ function M.register(get_login)
         end
     end)
 
+    -- top live-chat moments. `/hsmoments [hours] [platform] [page]` — first
+    -- number is the lookback window (1-168h, default 24), a platform token
+    -- filters, a second number pages. over-fetch once, filter+page client-side.
+    local MOM_PER_PAGE = 5
     c2.register_command("/hsmoments", function(ctx)
-        local hours = 24
-        if ctx.words[2] then
-            local h = tonumber(ctx.words[2])
-            if h and h >= 1 and h <= 168 then hours = math.floor(h) end
+        local hours, page, plat_filter = 24, 1, nil
+        local nums = {}
+        for i = 2, #ctx.words do
+            local w = ctx.words[i]
+            if type(w) == "string" and w ~= "" then
+                local n = tonumber(w)
+                if n then nums[#nums + 1] = n
+                elseif PLAT_ALIAS[string.lower(w)] then plat_filter = PLAT_ALIAS[string.lower(w)] end
+            end
         end
-        local url = net.ORIGIN .. "/api/moments?limit=5&hours=" .. tostring(hours)
+        if nums[1] and nums[1] >= 1 and nums[1] <= 168 then hours = math.floor(nums[1]) end
+        if nums[2] and nums[2] >= 1 then page = math.floor(nums[2]) end
+        local url = net.ORIGIN .. "/api/moments?limit=30&hours=" .. tostring(hours)
         net.get_json(url, 8000, function(payload, err)
             if not payload then
                 sysmsg(ctx, "moments fetch failed: " .. tostring(err))
                 return
             end
-            local rows = payload.moments or payload.data or payload
-            if type(rows) ~= "table" or #rows == 0 then
-                sysmsg(ctx, "no moments in the last " .. tostring(hours) .. "h")
+            local raw = payload.moments or payload.data or payload
+            local rows = {}
+            if type(raw) == "table" then
+                for _, m in ipairs(raw) do
+                    if type(m) == "table" and m.id and (not plat_filter or tostring(m.platform) == plat_filter) then
+                        rows[#rows + 1] = m
+                    end
+                end
+            end
+            local total = #rows
+            if total == 0 then
+                sysmsg(ctx, "no moments in the last " .. tostring(hours) .. "h" .. (plat_filter and (" on " .. plat_filter) or ""))
                 return
             end
-            sysmsg(ctx, "top moments · last " .. tostring(hours) .. "h")
-            for i, m in ipairs(rows) do
-                if i > 5 then break end
-                if type(m) == "table" and m.id then
-                    local chan = tostring(m.channel or "?")
-                    local mult = ""
-                    local rate = tonumber(m.rate)
-                    local base = tonumber(m.baseline)
-                    if rate and base and base > 0 then
-                        mult = string.format(" · %.0fx", rate / base)
-                    end
-                    local title = net.pick_first_str(m, "title", "game") or ""
-                    if title ~= "" then title = " · " .. title end
-                    linkmsg(ctx, "#" .. chan .. mult .. title,
-                        net.ORIGIN .. "/moment/" .. net.percent_encode(tostring(m.id)))
+            local pages = math.max(1, math.ceil(total / MOM_PER_PAGE))
+            if page > pages then page = pages end
+            local from = (page - 1) * MOM_PER_PAGE + 1
+            local to = math.min(total, from + MOM_PER_PAGE - 1)
+            local nav = pages > 1 and (" · page " .. page .. "/" .. pages ..
+                " · /hsmoments " .. hours .. (plat_filter and (" " .. plat_filter) or "") ..
+                " " .. (page < pages and page + 1 or 1) .. " for more") or ""
+            sysmsg(ctx, "top moments · last " .. tostring(hours) .. "h" ..
+                (plat_filter and (" · " .. plat_filter) or "") .. nav)
+            for i = from, to do
+                local m = rows[i]
+                local chan = tostring(m.channel or "?")
+                local plat = m.platform and (tostring(m.platform) .. ":") or ""
+                local mult = ""
+                local rate = tonumber(m.rate)
+                local base = tonumber(m.baseline)
+                if rate and base and base > 0 then
+                    mult = string.format(" · %.0fx", rate / base)
                 end
+                local title = net.pick_first_str(m, "title", "game") or ""
+                if title ~= "" then title = " · " .. title end
+                linkmsg(ctx, plat .. "#" .. chan .. mult .. title,
+                    net.ORIGIN .. "/moment/" .. net.percent_encode(tostring(m.id)))
             end
         end)
     end)
@@ -556,9 +748,21 @@ function M.register(get_login)
                 if tonumber(t.messages) then bits[#bits + 1] = tostring(t.messages) .. " msgs" end
                 if tonumber(t.channels) then bits[#bits + 1] = "across " .. tostring(t.channels) .. " channels" end
                 if tonumber(t.activeDays) then bits[#bits + 1] = tostring(t.activeDays) .. " active days" end
-                local top = payload.topChannels and payload.topChannels[1]
-                if top and top.channel then bits[#bits + 1] = "most in #" .. tostring(top.channel) end
                 if #bits > 0 then sysmsg(ctx, luser .. ": " .. table.concat(bits, " · ")) end
+            end
+            -- top-channels breakdown: the stats payload already carries it — surface
+            -- up to 3 inline instead of flattening to a single "most in #x".
+            local tops = payload and payload.topChannels
+            if type(tops) == "table" and #tops > 0 then
+                local parts = {}
+                for i = 1, math.min(3, #tops) do
+                    local c = tops[i]
+                    if type(c) == "table" and c.channel then
+                        local n = tonumber(c.messages or c.count)
+                        parts[#parts + 1] = "#" .. tostring(c.channel) .. (n and (" (" .. tostring(n) .. ")") or "")
+                    end
+                end
+                if #parts > 0 then sysmsg(ctx, "top channels: " .. table.concat(parts, " ")) end
             end
             linkmsg(ctx, "archive: " .. luser .. (chan and (" in #" .. string.lower(chan)) or ""), url)
         end)

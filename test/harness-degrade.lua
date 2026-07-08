@@ -123,5 +123,10 @@ local ctx = { words = { "/hsstatus" }, channel = {
 commands["/hsstatus"](ctx)
 check(#added >= 3, "/hsstatus alive")
 
+-- /hshelp works on every tier (pure sysmsg command index)
+local hb = #added
+commands["/hshelp"](ctx)
+check(#added > hb, "/hshelp alive on " .. MODE)
+
 print(failures == 0 and "ALL PASS (" .. MODE .. ")" or (failures .. " FAILURES (" .. MODE .. ")"))
 host_os.exit(failures == 0 and 0 or 1)

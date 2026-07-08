@@ -121,9 +121,16 @@ local links = {}
 local routes = {}
 -- yt_video[routing_tag] = videoId  (learned from youtube:status, for unsub)
 local yt_video = {}
--- dedup seen ids (fifo)
-local seen = {}
-local seen_order = {}
+-- dedup seen ids: a fixed-size circular buffer instead of a fifo array. the old
+-- table.remove(order, 1) was an O(n) shift on EVERY message once full (800-wide
+-- at scale) — the ring evicts in O(1) by overwriting the oldest slot.
+local seen = {}          -- id -> true (membership)
+local ring = {}          -- slot(1..DEDUP_MAX) -> id currently occupying it
+local ring_pos = 0       -- monotonic write cursor; slot = (pos % DEDUP_MAX) + 1
+-- lines dropped before injection (no routing tag, or target tab gone/volatile).
+-- surfaced in /hsstatus so a silently-vanishing multichat is legible, not a
+-- mystery (multichat.lua injection used to drop with no signal at all).
+M.dropped = 0
 
 local function source_key(platform, channel)
     return platform .. "/" .. string.lower(channel)
@@ -177,11 +184,11 @@ local function is_dup(id)
     if type(id) ~= "string" or id == "" then return false end
     if seen[id] then return true end
     seen[id] = true
-    seen_order[#seen_order + 1] = id
-    while #seen_order > DEDUP_MAX do
-        local old = table.remove(seen_order, 1)
-        if old then seen[old] = nil end
-    end
+    local slot = (ring_pos % DEDUP_MAX) + 1
+    local evicted = ring[slot]
+    if evicted ~= nil then seen[evicted] = nil end
+    ring[slot] = id
+    ring_pos = ring_pos + 1
     return false
 end
 
@@ -272,7 +279,7 @@ local function inject(line)
     -- a partial server message (missing channel/routing tag) must drop quietly,
     -- not throw in source_key's string.lower — every other field below is
     -- type-checked, so this is the one gap. both handlers funnel through here.
-    if type(line.channel) ~= "string" or line.channel == "" then return end
+    if type(line.channel) ~= "string" or line.channel == "" then M.dropped = M.dropped + 1; return end
     local key = source_key(line.platform, line.channel)
     local targets = routes[key]
     if not targets then return end
@@ -296,7 +303,9 @@ local function inject(line)
     for cc_name in pairs(targets) do
         pcall(function()
             local ch = c2.Channel.by_name(cc_name)
-            if not ch or not ch:is_valid() then return end
+            -- target tab closed / volatile: count it so /hsstatus can show that
+            -- multichat is dropping lines rather than failing invisibly
+            if not ch or not ch:is_valid() then M.dropped = M.dropped + 1; return end
             local elems = {}
             if type(line.time_ms) == "number" and line.time_ms > 0 then
                 elems[#elems + 1] = { type = "timestamp", time = line.time_ms }
@@ -410,6 +419,32 @@ function M.stats()
         for _ in pairs(srcs) do n = n + 1 end
     end
     return n
+end
+
+-- a one-line legibility summary for /hsstatus: how many sources across how many
+-- tabs, and how many lines have been dropped (target tab gone / malformed).
+function M.summary()
+    local sources, tabs = 0, 0
+    for _, srcs in pairs(links) do
+        tabs = tabs + 1
+        for _ in pairs(srcs) do sources = sources + 1 end
+    end
+    local s = tostring(sources) .. " source(s) across " .. tostring(tabs) .. " tab(s)"
+    if M.dropped > 0 then s = s .. " · " .. tostring(M.dropped) .. " line(s) dropped (tab gone/malformed)" end
+    return s
+end
+
+-- per-tab link breakdown for /hsstatus: [{ tab = "#chan", sources = "kick/x yt/y" }]
+function M.detail()
+    local out = {}
+    for tab, srcs in pairs(links) do
+        local keys = {}
+        for key in pairs(srcs) do keys[#keys + 1] = key end
+        table.sort(keys)
+        out[#out + 1] = { tab = tab, sources = table.concat(keys, " ") }
+    end
+    table.sort(out, function(a, b) return a.tab < b.tab end)
+    return out
 end
 
 return M

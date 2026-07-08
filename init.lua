@@ -22,7 +22,11 @@ local multichat = require("multichat")
 local badges = require("badges")
 local recents = require("recents")
 
-local COMPLETION_CAP = 25
+-- tab-complete popup size. own inventory fills first (usage-weighted), then the
+-- 7tv/bttv/ffz catalog appends up to the same cap — so a heavy inventory could
+-- starve catalog results at 25. 40 gives dense inventories room without a wall
+-- of a popup (chatterino cycles the list on tab, so a longer list just cycles).
+local COMPLETION_CAP = 40
 
 -- ----- account access -----
 -- every access in the chain pcall-guarded once here: the api can throw and
@@ -250,7 +254,7 @@ if caps.tier == 2 then
         local arch = store.archive_enabled() and " · archiving public chat to heatsync (/hsarchive off to opt out)" or ""
         local am = store.auto_multichat_enabled() and " · auto-merging linked kick/yt chat (/hsmulti auto off)" or ""
         return "🔥 heatsync active" .. who .. " · " .. tostring(n) ..
-            " emotes · /hsemotes menu · :name tab-complete · /hsfind search · /hsstatus" .. arch .. am
+            " emotes · /hsemotes menu · :name tab-complete · /hssearch the archive · /hshelp for all commands" .. arch .. am
     end
     render.start()
 end
