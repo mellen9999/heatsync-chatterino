@@ -96,7 +96,7 @@ function M.set_flame(on)
     net.write_data(FLAME_FILE, flame_on and "1" or "0")
 end
 
--- ----- archive relay toggle (default off, opt-in) -----
+-- ----- archive relay toggle (default ON, opt-out) -----
 function M.archive_enabled()
     return archive_on
 end
@@ -106,7 +106,7 @@ function M.set_archive(on)
     net.write_data(ARCHIVE_FILE, archive_on and "1" or "0")
 end
 
--- ----- auto-multichat toggle (default off) -----
+-- ----- auto-multichat toggle (default ON, opt-out) -----
 function M.auto_multichat_enabled()
     return automc_on
 end

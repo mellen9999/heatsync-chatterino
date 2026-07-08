@@ -14,7 +14,7 @@ no fork, no patched binary. one lua plugin that feature-detects the host build a
 
 ## emotes
 
-**they render.** anything in your heatsync inventory shows as an image when you post it. so does every other chatter's — a word renders iff the *sender's* inventory has it (the same rule the browser extension uses); sender sets arrive live over the websocket and via one batched lookup per handful of new chatters. emotes you pull from the global catalog (7TV / BTTV / FFZ) via `/hsfind` or tab-complete also render inline, filling the gaps chatterino didn't already load — no double-render of ones it did.
+**they render.** anything in your heatsync inventory shows as an image when you post it. so does every other chatter's — a word renders iff the *sender's* inventory has it (the same rule the browser extension uses); sender sets arrive live over the websocket and via one batched lookup per handful of new chatters. the global catalog (7TV / BTTV / FFZ) is a *completion* surface, not a render one: `/hsfind` and tab-complete let you find and insert catalog emote names, but the plugin only inline-renders the heatsync layer — native chatterino handles the real 7tv/bttv/ffz emotes a sender actually uses. (rendering arbitrary catalog words would misfire: common english words are emote names too — "lost" is a 7tv cat.)
 
 **every emote the plugin draws is click-to-insert.** left-click one in chat, in the `/hsemotes` menu, or in a `/hsfind` result and its name drops into your input — the way emotes work in a browser. (clicks on emotes chatterino renders *natively* stay chatterino's; a plugin can't override those.)
 
