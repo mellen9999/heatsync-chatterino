@@ -269,6 +269,10 @@ end
 
 -- ----- injection -----
 local function inject(line)
+    -- a partial server message (missing channel/routing tag) must drop quietly,
+    -- not throw in source_key's string.lower — every other field below is
+    -- type-checked, so this is the one gap. both handlers funnel through here.
+    if type(line.channel) ~= "string" or line.channel == "" then return end
     local key = source_key(line.platform, line.channel)
     local targets = routes[key]
     if not targets then return end
