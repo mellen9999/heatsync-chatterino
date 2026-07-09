@@ -46,9 +46,10 @@ local function is_valid_name(s)
         and string.match(s, "^[a-zA-Z0-9_]+$") ~= nil
 end
 
--- shared arg parse for the paginated live/moments commands: any recognized
--- platform token sets a filter, any positive integer sets the page. order-free
--- so `/hshot kick 2` and `/hshot 2 kick` both work.
+-- arg parse for /hshot: any recognized platform token sets a filter, any
+-- positive integer sets the page. order-free, so `/hshot kick 2` and
+-- `/hshot 2 kick` both work. (/hsmoments parses its own args — it has a leading
+-- hours value, so its number handling differs and can't share this.)
 local PLAT_ALIAS = { twitch = "twitch", kick = "kick", youtube = "youtube", yt = "youtube" }
 local function parse_plat_page(words, start)
     local plat, page = nil, 1
@@ -222,7 +223,12 @@ function M.register(get_login)
             end
             local total = #rows
             if total == 0 then
-                sysmsg(ctx, "no live streams" .. (plat_filter and (" on " .. plat_filter) or ""))
+                -- we only over-fetch the global top 50 by heat, so a platform
+                -- filter can legitimately miss lower-ranked streams — say so
+                -- rather than claim the platform has nothing live.
+                sysmsg(ctx, plat_filter
+                    and ("no " .. plat_filter .. " streams in the current top 50 by heat")
+                    or "no live streams right now")
                 return
             end
             local pages = math.max(1, math.ceil(total / HOT_PER_PAGE))
@@ -334,7 +340,9 @@ function M.register(get_login)
                 sysmsg(ctx, "no heatsync posts for '" .. q .. "'")
                 return
             end
-            sysmsg(ctx, #rows .. " heatsync post(s) for '" .. q .. "':")
+            -- header must match the rows actually listed, not the server's raw
+            -- count (the loop caps at SEARCH_LIMIT)
+            sysmsg(ctx, math.min(#rows, SEARCH_LIMIT) .. " heatsync post(s) for '" .. q .. "':")
             for i, r in ipairs(rows) do
                 if i > SEARCH_LIMIT then break end
                 local id = type(r) == "table" and net.pick_first_str(r, "base36_id", "id")
@@ -766,7 +774,11 @@ function M.register(get_login)
             end
             local total = #rows
             if total == 0 then
-                sysmsg(ctx, "no moments in the last " .. tostring(hours) .. "h" .. (plat_filter and (" on " .. plat_filter) or ""))
+                -- over-fetch is the top 30 by rate, so a platform filter can miss
+                -- lower-ranked moments — be honest about the window
+                sysmsg(ctx, plat_filter
+                    and ("no " .. plat_filter .. " moments in the top 30 for the last " .. tostring(hours) .. "h")
+                    or ("no moments in the last " .. tostring(hours) .. "h"))
                 return
             end
             local pages = math.max(1, math.ceil(total / MOM_PER_PAGE))

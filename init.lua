@@ -22,10 +22,11 @@ local multichat = require("multichat")
 local badges = require("badges")
 local recents = require("recents")
 
--- tab-complete popup size. own inventory fills first (usage-weighted), then the
--- 7tv/bttv/ffz catalog appends up to the same cap — so a heavy inventory could
--- starve catalog results at 25. 40 gives dense inventories room without a wall
--- of a popup (chatterino cycles the list on tab, so a longer list just cycles).
+-- tab-complete popup size (shared ceiling: own inventory fills first, then the
+-- 7tv/bttv/ffz catalog appends into whatever room is left). raised 25→40 so a
+-- heavy inventory surfaces more of YOUR own matching emotes before the cap
+-- truncates them (the watchlist concern). it does NOT reserve catalog budget —
+-- inventory-first is intended; catalog stays the secondary suggestion.
 local COMPLETION_CAP = 40
 
 -- ----- account access -----

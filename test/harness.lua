@@ -176,7 +176,13 @@ function c2.ImageSet.new(i1, i2, i3) return { i1 = i1, i2 = i2, i3 = i3 } end
 
 -- message + channel
 c2.Message = {}
-function c2.Message.new(init) return { init = init, is_plugin_msg = true } end
+-- when true, Message.new throws — lets a test drive render's do_process into its
+-- pcall failure path (build_replacement calls Message.new) without any real API.
+local MSG_NEW_THROWS = false
+function c2.Message.new(init)
+    if MSG_NEW_THROWS then error("synthetic message build failure") end
+    return { init = init, is_plugin_msg = true }
+end
 
 local function fake_channel(name)
     local ch = {
@@ -1064,8 +1070,35 @@ check(multichat.dropped == d0 + 1, "dropped: malformed channel-less line is coun
 sb = #chan.added
 commands["/hsstatus"]({ words = { "/hsstatus" }, channel = chan })
 check(added_text_has("source(s) across", #chan.added - sb), "status: multichat summary line")
-check(added_text_has("dropped", #chan.added - sb), "status: dropped count surfaced when > 0")
+check(added_text_has("drop(s)", #chan.added - sb), "status: drop count surfaced when > 0")
 check(added_text_has("kick/ring", #chan.added - sb), "status: per-tab source breakdown shown")
+
+-- render error-log flood guard: a flapping fault (throws on hit-messages, clean
+-- on the misses between) must still suppress after 3 logs — not reset the counter
+-- on every no-op miss and log forever (regression: reset fired on all successes).
+do
+    local function count_fail_logs()
+        local n = 0
+        for _, l in ipairs(log_lines) do if l:find("render failed", 1, true) then n = n + 1 end end
+        return n
+    end
+    require("store").set_flame(false)
+    local base = count_fail_logs()
+    MSG_NEW_THROWS = true
+    -- flameuser/peepoHS is a cached known-HS sender → hit → reaches build_replacement
+    -- → Message.new throws. interleave plain-text misses from fresh non-HS users.
+    for i = 1, 20 do
+        local hit = fake_msg("flameuser", "7007", "peepoHS spam " .. i)
+        chan.msgs[#chan.msgs + 1] = hit
+        chan.appended_cb(hit, nil)
+        local miss = fake_msg("rando" .. i, "600" .. i, "just plain words here nothing")
+        chan.msgs[#chan.msgs + 1] = miss
+        chan.appended_cb(miss, nil)
+    end
+    MSG_NEW_THROWS = false
+    local logged = count_fail_logs() - base
+    check(logged == 3, "render flood-guard: flapping fault logs exactly 3× then stays suppressed (got " .. logged .. ")")
+end
 
 print(failures == 0 and "\nALL PASS" or ("\n" .. failures .. " FAILURES"))
 host_os.exit(failures == 0 and 0 or 1)

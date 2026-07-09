@@ -63,6 +63,14 @@ local M = {
 local hooked = {}   -- channel_name -> { handle, ch }
 local processing = false
 local fail_count = 0
+local ok_streak = 0
+-- clean processes needed to re-arm error logging after suppression. must be a
+-- RUN, not a single success: the miss path (no HS content) is the common case
+-- and returns cleanly, so resetting on any one success let a flapping fault
+-- (throws on hit-messages, clean on the misses between) reset the counter every
+-- other message and log forever. a sustained clean streak means the fault is
+-- actually gone; a genuinely NEW, unrelated fault then still surfaces.
+local RESET_STREAK = 50
 
 -- sender emotes come from the heatsync inventory: native-height dims but a 1x
 -- url, so they render through for_hs_emote (clamps the scale basis to the served
@@ -311,6 +319,7 @@ local function process(ch, msg, hint)
     if not ok then
         -- a systemic failure (api drift) would fire per-message; log the
         -- first few, then go quiet instead of flooding the log
+        ok_streak = 0
         fail_count = fail_count + 1
         if fail_count <= 3 then
             net.log_warn("render failed: " .. tostring(err))
@@ -319,10 +328,14 @@ local function process(ch, msg, hint)
             end
         end
     elseif fail_count > 0 then
-        -- a clean process (a miss counts) means the failures were transient, not
-        -- systemic drift — re-arm logging so a genuinely NEW fault still surfaces
-        -- instead of being permanently muted by a long-past blip.
-        fail_count = 0
+        -- re-arm logging only after a SUSTAINED clean run (see RESET_STREAK) —
+        -- a single clean miss can't unmute a flapping fault mid-episode, but a
+        -- resolved fault eventually clears so a future, unrelated fault logs again.
+        ok_streak = ok_streak + 1
+        if ok_streak >= RESET_STREAK then
+            fail_count = 0
+            ok_streak = 0
+        end
     end
 end
 

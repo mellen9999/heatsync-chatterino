@@ -430,7 +430,9 @@ function M.summary()
         for _ in pairs(srcs) do sources = sources + 1 end
     end
     local s = tostring(sources) .. " source(s) across " .. tostring(tabs) .. " tab(s)"
-    if M.dropped > 0 then s = s .. " · " .. tostring(M.dropped) .. " line(s) dropped (tab gone/malformed)" end
+    -- counted per failed delivery (a line fanned to N gone tabs is N drops), so
+    -- "drop(s)" not "line(s)" — the number is deliveries lost, not distinct lines
+    if M.dropped > 0 then s = s .. " · " .. tostring(M.dropped) .. " drop(s) (tab gone/malformed)" end
     return s
 end
 
