@@ -1,4 +1,4 @@
--- heatsync chatterino plugin — v0.9.0
+-- heatsync chatterino plugin (version tracked in info.json)
 --
 -- what it does, by what your build supports (see caps.lua):
 --   t2 (nightly)  inline rendering: your + other chatters' heatsync emotes

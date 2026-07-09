@@ -6,7 +6,7 @@ local u = require("cmdutil")
 
 local M = {}
 
-function M.register(get_login)
+function M.register()
     -- hottest live streams right now (cross-platform, heat-ranked). click a
     -- twitch one to open it in chatterino. `/hshot` top page · `/hshot 2` next
     -- page · `/hshot kick` filter to a platform · `/hshot kick 2` both.
@@ -37,10 +37,8 @@ function M.register(get_login)
                     or "no live streams right now")
                 return
             end
-            local pages = math.max(1, math.ceil(total / HOT_PER_PAGE))
-            if page > pages then page = pages end
-            local from = (page - 1) * HOT_PER_PAGE + 1
-            local to = math.min(total, from + HOT_PER_PAGE - 1)
+            local pages, from, to
+            pages, page, from, to = u.paginate(total, page, HOT_PER_PAGE)
             local nav = pages > 1 and (" · page " .. page .. "/" .. pages ..
                 " · /hshot " .. (plat_filter and (plat_filter .. " ") or "") .. (page < pages and page + 1 or 1) .. " for more") or ""
             u.sysmsg(ctx, "🔥 hottest live now" .. (plat_filter and (" · " .. plat_filter) or "") .. nav .. ":")
@@ -295,10 +293,8 @@ function M.register(get_login)
                     or ("no moments in the last " .. tostring(hours) .. "h"))
                 return
             end
-            local pages = math.max(1, math.ceil(total / MOM_PER_PAGE))
-            if page > pages then page = pages end
-            local from = (page - 1) * MOM_PER_PAGE + 1
-            local to = math.min(total, from + MOM_PER_PAGE - 1)
+            local pages, from, to
+            pages, page, from, to = u.paginate(total, page, MOM_PER_PAGE)
             local nav = pages > 1 and (" · page " .. page .. "/" .. pages ..
                 " · /hsmoments " .. hours .. "h" .. (plat_filter and (" " .. plat_filter) or "") ..
                 " " .. (page < pages and page + 1 or 1) .. " for more") or ""

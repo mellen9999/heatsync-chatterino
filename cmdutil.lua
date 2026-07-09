@@ -57,6 +57,17 @@ function M.parse_plat_page(words, start)
     return plat, page, bad
 end
 
+-- shared pagination math for the list commands (/hsemotes /hsinv /hshot
+-- /hsmoments). clamps the page and returns pages + the clamped page + the
+-- inclusive [from, to] slice bounds.
+function M.paginate(total, page, per_page)
+    local pages = math.max(1, math.ceil(total / per_page))
+    if page > pages then page = pages end
+    local from = (page - 1) * per_page + 1
+    local to = math.min(total, from + per_page - 1)
+    return pages, page, from, to
+end
+
 function M.join_args(words)
     local parts = {}
     for i = 2, #words do parts[#parts + 1] = words[i] end

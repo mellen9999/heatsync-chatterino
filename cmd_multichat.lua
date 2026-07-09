@@ -5,7 +5,7 @@ local u = require("cmdutil")
 
 local M = {}
 
-function M.register(get_login)
+function M.register()
     -- multichat: pull kick/youtube live chat into THIS chatterino tab
     c2.register_command("/hsmulti", function(ctx)
         local cc_name

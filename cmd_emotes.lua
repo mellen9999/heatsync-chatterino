@@ -9,7 +9,7 @@ local u = require("cmdutil")
 
 local M = {}
 
-function M.register(get_login)
+function M.register()
     -- your emote menu: a clickable grid of YOUR inventory, recents-first then
     -- usage-ordered, paginated. `/hsemotes` page 1 · `/hsemotes 2` next page ·
     -- `/hsemotes <query>` filter to matching names. click any emote to insert.
@@ -46,10 +46,8 @@ function M.register(get_login)
         end
 
         local total = #names
-        local pages = math.max(1, math.ceil(total / HSEMOTES_PER_PAGE))
-        if page > pages then page = pages end
-        local from = (page - 1) * HSEMOTES_PER_PAGE + 1
-        local to = math.min(total, from + HSEMOTES_PER_PAGE - 1)
+        local pages, from, to
+        pages, page, from, to = u.paginate(total, page, HSEMOTES_PER_PAGE)
 
         local recent_set = {}
         for _, n in ipairs(recents.names()) do recent_set[n] = true end
@@ -169,10 +167,8 @@ function M.register(get_login)
                 -- paginate like /hsemotes so a 200-emote inventory doesn't dump
                 -- one oversized message
                 local total = #items
-                local pages = math.max(1, math.ceil(total / INV_PER_PAGE))
-                if page > pages then page = pages end
-                local from = (page - 1) * INV_PER_PAGE + 1
-                local to = math.min(total, from + INV_PER_PAGE - 1)
+                local pages, from, to
+                pages, page, from, to = u.paginate(total, page, INV_PER_PAGE)
                 local slice = {}
                 for i = from, to do slice[#slice + 1] = items[i] end
                 local nav = pages > 1 and (" · page " .. page .. "/" .. pages ..

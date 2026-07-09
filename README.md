@@ -18,7 +18,7 @@ no fork, no patched binary. one lua plugin that feature-detects the host build a
 
 **every emote the plugin draws is click-to-insert.** left-click one in chat, in the `/hsemotes` menu, or in a `/hsfind` result and its name drops into your input — the way emotes work in a browser. (clicks on emotes chatterino renders *natively* stay chatterino's; a plugin can't override those.)
 
-twitch emotes, badges, timestamps, and replies pass through untouched. a message with no heatsync content is never rebuilt — two hash lookups per word, nothing allocated on a miss.
+twitch emotes, badges, timestamps, and replies pass through untouched. a message with no heatsync content is never rebuilt — the render decision is two hash lookups per word, nothing allocated on a miss.
 
 known limits: zero-width overlay emotes render as normal inline images; username paints don't render (there's no plugin API for them, and they're not faked with colored text).
 
@@ -100,7 +100,7 @@ for the full experience (rendering, the emote menu, multichat), use a build whos
 
 | permission | why |
 |---|---|
-| `Network` | public heatsync.org endpoints (`/api/profile`, `/api/users/<id>/emotes`, `/api/users/emotes/batch`, `/api/emote-search`, `/api/search`, `/api/archive/search`, `/api/moments`, `/api/live/top`, `/api/chatter/<...>/stats`) plus one anonymous websocket for live sync and multichat. |
+| `Network` | public heatsync.org endpoints (`/api/profile`, `/api/users/<id>/emotes`, `/api/users/emotes/batch`, `/api/emote-search`, `/api/search`, `/api/archive/search`, `/api/moments`, `/api/live/top`, `/api/chatter/<...>/stats`, `/api/chatterino-badges`) plus one anonymous websocket for live sync and multichat. |
 | `FilesystemRead` / `FilesystemWrite` | remembers your settings, block list, multichat links, and recently-used emotes in the plugin's own data folder. local only. |
 
 **what leaves chatterino:**

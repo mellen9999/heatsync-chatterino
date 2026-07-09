@@ -5,8 +5,9 @@
 -- (synchronous, fires before paint) prescans the raw text, and only when a
 -- message actually contains a heatsync emote or threadlink is it rebuilt —
 -- untouched elements (twitch emotes, badges, timestamps, reply curves) are
--- passed through as objects, which chatterino clones. the miss path is two
--- hash lookups per word and allocates nothing.
+-- passed through as objects, which chatterino clones. the render DECISION on a
+-- miss is two hash lookups per word and allocates nothing (the archive relay's
+-- own per-message allocation is separate — see maybe_relay).
 local net = require("net")
 local caps = require("caps")
 local inventory = require("inventory")

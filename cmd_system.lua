@@ -59,7 +59,7 @@ function M.register(get_login)
             u.sysmsg(ctx, "🔥 marker off")
         else
             u.sysmsg(ctx, "🔥 marker is " .. (store.flame_enabled() and "on" or "off") ..
-                " · usage: /hsflame on|off")
+                " · /hsflame on|off")
         end
     end)
 
