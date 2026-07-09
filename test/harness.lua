@@ -1283,5 +1283,39 @@ do
     check(imgs <= 50, "token cap: a 100-emote kick message builds at most 50 image elements (got " .. imgs .. ")")
 end
 
+-- archive-relay throttle: at most 60 relays per wall-clock second (the socket
+-- accepts 60/s; the 61st in a tick is dropped, not queued). default-on flow, so
+-- lock the cap.
+require("store").set_archive(true)
+do
+    local rsock = sockets[#sockets]
+    rsock.opts.on_open() -- ensure connected so ws.send delivers
+    advance(2000)        -- move to a fresh second → counter resets on first message
+    local function relays()
+        local n = 0
+        for _, s in ipairs(rsock.sent) do if s:find("twitch:chat:relay", 1, true) then n = n + 1 end end
+        return n
+    end
+    local before = relays()
+    for i = 1, 61 do
+        local m = fake_msg("relayer" .. i, "88" .. i, "throttle probe " .. i)
+        chan.msgs[#chan.msgs + 1] = m
+        chan.appended_cb(m, nil)
+    end
+    check(relays() - before == 60, "relay throttle: 61 messages in one second relay exactly 60 (got " .. (relays() - before) .. ")")
+end
+require("store").set_archive(false)
+
+-- senders negative-cache: a failed batch lookup briefly caches "no HS emotes" so
+-- a flaky upstream doesn't hot-loop re-querying the same login
+do
+    senders.clear()
+    senders.resolve("ghostuser", "990099") -- queues a lookup
+    advance(2500)                          -- senders.flush drains the queue
+    local failed = http_fail("/api/users/emotes/batch")
+    check(failed, "senders: batch lookup fired for the queued sender")
+    check(not senders.is_known_hs("ghostuser"), "senders: a failed lookup negative-caches (not known-HS)")
+end
+
 print(failures == 0 and "\nALL PASS" or ("\n" .. failures .. " FAILURES"))
 host_os.exit(failures == 0 and 0 or 1)
