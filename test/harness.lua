@@ -1317,5 +1317,60 @@ do
     check(not senders.is_known_hs("ghostuser"), "senders: a failed lookup negative-caches (not known-HS)")
 end
 
+-- ===== fuzz: throw garbage at every entry point, assert nothing escapes =====
+-- the plugin's pcall guards + type checks should survive ANY malformed ws frame
+-- or command args. seeded so a failure is reproducible.
+math.randomseed(1)
+do
+    local function garb()
+        local pool = {
+            function() return nil end, function() return true end, function() return false end,
+            function() return 0 end, function() return -1 end, function() return math.random(2 ^ 31) end,
+            function() return "" end, function() return "x" end, function() return "\0\1\2\n\r\t" end,
+            function() return string.rep("A", 5000) end, function() return {} end,
+            function() return { math.random(), math.random() } end,
+            function() return { type = "garbage", data = {}, messages = {} } end,
+        }
+        return pool[math.random(#pool)]()
+    end
+    local function rand_ws()
+        local types = { "kick-chat-message", "kick-chat-backfill", "youtube:chat", "youtube:status",
+            "emote:added", "emote:removed", "emotes:refresh", "emote:broadcast", "emotes:batch-broadcast",
+            "stream:online", "heat:update", "presence:count", "", "unknown-type-xyz" }
+        local msg = { type = types[math.random(#types)] }
+        for _, k in ipairs({ "data", "messages", "channelId", "username", "emoteName", "emoteData",
+            "channel", "id", "content", "videoId", "status", "color", "timestamp", "emotes", "displayName" }) do
+            if math.random() < 0.5 then msg[k] = garb() end
+        end
+        return msg
+    end
+    local rsock = sockets[#sockets]
+    local names = {}
+    for n in pairs(commands) do names[#names + 1] = n end
+    local ws_escapes, cmd_escapes, first_crash = 0, 0, nil
+    -- several seeds so robustness isn't a single-seed fluke
+    for _, seed in ipairs({ 1, 7, 42, 1337 }) do
+        math.randomseed(seed)
+        -- malformed ws frames → ws.handle_text pcalls the whole dispatch chain
+        for _ = 1, 250 do
+            local ok = pcall(function() rsock.opts.on_text(register_payload(rand_ws())) end)
+            if not ok then ws_escapes = ws_escapes + 1 end
+        end
+        -- every command with random string args (command input is always IRC text),
+        -- answering any resulting fetch with garbage to fuzz the callback path too
+        for _ = 1, 250 do
+            local name = names[math.random(#names)]
+            local words = { name }
+            for j = 2, math.random(1, 6) do words[j] = tostring(garb()) end
+            local ok, err = pcall(commands[name], { words = words, channel = chan })
+            if not ok then cmd_escapes = cmd_escapes + 1; first_crash = first_crash or (name .. ": " .. tostring(err)) end
+            if #http_queue > 0 then pcall(http_answer, "", garb()) end
+        end
+    end
+    check(ws_escapes == 0, "fuzz: 1000 malformed ws frames (4 seeds) — nothing escaped the dispatch guards")
+    check(cmd_escapes == 0, "fuzz: 1000 command calls with random args (4 seeds) — no uncaught error" ..
+        (first_crash and (" (" .. first_crash .. ")") or ""))
+end
+
 print(failures == 0 and "\nALL PASS" or ("\n" .. failures .. " FAILURES"))
 host_os.exit(failures == 0 and 0 or 1)
