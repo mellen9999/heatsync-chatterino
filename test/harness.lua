@@ -318,16 +318,16 @@ check(saw_watch, "ws: emote:watch sent for own login")
 
 -- completion: own inventory prefix + ordering (usage desc)
 local res = completion_cb({ query = "peepo" })
-check(res.values[1] == "peepoHS", "completion: own emote matched")
+check(res.values[1] == "peepoHS ", "completion: own emote matched (trailing space)")
 local res2 = completion_cb({ query = ":omega" })
-check(res2.values[1] == "OMEGALUL2", "completion: colon-stripped case-insensitive prefix")
+check(res2.values[1] == "OMEGALUL2 ", "completion: colon-stripped case-insensitive prefix (trailing space)")
 
 -- 7tv search kicked off + cached on second keystroke
 completion_cb({ query = "xar" })
 http_answer("/api/emote-search?q=xar", { results = { ["7tv"] = { { name = "xar2EDM", url = "https://cdn.7tv.app/emote/01X/1x.webp" } } } })
 local res3 = completion_cb({ query = "xar" })
 local found7tv = false
-for _, v in ipairs(res3.values) do if v == "xar2EDM" then found7tv = true end end
+for _, v in ipairs(res3.values) do if v == "xar2EDM " then found7tv = true end end
 check(found7tv, "completion: 7tv cache hit on next keystroke")
 
 -- render: discover hooks the fake channel
@@ -524,7 +524,7 @@ chan.appended_cb(bm2, nil)
 check(not has_image(chan.replaced[#chan.replaced].new.init.elements), "block: peepoHS no longer an image after block")
 local cres = completion_cb({ query = "peepo" })
 local sawblocked = false
-for _, v in ipairs(cres.values) do if v == "peepoHS" then sawblocked = true end end
+for _, v in ipairs(cres.values) do if v == "peepoHS " then sawblocked = true end end
 check(not sawblocked, "block: peepoHS filtered from tab-complete")
 commands["/hsunblock"]({ words = { "/hsunblock", "peepoHS" }, channel = chan })
 check(not store.is_blocked("peepoHS"), "block: /hsunblock clears it")
@@ -861,8 +861,8 @@ do
     local fr = completion_cb({ query = "frieren" })
     local found, leaked = false, false
     for _, v in ipairs((fr and fr.values) or {}) do
-        if v == "FrierenPog" then found = true end
-        if v == "NotAMatch" then leaked = true end
+        if v == "FrierenPog " then found = true end
+        if v == "NotAMatch " then leaked = true end
     end
     check(found, "7tv completion: full query surfaces prefix-cached match (frieren←friere)")
     check(not leaked, "7tv completion: prefix names not matching the full query are filtered out")

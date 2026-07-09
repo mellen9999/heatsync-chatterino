@@ -111,7 +111,7 @@ http_answer("/api/users/42/emotes", { emotes = {
 check(inventory.count() == 1, "inventory loaded")
 
 local res = completion_cb({ query = "peepo" })
-check(res.values[1] == "peepoHS", "completion works")
+check(res.values[1] == "peepoHS ", "completion works (trailing space)")
 
 local added = {}
 local ctx = { words = { "/hsstatus" }, channel = {

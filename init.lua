@@ -158,6 +158,15 @@ local function build_completions(event)
     if not ok1 then net.log_warn("inventory completion failed: " .. tostring(err1)) end
     local ok2, err2 = pcall(seventv.append_matches, q, values, seen, COMPLETION_CAP)
     if not ok2 then net.log_warn("7tv completion failed: " .. tostring(err2)) end
+    -- chatterino inserts a plugin completion value VERBATIM — unlike its native
+    -- channel-emote/user completions, which carry a trailing space. so a picked
+    -- emote butts against the next word, and a :frieren popup shows a mix (native
+    -- entries spaced, ours not). append the space ourselves so every entry spaces
+    -- consistently. safe: names are already space-free + no leading /|. (net.
+    -- is_safe_name), so a trailing space can't fuse a command.
+    for i = 1, #values do
+        values[i] = values[i] .. " "
+    end
     return values
 end
 
