@@ -249,14 +249,17 @@ function M.register(get_login)
                     plat, name, tostring(viewers),
                     cat ~= "" and (" · " .. cat) or "",
                     (heat and heat > 0) and (" · heat " .. tostring(math.floor(heat))) or "")
-                -- twitch → jump to the channel in chatterino; else open on the platform
-                local link
-                if plat == "twitch" and type(s.channel or s.username) == "string" then
-                    link = { type = c2.LinkType.JumpToChannel, value = string.lower(s.channel or s.username) }
-                else
-                    link = { type = c2.LinkType.Url, value = net.ORIGIN .. "/u/" .. net.percent_encode(name) }
-                end
+                -- build the link INSIDE the pcall: c2.LinkType.* may be absent on
+                -- an older build, and this runs in an async callback that the
+                -- outer setup pcall no longer covers — one bad row must not abort
+                -- the rest of the list.
                 pcall(function()
+                    local link
+                    if plat == "twitch" and type(s.channel or s.username) == "string" then
+                        link = { type = c2.LinkType.JumpToChannel, value = string.lower(s.channel or s.username) }
+                    else
+                        link = { type = c2.LinkType.Url, value = net.ORIGIN .. "/u/" .. net.percent_encode(name) }
+                    end
                     ctx.channel:add_message(c2.Message.new({ elements = {
                         { type = "text", text = "[heatsync]", color = "system" },
                         { type = "text", text = text, color = "link", link = link },
@@ -370,7 +373,7 @@ function M.register(get_login)
         end
         local luser = string.lower(user)
         net.get_json(net.ORIGIN .. "/api/profile/" .. net.percent_encode(luser), 8000, function(payload, err)
-            local p = payload and payload.profile
+            local p = type(payload) == "table" and type(payload.profile) == "table" and payload.profile or nil
             local uid = p and p.id
             local ok_id = (type(uid) == "number" and uid > 0)
                 or (type(uid) == "string" and string.match(uid, "^%d+$") ~= nil)
@@ -387,12 +390,10 @@ function M.register(get_login)
                 end
                 local items = {}
                 for _, e in ipairs(rows) do
-                    local name = net.pick_first_str(e, "custom_name", "name", "code")
-                    local eurl = net.pick_first_str(e, "url", "src")
-                    if name and eurl then
-                        items[#items + 1] = { name = name, url = eurl,
-                            w = net.pick_first_num(e, "width"), h = net.pick_first_num(e, "height"),
-                            hs = true, label = name .. " · " .. who }
+                    local rec = net.parse_emote_row(e)
+                    if rec then
+                        items[#items + 1] = { name = rec.name, url = rec.url, w = rec.w, h = rec.h,
+                            hs = true, label = rec.name .. " · " .. who }
                     end
                 end
                 if #items == 0 then

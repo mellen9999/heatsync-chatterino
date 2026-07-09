@@ -6,14 +6,42 @@
 local M = {}
 
 local sets = {}       -- key -> c2.ImageSet
-local order = {}      -- fifo for eviction
+local ring = {}       -- slot 1..MAX -> key (O(1) circular eviction, no shift)
+local ring_pos = 0
 local MAX = 400
 local TARGET_H = 28   -- twitch 1x emote line height
+
+-- CDN allowlist. an emote's backing URL is USER-influenced (a heatsync user
+-- equips it), so an arbitrary host would be a tracking beacon / SSRF fetched by
+-- every viewer who resolves that sender — defense in depth even if the server
+-- validates on upload. these are the ONLY hosts the plugin ever legitimately
+-- loads an image from: the emote providers, kick/youtube emote CDNs, heatsync's
+-- own CDN, and the first-party chatterino-badge host. non-allowlisted → nil, and
+-- the caller falls back to text.
+local ALLOWED_HOST_SUFFIXES = {
+    "7tv.app", "betterttv.net", "frankerfacez.com", -- emote providers
+    "kick.com", "ggpht.com", "googleusercontent.com", -- kick + youtube emotes
+    "heatsync.org", "fourtf.com",                     -- first-party cdn + cc badges
+}
+local function host_allowed(url)
+    local host = string.match(url, "^https?://([^/]+)")
+    if not host then return false end
+    host = string.lower(string.match(host, "^([^:]+)") or host) -- drop any :port
+    for _, suf in ipairs(ALLOWED_HOST_SUFFIXES) do
+        -- exact host OR a real subdomain of it. the `.`-prefix check rejects the
+        -- classic bypass (e.g. "heatsync.org.evil.com" does NOT end in ".heatsync.org").
+        if host == suf or string.sub(host, -(#suf + 1)) == "." .. suf then
+            return true
+        end
+    end
+    return false
+end
 
 -- target_h defaults to emote height (28); badges pass ~18. keyed by url+target
 -- so the same image can be cached at two display sizes without collision.
 function M.for_url(url, w, h, target_h)
     if type(url) ~= "string" or url == "" then return nil end
+    if not host_allowed(url) then return nil end
     target_h = target_h or TARGET_H
     local key = url .. "@" .. target_h
     local set = sets[key]
@@ -33,11 +61,14 @@ function M.for_url(url, w, h, target_h)
     end)
     if not ok or not built then return nil end
     sets[key] = built
-    order[#order + 1] = key
-    while #order > MAX do
-        local oldest = table.remove(order, 1)
-        if oldest then sets[oldest] = nil end
-    end
+    -- circular eviction: overwrite the slot MAX inserts ago in O(1), instead of
+    -- table.remove(order, 1) which shifts the whole array on every eviction once
+    -- full (the same fix already applied to multichat's dedup buffer).
+    local slot = (ring_pos % MAX) + 1
+    local evicted = ring[slot]
+    if evicted ~= nil then sets[evicted] = nil end
+    ring[slot] = key
+    ring_pos = ring_pos + 1
     return built
 end
 

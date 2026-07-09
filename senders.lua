@@ -107,15 +107,9 @@ local function rows_to_map(rows)
     local map = {}
     local any = false
     for _, e in ipairs(rows) do
-        local name = net.pick_first_str(e, "custom_name", "name", "code")
-        local url = net.pick_first_str(e, "url", "src")
-        if name and url then
-            map[name] = {
-                url = url,
-                w = net.pick_first_num(e, "width"),
-                h = net.pick_first_num(e, "height"),
-                zw = e.zero_width == true,
-            }
+        local rec = net.parse_emote_row(e)
+        if rec then
+            map[rec.name] = { url = rec.url, w = rec.w, h = rec.h, zw = rec.zw }
             any = true
         end
     end

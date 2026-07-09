@@ -151,7 +151,7 @@ local function build_completions(event)
     local seen = {}
     -- seed `seen` with locally-blocked names so neither the inventory nor
     -- 7tv pass will surface them (both skip anything already in `seen`)
-    for _, name in ipairs(store.blocklist()) do seen[name] = true end
+    for name in pairs(store.blocked_set()) do seen[name] = true end
     -- own inventory first (usage-weighted), then 7tv by popularity
     local ok1, err1 = pcall(inventory.match_prefix, q, qlen, values, seen, COMPLETION_CAP)
     if not ok1 then net.log_warn("inventory completion failed: " .. tostring(err1)) end

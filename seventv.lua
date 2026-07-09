@@ -3,6 +3,7 @@
 -- server-side). cache-first; a fetch kicked off on one keystroke feeds the
 -- next one.
 local net = require("net")
+local caps = require("caps")
 
 local M = {}
 
@@ -123,7 +124,11 @@ local function kick_off(q)
     M.search_all(q, function(results)
         inflight[q] = nil
         if #results == 0 then
-            put(q, {}, true)
+            -- on t0 (no c2.later) net.now() is frozen at 0, so ERROR_TTL_S never
+            -- elapses and an empty/failed result would blacklist this query for
+            -- the whole session. only negative-cache when the clock actually ticks;
+            -- on t0 just re-fetch next time (completions are infrequent).
+            if caps.later then put(q, {}, true) end
             return
         end
         local names = {}

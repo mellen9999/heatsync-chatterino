@@ -290,7 +290,13 @@ local function inject(line)
     if type(display) ~= "string" or display == "" then display = line.username or "?" end
     local tag = line.platform == "kick" and "[K]" or "[Y]"
     local tag_color = line.platform == "kick" and KICK_COLOR or YT_COLOR
-    local uname_color = (type(line.color) == "string" and line.color ~= "") and line.color or tag_color
+    -- accept the chatter's own color only if it's a real #rrggbb hex — this is
+    -- the one field taken from a remote chatter unvalidated; a garbage value
+    -- would either break the element or paint an unreadable name.
+    local uname_color = tag_color
+    if type(line.color) == "string" and string.match(line.color, "^#%x%x%x%x%x%x$") then
+        uname_color = line.color
+    end
     -- render platform emotes as images: kick's [emote:id:name] tokens,
     -- youtube's per-message shortcode+url list
     local body
@@ -301,7 +307,7 @@ local function inject(line)
     end
 
     for cc_name in pairs(targets) do
-        pcall(function()
+        local ok, err = pcall(function()
             local ch = c2.Channel.by_name(cc_name)
             -- target tab closed / volatile: count it so /hsstatus can show that
             -- multichat is dropping lines rather than failing invisibly
@@ -331,6 +337,13 @@ local function inject(line)
                 elements = elems,
             }))
         end)
+        -- a systemic build failure (e.g. a missing element-type on an older
+        -- build) would otherwise vanish silently — surface it via the same
+        -- dropped counter + a log so /hsstatus shows multichat isn't delivering.
+        if not ok then
+            M.dropped = M.dropped + 1
+            net.log_warn("multichat inject failed: " .. tostring(err))
+        end
     end
 end
 

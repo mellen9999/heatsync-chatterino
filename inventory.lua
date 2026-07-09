@@ -60,18 +60,12 @@ local function apply_rows(rows, login)
     local entries = {}
     local count = 0
     for _, e in ipairs(rows) do
-        local name = net.pick_first_str(e, "custom_name", "name", "code")
-        local url = net.pick_first_str(e, "url", "src")
-        if name and url then
-            new_map[name] = {
-                url = url,
-                w = net.pick_first_num(e, "width"),
-                h = net.pick_first_num(e, "height"),
-                zw = e.zero_width == true,
-            }
+        local rec = net.parse_emote_row(e)
+        if rec then
+            new_map[rec.name] = { url = rec.url, w = rec.w, h = rec.h, zw = rec.zw }
             table.insert(entries, {
-                name = name,
-                usage = tonumber(e.usage_count or e.uses or 0) or 0,
+                name = rec.name,
+                usage = tonumber(type(e) == "table" and (e.usage_count or e.uses) or 0) or 0,
             })
             count = count + 1
         end
@@ -117,7 +111,10 @@ function M.refresh(login)
             done()
             return
         end
-        local uid = data.profile and data.profile.id
+        -- guard the shape: a non-table profile (e.g. a "not found" placeholder)
+        -- must degrade, not throw in the boot-critical refresh path
+        local prof = type(data.profile) == "table" and data.profile or nil
+        local uid = prof and prof.id
         if not is_real_numeric_id(uid) then
             net.log_warn("no heatsync inventory yet for " .. login ..
                 " (profile id missing or shadow). sign in at heatsync.org once.")

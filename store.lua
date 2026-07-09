@@ -23,6 +23,14 @@ local archive_on = true -- default ON (opt-out) — archives public twitch chat
 local automc_on = true -- default ON (opt-out) — auto-merges a stream's kick/yt chat when publicly linked
 local badges_on = false
 
+-- exact toggle read: the whole file must BE the value (whitespace-tolerant),
+-- not merely contain it — an unanchored string.match("0") would misfire on any
+-- future/partial/corrupt content that happens to include a "0" somewhere.
+local function file_is(filename, want)
+    local raw = net.read_data(filename)
+    return type(raw) == "string" and string.match(raw, "^%s*(.-)%s*$") == want
+end
+
 -- ----- load on boot -----
 local function load()
     local raw = net.read_data(BLOCKS_FILE)
@@ -32,24 +40,12 @@ local function load()
             if trimmed ~= "" then blocked[trimmed] = true end
         end
     end
-    local flame = net.read_data(FLAME_FILE)
-    if type(flame) == "string" and string.match(flame, "0") then
-        flame_on = false
-    end
-    -- default ON: only an explicit "0" on disk turns archiving off
-    local arch = net.read_data(ARCHIVE_FILE)
-    if type(arch) == "string" and string.match(arch, "0") then
-        archive_on = false
-    end
-    -- default ON: only an explicit "0" on disk turns auto-multichat off
-    local am = net.read_data(AUTOMC_FILE)
-    if type(am) == "string" and string.match(am, "0") then
-        automc_on = false
-    end
-    local bg = net.read_data(BADGES_FILE)
-    if type(bg) == "string" and string.match(bg, "1") then
-        badges_on = true
-    end
+    if file_is(FLAME_FILE, "0") then flame_on = false end
+    -- default ON: only an explicit "0" on disk turns these off
+    if file_is(ARCHIVE_FILE, "0") then archive_on = false end
+    if file_is(AUTOMC_FILE, "0") then automc_on = false end
+    -- default OFF (opt-in): only an explicit "1" turns badges on
+    if file_is(BADGES_FILE, "1") then badges_on = true end
 end
 
 local function persist_blocks()
@@ -84,6 +80,13 @@ function M.blocklist()
     for name in pairs(blocked) do names[#names + 1] = name end
     table.sort(names)
     return names
+end
+
+-- read-only view of the blocked set for the completion HOT PATH — no array
+-- alloc + no table.sort per keystroke (which blocklist() does). callers iterate
+-- with pairs() for membership and must NOT mutate the returned table.
+function M.blocked_set()
+    return blocked
 end
 
 -- ----- flame toggle -----

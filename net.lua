@@ -69,6 +69,25 @@ function M.pick_first_num(obj, ...)
     return nil
 end
 
+-- parse one emote row from any heatsync/provider response shape into a
+-- {name, url, w, h, zw} record, or nil if it lacks a usable name+url. the ONE
+-- home for this shape — inventory, senders, and the /hsinv browser all built
+-- near-identical copies of this dance before (accept custom_name/name/code,
+-- url/src, width/height, zero_width).
+function M.parse_emote_row(e)
+    if type(e) ~= "table" then return nil end
+    local name = M.pick_first_str(e, "custom_name", "name", "code")
+    local url = M.pick_first_str(e, "url", "src")
+    if not name or not url then return nil end
+    return {
+        name = name,
+        url = url,
+        w = M.pick_first_num(e, "width"),
+        h = M.pick_first_num(e, "height"),
+        zw = e.zero_width == true,
+    }
+end
+
 -- One-shot GET expecting JSON. cb(data) on success, cb(nil, err) on any
 -- failure. Never throws; the callback always fires exactly once.
 function M.get_json(url, timeout_ms, cb)
@@ -76,17 +95,25 @@ function M.get_json(url, timeout_ms, cb)
         local req = c2.HTTPRequest.create(c2.HTTPMethod.Get, url)
         req:set_timeout(timeout_ms or 10000)
         req:set_header("Accept", "application/json")
+        -- the callback runs LATER (async), outside the setup pcall below, so it
+        -- must be guarded here or a bug in any handler — indexing a wrong-shaped
+        -- field, a bad element table — escapes into chatterino's native dispatch.
+        -- this is the single choke that makes every get_json consumer crash-safe.
+        local function safe_cb(a, b)
+            local ok, err = pcall(cb, a, b)
+            if not ok then M.log_warn("get_json callback failed: " .. tostring(err)) end
+        end
         req:on_error(function(res)
             local e = "http error"
             pcall(function() e = tostring(res:error()) end)
-            cb(nil, e)
+            safe_cb(nil, e)
         end)
         req:on_success(function(res)
             local data = M.safe_json_parse(res:data())
             if data == nil then
-                cb(nil, "unparseable response")
+                safe_cb(nil, "unparseable response")
             else
-                cb(data)
+                safe_cb(data)
             end
         end)
         req:execute()

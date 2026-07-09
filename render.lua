@@ -298,7 +298,9 @@ local function do_process(ch, msg, hint)
     -- would drop your native channel badges (e.g. your sub badge).
     local want_flame = store.flame_enabled() and login ~= senders.own_login
         and senders.is_known_hs(login)
-    if not has_hits(text, sender_map) and not want_flame and not badges.has(msg.user_id) then return end
+    -- O(1) checks first; only pay the O(words) has_hits scan when neither the
+    -- flame nor a badge already forces the rebuild (Lua `or` short-circuits).
+    if not (want_flame or badges.has(msg.user_id) or has_hits(text, sender_map)) then return end
 
     local repl = build_replacement(msg, sender_map, want_flame)
     if hint then
@@ -394,10 +396,15 @@ function M.discover()
                                 pcall(function() is_tw = ch:is_twitch_channel() end)
                             end
                             if is_tw then
-                                if not caps.confirm_msg_hooks(ch) then return end
-                                local name = ch:get_name()
-                                if name ~= "" and not hooked[name] then
-                                    hook(ch, name)
+                                -- hooks missing → skip THIS channel, not the whole
+                                -- sweep (a bare `return` aborted every other open
+                                -- tab too). the verdict is build-wide + memoized,
+                                -- so this just cleanly no-ops each split.
+                                if caps.confirm_msg_hooks(ch) then
+                                    local name = ch:get_name()
+                                    if name ~= "" and not hooked[name] then
+                                        hook(ch, name)
+                                    end
                                 end
                             end
                         end

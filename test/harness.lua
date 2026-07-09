@@ -879,7 +879,7 @@ check(#chan.replaced == rc, "fix: channel_name-less (injected) message skipped b
 local badges = require("badges")
 badges.load()
 http_answer("/api/chatterino-badges", { badges = {
-    { tooltip = "Chatterino Donator", image1 = "https://x/badge.png", users = { "7007", "1001" } },
+    { tooltip = "Chatterino Donator", image1 = "https://fourtf.com/chatterino/badge.png", users = { "7007", "1001" } },
 } })
 -- off by default → no badge even for a listed user
 require("store").set_badges(false)
@@ -1098,6 +1098,39 @@ do
     MSG_NEW_THROWS = false
     local logged = count_fail_logs() - base
     check(logged == 3, "render flood-guard: flapping fault logs exactly 3× then stays suppressed (got " .. logged .. ")")
+end
+
+-- CDN allowlist (beacon defense): an emote whose backing URL is on a
+-- non-allowlisted host must NOT be loaded — it falls back to text. the host here
+-- is the classic suffix-bypass ("heatsync.org.evil.com" is NOT ".heatsync.org").
+require("store").set_flame(false)
+senders.feed_broadcast("evilhost", "beaconMote",
+    { url = "https://heatsync.org.evil.com/e/x.webp", width = 32, height = 32 })
+do
+    local em = fake_msg("evilhost", "13337", "look beaconMote here")
+    chan.msgs[#chan.msgs + 1] = em
+    local rc0 = #chan.replaced
+    chan.appended_cb(em, nil)
+    local imaged = false
+    if #chan.replaced > rc0 then
+        for _, e in ipairs(chan.replaced[#chan.replaced].new.init.elements) do
+            if type(e) == "table" and e.type == "scaling-image" then imaged = true end
+        end
+    end
+    check(not imaged, "allowlist: emote on a non-allowlisted host renders as text, never an image")
+end
+-- and an allowlisted host still images (sanity that the gate isn't over-broad)
+senders.feed_broadcast("gooduser2", "goodMote2",
+    { url = "https://cdn.7tv.app/emote/GOOD/1x.webp", width = 32, height = 32 })
+do
+    local em = fake_msg("gooduser2", "13338", "look goodMote2 here")
+    chan.msgs[#chan.msgs + 1] = em
+    chan.appended_cb(em, nil)
+    local imaged = false
+    for _, e in ipairs(chan.replaced[#chan.replaced].new.init.elements) do
+        if type(e) == "table" and e.type == "scaling-image" then imaged = true end
+    end
+    check(imaged, "allowlist: emote on an allowlisted CDN still renders as an image")
 end
 
 print(failures == 0 and "\nALL PASS" or ("\n" .. failures .. " FAILURES"))
