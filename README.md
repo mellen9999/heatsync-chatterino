@@ -55,7 +55,7 @@ heatsync users get a 🔥 before their name in any chat, so they're identifiable
 | `<tab>` | own inventory first (usage-weighted), then the global catalog (7TV/BTTV/FFZ, popularity-ranked) |
 | `/hsemotes [page\|query]` | **your emote menu** — clickable inventory grid, recents-first; page or filter it |
 | `/hsfind <query>` | **catalog search** — inventory + 7TV/BTTV/FFZ shown as images; click one to insert |
-| `/hsinv <user>` | **browse anyone's inventory** — a user's heatsync emotes as a click-to-insert grid |
+| `/hsinv <user> [page]` | **browse anyone's inventory** — a user's heatsync emotes as a click-to-insert grid, paged |
 | `/hssearch <query>` | **search heatsync posts** — click a result to open the thread |
 | `/hschat <query> [@user] [#channel]` | **search the chat archive** — the relayed twitch-chat corpus; click a line to open it at the exact message. narrow with `@user`/`#channel` (a bare query scopes to the current tab) |
 | `/hsmulti kick:<slug>` \| `yt:<handle>` \| `off` \| `auto on\|off` | merge kick/youtube chat into this tab; `auto` links a stream's platforms automatically |
@@ -65,7 +65,7 @@ heatsync users get a 🔥 before their name in any chat, so they're identifiable
 | `/hsblock <name>` \| `/hsunblock` \| `/hsblocklist` | locally hide an emote (render + tab-complete) |
 | `/hsflame on\|off` | toggle the 🔥 heatsync-user marker |
 | `/hsbadges on\|off` | show chatterino global badges on chatters (opt-in) |
-| `/hsmoments [hours] [platform] [page]` | top live chat moments, clickable permalinks; filter by platform, page through |
+| `/hsmoments [<n>h] [platform] [page]` | top live chat moments, clickable permalinks; `48h` sets the window, a bare number pages, filter by platform |
 | `/hslogs <user> [channel]` | chatter stats (messages, channels, active days, top channels) + archive link |
 | `/hshelp` | one-screen index of every command, with a note on what this build supports |
 | `/hsrefresh` · `/hsstatus` · `/hsclear` · `/hsdump` · `/hstest` | inventory refetch · capability/status report · clear caches · dump last message's elements to the log · post a render self-test |

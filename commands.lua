@@ -52,7 +52,7 @@ end
 -- hours value, so its number handling differs and can't share this.)
 local PLAT_ALIAS = { twitch = "twitch", kick = "kick", youtube = "youtube", yt = "youtube" }
 local function parse_plat_page(words, start)
-    local plat, page = nil, 1
+    local plat, page, bad = nil, 1, nil
     for i = start, #words do
         local w = words[i]
         if type(w) == "string" and w ~= "" then
@@ -61,10 +61,12 @@ local function parse_plat_page(words, start)
                 page = math.floor(n)
             elseif PLAT_ALIAS[string.lower(w)] then
                 plat = PLAT_ALIAS[string.lower(w)]
+            else
+                bad = bad or w -- first unrecognized token → a hint, not silence
             end
         end
     end
-    return plat, page
+    return plat, page, bad
 end
 
 function M.register(get_login)
@@ -209,7 +211,8 @@ function M.register(get_login)
     -- params — so a platform filter and paging cost nothing extra.
     local HOT_PER_PAGE = 10
     c2.register_command("/hshot", function(ctx)
-        local plat_filter, page = parse_plat_page(ctx.words, 2)
+        local plat_filter, page, bad = parse_plat_page(ctx.words, 2)
+        if bad then sysmsg(ctx, "ignoring unrecognized filter '" .. bad .. "' (use twitch/kick/youtube)") end
         net.get_json(net.ORIGIN .. "/api/live/top?limit=50", 8000, function(payload, err)
             if not payload or type(payload.streams) ~= "table" then
                 sysmsg(ctx, "hot streams unavailable: " .. tostring(err))
@@ -273,7 +276,7 @@ function M.register(get_login)
     c2.register_command("/hswhois", function(ctx)
         local user = ctx.words[2]
         if not user or user == "" then
-            sysmsg(ctx, "usage: /hswhois <user>")
+            sysmsg(ctx, "usage: /hswhois <user> — heatsync profile card (heat, followers, live, posts)")
             return
         end
         net.get_json(net.ORIGIN .. "/api/profile/" .. net.percent_encode(string.lower(user)), 8000, function(payload, err)
@@ -343,9 +346,10 @@ function M.register(get_login)
                 sysmsg(ctx, "no heatsync posts for '" .. q .. "'")
                 return
             end
-            -- header must match the rows actually listed, not the server's raw
-            -- count (the loop caps at SEARCH_LIMIT)
-            sysmsg(ctx, math.min(#rows, SEARCH_LIMIT) .. " heatsync post(s) for '" .. q .. "':")
+            -- header matches the rows actually listed (loop caps at SEARCH_LIMIT),
+            -- and is honest when the cap was hit and there may be more
+            local more = (#rows >= SEARCH_LIMIT) and (" (top " .. SEARCH_LIMIT .. " — refine to narrow)") or ""
+            sysmsg(ctx, math.min(#rows, SEARCH_LIMIT) .. " heatsync post(s) for '" .. q .. "'" .. more .. ":")
             for i, r in ipairs(rows) do
                 if i > SEARCH_LIMIT then break end
                 local id = type(r) == "table" and net.pick_first_str(r, "base36_id", "id")
@@ -365,12 +369,15 @@ function M.register(get_login)
     -- insert grid. uses the same public endpoints the sender-emote path already
     -- reads (see senders.lua) — nothing private, and it never feeds the render
     -- path (privacy invariant: only the SENDER's own inventory renders inline).
+    local INV_PER_PAGE = 50
     c2.register_command("/hsinv", function(ctx)
         local user = ctx.words[2]
         if not is_valid_name(user) then
-            sysmsg(ctx, "usage: /hsinv <user> — shows a user's heatsync emotes; click to insert")
+            sysmsg(ctx, "usage: /hsinv <user> [page] — shows a user's heatsync emotes; click to insert")
             return
         end
+        local page = tonumber(ctx.words[3])
+        if not (page and page >= 1 and math.floor(page) == page) then page = 1 else page = math.floor(page) end
         local luser = string.lower(user)
         net.get_json(net.ORIGIN .. "/api/profile/" .. net.percent_encode(luser), 8000, function(payload, err)
             local p = type(payload) == "table" and type(payload.profile) == "table" and payload.profile or nil
@@ -400,8 +407,19 @@ function M.register(get_login)
                     sysmsg(ctx, who .. " has no heatsync emotes")
                     return
                 end
-                local header = "[heatsync] " .. who .. "'s emotes (" .. #items .. ") — click to insert:"
-                if not picker.render(ctx.channel, header, items) then sysmsg(ctx, "inventory render failed") end
+                -- paginate like /hsemotes so a 200-emote inventory doesn't dump
+                -- one oversized message
+                local total = #items
+                local pages = math.max(1, math.ceil(total / INV_PER_PAGE))
+                if page > pages then page = pages end
+                local from = (page - 1) * INV_PER_PAGE + 1
+                local to = math.min(total, from + INV_PER_PAGE - 1)
+                local slice = {}
+                for i = from, to do slice[#slice + 1] = items[i] end
+                local nav = pages > 1 and (" · page " .. page .. "/" .. pages ..
+                    " · /hsinv " .. luser .. " " .. (page < pages and page + 1 or 1) .. " for more") or ""
+                local header = "[heatsync] " .. who .. "'s emotes (" .. total .. ")" .. nav .. " — click to insert:"
+                if not picker.render(ctx.channel, header, slice) then sysmsg(ctx, "inventory render failed") end
             end)
         end)
     end)
@@ -433,7 +451,7 @@ function M.register(get_login)
             return
         end
         if store.block(name) then
-            sysmsg(ctx, "blocked '" .. name .. "' locally (won't render or tab-complete)")
+            sysmsg(ctx, "blocked '" .. name .. "' locally (won't render or tab-complete) · /hsunblock " .. name .. " to undo")
         else
             sysmsg(ctx, "'" .. name .. "' already blocked")
         end
@@ -442,7 +460,7 @@ function M.register(get_login)
     c2.register_command("/hsunblock", function(ctx)
         local name = ctx.words[2]
         if not name or name == "" then
-            sysmsg(ctx, "usage: /hsunblock <emote name>")
+            sysmsg(ctx, "usage: /hsunblock <emote name> — removes a local block")
             return
         end
         if store.unblock(name) then
@@ -591,6 +609,10 @@ function M.register(get_login)
         local url = net.ORIGIN .. "/api/archive/search?limit=8&q=" .. net.percent_encode(q)
         if user then url = url .. "&username=" .. net.percent_encode(user) end
         if chan then url = url .. "&channel=" .. net.percent_encode(chan) end
+        -- immediate ack: this can take up to 12s (the server's 10s FTS ceiling),
+        -- so tell the user it's working instead of a silent gap that reads as a
+        -- swallowed command.
+        sysmsg(ctx, "searching the chat archive…")
         net.get_json(url, 12000, function(payload, err)
             -- a 10s statement-timeout 503 also lands here (get_json only sees
             -- success/failure); the narrow-it advice is the right answer for both.
@@ -604,7 +626,9 @@ function M.register(get_login)
                 sysmsg(ctx, "no archived lines for '" .. q .. "'" .. scope)
                 return
             end
-            sysmsg(ctx, #rows .. " archived line(s) for '" .. q .. "'" .. scope .. ":")
+            -- next_cursor present → the server capped the page and more exist
+            local more = payload.next_cursor and " (more exist — narrow further)" or ""
+            sysmsg(ctx, #rows .. " archived line(s) for '" .. q .. "'" .. scope .. more .. ":")
             for _, r in ipairs(rows) do
                 if type(r) == "table" and type(r.message_id) == "string" then
                     local plat = tostring(r.platform or "twitch")
@@ -657,10 +681,11 @@ function M.register(get_login)
     -- grouped, with a tier note so it's honest about what's unavailable here.
     c2.register_command("/hshelp", function(ctx)
         sysmsg(ctx, "heatsync commands · build " .. caps.name())
-        sysmsg(ctx, "emotes: :name tab-complete · /hsemotes menu · /hsfind <q> search · /hsinv <user>")
-        sysmsg(ctx, "archive: /hssearch <q> posts · /hschat <q> [@user] [#chan] chat-logs · /hslogs <user> [chan] · /hsmoments [h] [plat] [pg] · /hshot [plat] [pg] · /hswhois <user>")
-        sysmsg(ctx, "chat: /hsmulti kick:<slug>|yt:<handle>|off|auto on|off · /hsflame · /hsbadges · /hsblock <name>")
+        sysmsg(ctx, "emotes: :name tab-complete · /hsemotes menu · /hsfind <q> search · /hsinv <user> [page]")
+        sysmsg(ctx, "archive: /hssearch <q> posts · /hschat <q> [@user] [#chan] chat-logs · /hslogs <user> [chan] · /hsmoments [<n>h] [plat] [pg] · /hshot [plat] [pg] · /hswhois <user>")
+        sysmsg(ctx, "chat: /hsmulti kick:<slug>|yt:<handle>|off|auto on|off · /hsflame · /hsbadges · /hsblock <name> · /hsunblock <name> · /hsblocklist")
         sysmsg(ctx, "system: /hsstatus · /hsrefresh · /hsarchive on|off · /hsclear")
+        sysmsg(ctx, "syntax: @user #channel narrow a search · plat:value links a multichat source · <n>h = hours")
         if caps.tier < 2 then
             sysmsg(ctx, "note: inline emote rendering + the /hsemotes/hsfind image menus need a nightly build — this is " .. caps.name() .. " (tab-complete + commands work)")
         end
@@ -741,23 +766,31 @@ function M.register(get_login)
         end
     end)
 
-    -- top live-chat moments. `/hsmoments [hours] [platform] [page]` — first
-    -- number is the lookback window (1-168h, default 24), a platform token
-    -- filters, a second number pages. over-fetch once, filter+page client-side.
+    -- top live-chat moments. `/hsmoments [<n>h] [platform] [page]` — `48h` sets
+    -- the lookback window (1-168h, default 24h), a platform token filters, a bare
+    -- number pages (so bare numbers mean the same thing here as in /hshot — no
+    -- collision with the window). over-fetch once, filter+page client-side.
     local MOM_PER_PAGE = 5
     c2.register_command("/hsmoments", function(ctx)
-        local hours, page, plat_filter = 24, 1, nil
-        local nums = {}
+        local hours, page, plat_filter, bad = 24, 1, nil, nil
         for i = 2, #ctx.words do
             local w = ctx.words[i]
             if type(w) == "string" and w ~= "" then
+                local lw = string.lower(w)
+                local hr = tonumber(string.match(lw, "^(%d+)h$")) -- "48h" → hours
                 local n = tonumber(w)
-                if n then nums[#nums + 1] = n
-                elseif PLAT_ALIAS[string.lower(w)] then plat_filter = PLAT_ALIAS[string.lower(w)] end
+                if hr then
+                    if hr >= 1 and hr <= 168 then hours = hr end
+                elseif n and n >= 1 and math.floor(n) == n then
+                    page = math.floor(n)
+                elseif PLAT_ALIAS[lw] then
+                    plat_filter = PLAT_ALIAS[lw]
+                else
+                    bad = bad or w
+                end
             end
         end
-        if nums[1] and nums[1] >= 1 and nums[1] <= 168 then hours = math.floor(nums[1]) end
-        if nums[2] and nums[2] >= 1 then page = math.floor(nums[2]) end
+        if bad then sysmsg(ctx, "ignoring unrecognized arg '" .. bad .. "' (use <hours>h, a platform, or a page number)") end
         local url = net.ORIGIN .. "/api/moments?limit=30&hours=" .. tostring(hours)
         net.get_json(url, 8000, function(payload, err)
             if not payload then
@@ -787,7 +820,7 @@ function M.register(get_login)
             local from = (page - 1) * MOM_PER_PAGE + 1
             local to = math.min(total, from + MOM_PER_PAGE - 1)
             local nav = pages > 1 and (" · page " .. page .. "/" .. pages ..
-                " · /hsmoments " .. hours .. (plat_filter and (" " .. plat_filter) or "") ..
+                " · /hsmoments " .. hours .. "h" .. (plat_filter and (" " .. plat_filter) or "") ..
                 " " .. (page < pages and page + 1 or 1) .. " for more") or ""
             sysmsg(ctx, "top moments · last " .. tostring(hours) .. "h" ..
                 (plat_filter and (" · " .. plat_filter) or "") .. nav)

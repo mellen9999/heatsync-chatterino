@@ -1010,7 +1010,7 @@ check(not added_text_has("TW1", 3), "hshot: platform filter excludes twitch")
 
 -- /hsmoments: hours + platform filter + platform prefix
 sb = #chan.added
-commands["/hsmoments"]({ words = { "/hsmoments", "48", "kick" }, channel = chan })
+commands["/hsmoments"]({ words = { "/hsmoments", "48h", "kick" }, channel = chan })
 http_answer("/api/moments?limit=30&hours=48", { moments = {
     { id = "ma", platform = "kick", channel = "cageero", rate = 28, baseline = "0.4" },
     { id = "mb", platform = "twitch", channel = "forsen", rate = 10, baseline = "1" },
