@@ -383,6 +383,7 @@ local burl = http_answer("/api/users/emotes/batch", { sets = { ["twitch:3003"] =
     { custom_name = "emilyDance", url = "https://cdn.heatsync.org/e/9.webp", width = 64, height = 64 },
 } } })
 check(burl ~= nil and burl:find("twitch:3003", 1, true) ~= nil, "senders: batch lookup fired with twitch id")
+advance(200) -- backpass is coalesced onto a ~120ms timer now; pump it
 check(#chan.replaced == 3, "senders: back-pass rendered the sender's recent message")
 
 -- ws broadcast feeds sender cache immediately

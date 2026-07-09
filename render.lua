@@ -95,7 +95,9 @@ end
 -- ffz search cache here — see rebuild_text_element for why.
 local function has_hits(text, sender_map)
     for word in string.gmatch(text, "%S+") do
-        if not store.is_blocked(word) and sender_map and renderable(sender_map[word]) then
+        -- sender_map first: for a sender with no HS inventory (the common case)
+        -- this skips a needless is_blocked call + hash lookup on every word.
+        if sender_map and not store.is_blocked(word) and renderable(sender_map[word]) then
             return true
         end
         if thread_id(word) then return true end
@@ -137,7 +139,6 @@ local function rebuild_text_element(elems, el, sender_map, budget)
     -- links (urls, mentions) are their own element types (link/mention), not
     -- text elements, and pass through untouched, so nothing is lost here.
     for _, word in ipairs(el.words) do
-        local blocked = store.is_blocked(word)
         local emote = sender_map and sender_map[word]
         -- render a word ONLY if the SENDER's heatsync inventory has it (extension
         -- parity). we deliberately do NOT render words that merely match the
@@ -151,7 +152,9 @@ local function rebuild_text_element(elems, el, sender_map, budget)
         -- the 1x line height would mis-scale it — a 128-tall record rendered a 32px
         -- image at ~7px, i.e. invisible. renderable() guarantees emote.h > 0.
         local over_budget = budget.n >= MAX_RENDER_TOKENS
-        local set = not over_budget and renderable(emote) and not blocked
+        -- is_blocked only when the word is actually a renderable emote — a plain
+        -- word (the majority) skips the lookup via short-circuit.
+        local set = not over_budget and renderable(emote) and not store.is_blocked(word)
             and hs_imageset(emote.url, emote.h) or nil
         if set then
             budget.n = budget.n + 1
@@ -195,11 +198,17 @@ local function rebuild_text_element(elems, el, sender_map, budget)
     end
 end
 
+-- defensive field reads for pcall(fn, el) — named + module-level so the rebuild
+-- loop doesn't allocate a fresh closure per element/call just to guard a field.
+local function read_type(el) return el.type end
+local function read_words(el) return el.words end
+local function read_username_flag(el)
+    return (el.flags & c2.MessageElementFlag.Username) ~= 0
+end
+
 -- is this element the username? (bit-test the Username flag defensively)
 local function is_username_el(el)
-    local ok, has = pcall(function()
-        return (el.flags & c2.MessageElementFlag.Username) ~= 0
-    end)
+    local ok, has = pcall(read_username_flag, el)
     return ok and has
 end
 
@@ -215,7 +224,7 @@ end
 
 -- is this element our own previously-inserted 🔥 flame text? (single word)
 local function is_flame_el(el)
-    local ok, w = pcall(function() return el.words end)
+    local ok, w = pcall(read_words, el)
     return ok and type(w) == "table" and #w == 1 and w[1] == FLAME
 end
 
@@ -224,7 +233,7 @@ local function build_replacement(msg, sender_map, want_flame)
     local markers_done = false
     local budget = { n = 0 } -- emote/thread elements injected across THIS message
     for _, el in ipairs(msg:elements()) do
-        local ok, ty = pcall(function() return el.type end)
+        local ok, ty = pcall(read_type, el)
         -- BEFORE the username, strip our own markers from a prior render so
         -- re-processing (backpass) is idempotent — no stacked flames/badges.
         -- our badge is the only scaling-image that can precede the username
@@ -437,7 +446,7 @@ end
 -- a sender's emote set just arrived: re-render their recent messages in
 -- every hooked channel (messages are frozen, so this is replace, not mutate)
 local BACKPASS_DEPTH = 50
-function M.backpass(login)
+local function run_backpass(login)
     if not M.started then return end
     for _, h in pairs(hooked) do
         local ok = pcall(function()
@@ -449,6 +458,32 @@ function M.backpass(login)
             end
         end)
         if not ok then return end
+    end
+end
+
+-- coalesce backpasses: one emotes:batch-broadcast fires on_loaded per entry (up
+-- to 500), which without this would run the O(channels × 50-msg snapshot) scan
+-- 500 times back-to-back. collect the distinct logins touched in a tick and run
+-- each once, ~1 frame later. no timers (t0/t1) → run immediately, unchanged.
+local backpass_pending = {}
+local backpass_armed = false
+local BACKPASS_COALESCE_MS = 120
+function M.backpass(login)
+    if not M.started or type(login) ~= "string" or login == "" then return end
+    if not caps.later then return run_backpass(login) end
+    backpass_pending[login] = true
+    if backpass_armed then return end
+    backpass_armed = true
+    local ok = pcall(c2.later, function()
+        backpass_armed = false
+        local todo = backpass_pending
+        backpass_pending = {}
+        for lg in pairs(todo) do run_backpass(lg) end
+    end, BACKPASS_COALESCE_MS)
+    if not ok then -- timer refused: fall back to immediate so nothing is lost
+        backpass_armed = false
+        backpass_pending[login] = nil
+        run_backpass(login)
     end
 end
 

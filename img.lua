@@ -51,11 +51,15 @@ end
 -- so the same image can be cached at two display sizes without collision.
 function M.for_url(url, w, h, target_h)
     if type(url) ~= "string" or url == "" then return nil end
-    if not host_allowed(url) then return nil end
     target_h = target_h or TARGET_H
+    -- cache FIRST: a popular emote repeated across a raid must not re-pay host
+    -- validation (pattern scans + the suffix loop) on every hit. the url IS the
+    -- cache key, so a hit is the exact string that already passed host_allowed
+    -- on insert below — safe to serve without revalidating.
     local key = url .. "@" .. target_h
     local set = sets[key]
     if set then return set end
+    if not host_allowed(url) then return nil end
     if not h or h <= 0 then return nil end
     local scale = target_h / h
     if scale > 1 then scale = 1 end

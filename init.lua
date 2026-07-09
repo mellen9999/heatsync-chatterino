@@ -232,6 +232,12 @@ local function try_auto_multichat(channel)
     net.get_json(net.ORIGIN .. "/api/profile/" .. net.percent_encode(channel) .. "?platform=twitch", 8000, function(payload)
         local p = payload and payload.profile
         if not p then return end
+        -- the twitch tab may have been closed while this fetch was in flight
+        -- (channel-hopping): linking now would create a kick join / yt subscription
+        -- for a gone tab that unlink_auto (tab-close) already ran past — an orphan
+        -- pinned for the process lifetime. skip if the tab isn't open anymore.
+        local tab = c2.Channel.by_name(channel)
+        if not (tab and tab:is_valid()) then return end
         if type(p.kick_username) == "string" and p.kick_username ~= "" then
             if multichat.link(channel, "kick", p.kick_username, true) then
                 net.log_info("auto-multichat: linked kick:" .. p.kick_username .. " → #" .. channel)

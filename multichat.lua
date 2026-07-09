@@ -174,9 +174,13 @@ local function unsubscribe(platform, channel)
     if platform == "kick" then
         ws.leave("kick", channel)
     elseif platform == "yt" then
-        local vid = yt_video[string.lower(channel)]
+        local key = string.lower(channel)
+        local vid = yt_video[key]
         if vid then ws.send({ type = "youtube:unsubscribe", videoId = vid }) end
-        -- no videoId yet → the server poller ref-counts + reaps on drop anyway
+        -- no videoId yet → the server poller ref-counts + reaps on drop anyway.
+        -- prune the entry either way so the map can't grow one string per distinct
+        -- youtube channel ever linked over days of channel-hopping uptime.
+        yt_video[key] = nil
     end
 end
 
@@ -297,6 +301,54 @@ function M.on_ws_up()
 end
 
 -- ----- injection -----
+-- built ONCE at load, not re-created as a closure per target per message (a
+-- 250-line flood × N tabs would otherwise allocate a closure + upvalues each
+-- line). returns true on success, false if the target tab was gone (a drop);
+-- raises on a build failure, which the caller pcall-catches.
+local function inject_one(cc_name, line, tag, tag_color, display, uname_color, body, text)
+    local ch = c2.Channel.by_name(cc_name)
+    if not ch or not ch:is_valid() then return false end
+    local elems = {}
+    if type(line.time_ms) == "number" and line.time_ms > 0 then
+        elems[#elems + 1] = { type = "timestamp", time = line.time_ms }
+    end
+    elems[#elems + 1] = { type = "text", text = tag, color = tag_color }
+    elems[#elems + 1] = {
+        type = "text",
+        text = display .. ":",
+        color = uname_color,
+        flags = c2.MessageElementFlag.Username,
+    }
+    if body then
+        for _, be in ipairs(body) do elems[#elems + 1] = be end
+    else
+        elems[#elems + 1] = { type = "text", text = text }
+    end
+    local uname = type(line.username) == "string" and line.username or display
+    if #uname > 100 then uname = uname:sub(1, 100) end
+    ch:add_message(c2.Message.new({
+        login_name = string.lower(uname),
+        display_name = display,
+        message_text = text,
+        search_text = text,
+        username_color = uname_color,
+        elements = elems,
+    }))
+    return true
+end
+
+-- a systemic build failure (e.g. a missing element-type on an older build) fires
+-- per message; during a flood that would compound log+concat cost exactly when
+-- load is highest. log once, then at most once per 30s.
+local last_inject_warn_s = nil
+local function warn_inject_fail(err)
+    local now = net.now()
+    if last_inject_warn_s == nil or (now - last_inject_warn_s) >= 30 then
+        last_inject_warn_s = now
+        net.log_warn("multichat inject failed: " .. tostring(err))
+    end
+end
+
 local function inject(line)
     -- a partial server message (missing channel/routing tag) must drop quietly,
     -- not throw in source_key's string.lower — every other field below is
@@ -336,44 +388,15 @@ local function inject(line)
     end
 
     for cc_name in pairs(targets) do
-        local ok, err = pcall(function()
-            local ch = c2.Channel.by_name(cc_name)
-            -- target tab closed / volatile: count it so /hsstatus can show that
-            -- multichat is dropping lines rather than failing invisibly
-            if not ch or not ch:is_valid() then M.dropped = M.dropped + 1; return end
-            local elems = {}
-            if type(line.time_ms) == "number" and line.time_ms > 0 then
-                elems[#elems + 1] = { type = "timestamp", time = line.time_ms }
-            end
-            elems[#elems + 1] = { type = "text", text = tag, color = tag_color }
-            elems[#elems + 1] = {
-                type = "text",
-                text = display .. ":",
-                color = uname_color,
-                flags = c2.MessageElementFlag.Username,
-            }
-            if body then
-                for _, be in ipairs(body) do elems[#elems + 1] = be end
-            else
-                elems[#elems + 1] = { type = "text", text = text }
-            end
-            local uname = type(line.username) == "string" and line.username or display
-            if #uname > 100 then uname = uname:sub(1, 100) end
-            ch:add_message(c2.Message.new({
-                login_name = string.lower(uname),
-                display_name = display,
-                message_text = text,
-                search_text = text,
-                username_color = uname_color,
-                elements = elems,
-            }))
-        end)
-        -- a systemic build failure (e.g. a missing element-type on an older
-        -- build) would otherwise vanish silently — surface it via the same
-        -- dropped counter + a log so /hsstatus shows multichat isn't delivering.
+        local ok, res = pcall(inject_one, cc_name, line, tag, tag_color, display, uname_color, body, text)
+        -- res==false: target tab closed/volatile (a drop). not ok: a systemic
+        -- build failure. both bump the dropped counter so /hsstatus shows
+        -- multichat isn't delivering rather than failing invisibly.
         if not ok then
             M.dropped = M.dropped + 1
-            net.log_warn("multichat inject failed: " .. tostring(err))
+            warn_inject_fail(res)
+        elseif res == false then
+            M.dropped = M.dropped + 1
         end
     end
 end

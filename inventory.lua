@@ -192,7 +192,9 @@ end
 -- usage desc then alpha, so results come out in that order.
 function M.match_prefix(q, qlen, values, seen, cap)
     for _, item in ipairs(M.index) do
-        if string.sub(item.lower, 1, qlen) == q then
+        -- find(...,1,true) is a plain-text anchored match — no per-entry substring
+        -- allocation like string.sub did, on every keystroke over the whole index.
+        if string.find(item.lower, q, 1, true) == 1 then
             if not seen[item.name] then
                 table.insert(values, item.name)
                 seen[item.name] = true

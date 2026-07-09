@@ -140,8 +140,11 @@ local function kick_off(q)
             if caps.later then put(q, {}, true) end
             return
         end
+        -- store {name, lower} so the per-keystroke prefix scan below matches
+        -- against a precomputed lowercase instead of re-lowering every name each
+        -- keystroke while the exact query's search is still in flight.
         local names = {}
-        for _, e in ipairs(results) do names[#names + 1] = e.name end
+        for _, e in ipairs(results) do names[#names + 1] = { name = e.name, lower = string.lower(e.name) } end
         put(q, names)
     end)
 end
@@ -156,11 +159,11 @@ function M.append_matches(q, values, seen, cap)
     if hit then
         -- exact query is cached (authoritative, upstream popularity order)
         if type(hit.names) == "table" then
-            for _, name in ipairs(hit.names) do
+            for _, rec in ipairs(hit.names) do
                 if #values >= cap then break end
-                if not seen[name] then
-                    table.insert(values, name)
-                    seen[name] = true
+                if not seen[rec.name] then
+                    table.insert(values, rec.name)
+                    seen[rec.name] = true
                 end
             end
         end
@@ -175,11 +178,11 @@ function M.append_matches(q, values, seen, cap)
     for n = string.len(q) - 1, M.MIN_CHARS, -1 do
         local ph = get_fresh(string.sub(q, 1, n))
         if ph and type(ph.names) == "table" then
-            for _, name in ipairs(ph.names) do
+            for _, rec in ipairs(ph.names) do
                 if #values >= cap then break end
-                if not seen[name] and string.find(string.lower(name), q, 1, true) then
-                    table.insert(values, name)
-                    seen[name] = true
+                if not seen[rec.name] and string.find(rec.lower, q, 1, true) then
+                    table.insert(values, rec.name)
+                    seen[rec.name] = true
                 end
             end
             break -- only the single freshest (longest) prefix
