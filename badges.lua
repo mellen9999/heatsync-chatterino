@@ -17,13 +17,20 @@ function M.load()
         if not payload or type(payload.badges) ~= "table" then return end
         local m = {}
         local groups = 0
-        for _, b in ipairs(payload.badges) do
+        local total_uids = 0
+        -- this fetch runs at boot regardless of the /hsbadges opt-in, so bound it
+        -- against a hostile /api/chatterino-badges response: cap groups + total
+        -- mapped user ids so a giant users[] array can't blow the map.
+        for gi, b in ipairs(payload.badges) do
+            if gi > 200 or total_uids >= 20000 then break end
             local url = net.pick_first_str(b, "image1", "image2")
             local tip = net.pick_first_str(b, "tooltip") or "chatterino"
             if url and type(b.users) == "table" then
                 groups = groups + 1
                 for _, uid in ipairs(b.users) do
+                    if total_uids >= 20000 then break end
                     m[tostring(uid)] = { url = url, tooltip = tip }
+                    total_uids = total_uids + 1
                 end
             end
         end

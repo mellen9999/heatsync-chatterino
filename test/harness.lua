@@ -1260,6 +1260,28 @@ do
     ssock.opts.on_text(register_payload({ type = "kick-chat-backfill", channel = "flood", messages = msgs }))
     check(#chan.added - a0 <= 250, "backfill cap: a 400-line flood injects at most 250 (got " .. (#chan.added - a0) .. ")")
 end
+-- emote-name safety: a hostile name (newline → InsertText input injection, or
+-- absurd length) must be rejected before it can become a link value/tooltip
+do
+    local n = require("net")
+    check(n.is_safe_name("peepoHappy"), "name-safety: a clean emote name is allowed")
+    check(not n.is_safe_name("hi\n/w victim secret"), "name-safety: a newline-injection name is rejected")
+    check(not n.is_safe_name(string.rep("x", 101)), "name-safety: an absurdly long name is rejected")
+    check(n.parse_emote_row({ name = "bad\nname", url = "https://cdn.7tv.app/e/1.webp" }) == nil,
+        "name-safety: parse_emote_row drops a control-char name")
+end
+-- per-message emote-token cap: one hostile kick line with 100 [emote:] tokens
+-- builds at most MAX_EMOTE_TOKENS(50) image elements, not 100
+do
+    commands["/hsmulti"]({ words = { "/hsmulti", "kick:tokcap" }, channel = chan })
+    ssock.opts.on_text(register_payload({ type = "kick-chat-message",
+        data = { platform = "kick", channel = "tokcap", id = "tok1", username = "u", content = string.rep("[emote:1:x]", 100) } }))
+    local imgs, m = 0, chan.added[#chan.added]
+    if type(m) == "table" and m.init and m.init.elements then
+        for _, e in ipairs(m.init.elements) do if type(e) == "table" and e.type == "scaling-image" then imgs = imgs + 1 end end
+    end
+    check(imgs <= 50, "token cap: a 100-emote kick message builds at most 50 image elements (got " .. imgs .. ")")
+end
 
 print(failures == 0 and "\nALL PASS" or ("\n" .. failures .. " FAILURES"))
 host_os.exit(failures == 0 and 0 or 1)

@@ -39,10 +39,16 @@ local KICK_EMOTE_URL = "https://files.kick.com/emotes/%s/fullsize"
 -- youtube delivers per-message emotes as {alt=":shortcode:", url} and embeds
 -- the shortcodes in the text. render each shortcode present in the emote map
 -- as an image (bumped to 48px via the ggpht size params for crispness).
+-- cap emote elements built from ONE message: the batch cap bounds messages, but
+-- a single hostile line could carry hundreds of thousands of emote tokens and
+-- blow the element table + image-load attempts. a real message has a handful.
+local MAX_EMOTE_TOKENS = 50
+
 local function build_yt_body(text, emotes)
     if type(text) ~= "string" or type(emotes) ~= "table" or #emotes == 0 then return nil end
     local map = {}
-    for _, em in ipairs(emotes) do
+    for i, em in ipairs(emotes) do
+        if i > MAX_EMOTE_TOKENS then break end
         if type(em) == "table" and type(em.alt) == "string" and type(em.url) == "string" then
             map[em.alt] = em.url
         end
@@ -51,6 +57,7 @@ local function build_yt_body(text, emotes)
     local elems = {}
     local last = 1
     local found = false
+    local ntok = 0
     for s, tok, e in text:gmatch("()(:[%w_+%-]+:)()") do
         local url = map[tok]
         if url then
@@ -73,6 +80,8 @@ local function build_yt_body(text, emotes)
                 elems[#elems + 1] = { type = "text", text = tok }
             end
             last = e
+            ntok = ntok + 1
+            if ntok >= MAX_EMOTE_TOKENS then break end
         end
     end
     if not found then return nil end
@@ -89,6 +98,7 @@ local function build_kick_body(content)
     local elems = {}
     local last = 1
     local found = false
+    local ntok = 0
     for s, id, name, e in content:gmatch("()%[emote:(%d+):([^%]]+)%]()") do
         found = true
         if s > last then
@@ -107,6 +117,8 @@ local function build_kick_body(content)
             elems[#elems + 1] = { type = "text", text = name }
         end
         last = e
+        ntok = ntok + 1
+        if ntok >= MAX_EMOTE_TOKENS then break end
     end
     if not found then return nil end
     local tail = content:sub(last)
@@ -289,8 +301,12 @@ local function inject(line)
     if type(line.id) == "string" and line.id ~= "" and is_dup(key .. "\1" .. line.id) then return end
     local text = line.text
     if type(text) ~= "string" or text == "" then return end
+    -- bound field lengths from the untrusted ws payload: a multi-MB username or
+    -- text would otherwise be built straight into a chat element (cheap DoS knob)
+    if #text > 2000 then text = text:sub(1, 2000) end
     local display = line.display
     if type(display) ~= "string" or display == "" then display = line.username or "?" end
+    if #display > 100 then display = display:sub(1, 100) end
     local tag = line.platform == "kick" and "[K]" or "[Y]"
     local tag_color = line.platform == "kick" and KICK_COLOR or YT_COLOR
     -- accept the chatter's own color only if it's a real #rrggbb hex — this is
@@ -331,8 +347,10 @@ local function inject(line)
             else
                 elems[#elems + 1] = { type = "text", text = text }
             end
+            local uname = type(line.username) == "string" and line.username or display
+            if #uname > 100 then uname = uname:sub(1, 100) end
             ch:add_message(c2.Message.new({
-                login_name = string.lower(line.username or display),
+                login_name = string.lower(uname),
                 display_name = display,
                 message_text = text,
                 search_text = text,

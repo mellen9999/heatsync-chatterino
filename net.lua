@@ -74,11 +74,19 @@ end
 -- home for this shape — inventory, senders, and the /hsinv browser all built
 -- near-identical copies of this dance before (accept custom_name/name/code,
 -- url/src, width/height, zero_width).
+-- an emote name becomes an InsertText link value spliced into the user's chat
+-- input on click (picker/render), plus a tooltip — so a name from a hostile
+-- server must never carry control bytes (newline → input injection) or a giant
+-- payload. legit names are short and control-char-free.
+function M.is_safe_name(s)
+    return type(s) == "string" and s ~= "" and #s <= 100 and string.find(s, "%c") == nil
+end
+
 function M.parse_emote_row(e)
     if type(e) ~= "table" then return nil end
     local name = M.pick_first_str(e, "custom_name", "name", "code")
     local url = M.pick_first_str(e, "url", "src")
-    if not name or not url then return nil end
+    if not name or not url or not M.is_safe_name(name) then return nil end
     return {
         name = name,
         url = url,

@@ -103,10 +103,16 @@ function M.is_known_hs(login)
     return hit ~= nil and type(hit.map) == "table"
 end
 
+-- a single chatter's emote set (from the untrusted batch endpoint or a live
+-- broadcast flood) is bounded the same way the own inventory is — so a hostile
+-- response can't blow memory building one sender's map.
+local MAX_SET_ENTRIES = 5000
+
 local function rows_to_map(rows)
     local map = {}
     local any = false
-    for _, e in ipairs(rows) do
+    for i, e in ipairs(rows) do
+        if i > MAX_SET_ENTRIES then break end
         local rec = net.parse_emote_row(e)
         if rec then
             map[rec.name] = { url = rec.url, w = rec.w, h = rec.h, zw = rec.zw }
@@ -163,6 +169,8 @@ function M.feed_broadcast(username, emote_name, emote_data)
     if type(username) ~= "string" or username == "" then return end
     if type(emote_name) ~= "string" or emote_name == "" then return end
     if type(emote_data) ~= "table" then return end
+    -- same name safety as the batch/inventory path (name → InsertText/tooltip)
+    if not net.is_safe_name(emote_name) then return end
     local url = net.pick_first_str(emote_data, "url", "src")
     if not url then return end
     local login = string.lower(username)
@@ -175,6 +183,15 @@ function M.feed_broadcast(username, emote_name, emote_data)
     else
         map = {}
         put(login, map)
+    end
+    -- cap distinct emotes per login so a broadcast flood can't grow one map
+    -- unbounded (bounded scan, only on a genuinely new name)
+    if map[emote_name] == nil then
+        local cnt = 0
+        for _ in pairs(map) do
+            cnt = cnt + 1
+            if cnt >= MAX_SET_ENTRIES then return end
+        end
     end
     map[emote_name] = {
         url = url,

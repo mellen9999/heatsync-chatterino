@@ -343,7 +343,12 @@ end
 
 local function hook(ch, name)
     local handle = ch:on_message_appended(function(msg, _)
-        process(ch, msg, ch:count_messages())
+        -- count_messages() is evaluated as an argument, BEFORE process()'s inner
+        -- pcall — guard it so a torn-down channel mid-tick can't escape raw into
+        -- chatterino's native dispatch. nil hint just makes replace_message
+        -- resolve the index itself.
+        local ok, n = pcall(function() return ch:count_messages() end)
+        process(ch, msg, ok and n or nil)
     end)
     hooked[name] = { handle = handle, ch = ch }
     net.log_info("rendering hooked for #" .. name)

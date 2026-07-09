@@ -109,7 +109,7 @@ function M.search_all(q, cb)
                     if #out >= MAX_RESULTS then break end
                     local name = net.pick_first_str(e, "name", "code")
                     local eurl = net.pick_first_str(e, "url", "src")
-                    if name and eurl and not seen[name] then
+                    if name and eurl and net.is_safe_name(name) and not seen[name] then
                         seen[name] = true
                         cache_render(name, eurl, provider)
                         out[#out + 1] = { name = name, provider = provider, url = eurl, animated = e.animated == true }
