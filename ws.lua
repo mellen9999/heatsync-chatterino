@@ -22,6 +22,12 @@ local enabled = false
 local sock = nil
 local reconnect_scheduled = false
 local connect_started = 0
+-- monotonic connect generation. every socket's callbacks capture the gen at
+-- connect time; a superseded socket (watchdog-recycled, or whose async close
+-- arrives after a new socket is already live) has a stale gen and its late
+-- on_open/on_text/on_close all bail — so it can't clobber `sock`/`connected`
+-- or double-process frames. bumped on connect AND whenever we abandon a socket.
+local gen = 0
 local joined = {}       -- "platform/channel" -> {platform, channel}
 local watch_login = nil
 
@@ -92,17 +98,24 @@ end
 function M.connect()
     if not enabled or M.connected or sock then return end
     connect_started = net.now()
+    gen = gen + 1
+    local my_id = gen
     local ok, err = pcall(function()
         sock = c2.WebSocket.new(net.ORIGIN:gsub("^https", "wss") .. "/ws", {
             on_open = function()
+                if my_id ~= gen then return end -- superseded socket: ignore late open
                 M.connected = true
                 M.connected_at = net.now() -- backoff resets only if this survives STABLE_S
                 M.last_rx = net.now()
                 net.log_info("ws connected")
                 replay_state()
             end,
-            on_text = handle_text,
+            on_text = function(data)
+                if my_id ~= gen then return end -- superseded socket: don't process its frames
+                handle_text(data)
+            end,
             on_close = function()
+                if my_id ~= gen then return end -- superseded socket: its close is stale
                 local was = M.connected
                 M.connected = false
                 sock = nil
@@ -134,6 +147,7 @@ function M.watchdog()
             net.log_warn("ws handshake stalled, recycling")
             local s = sock
             sock = nil
+            gen = gen + 1 -- invalidate the abandoned socket's late callbacks
             pcall(function() s:close() end)
             schedule_reconnect()
         elseif not sock and not reconnect_scheduled then
@@ -145,9 +159,11 @@ function M.watchdog()
     if net.now() - M.last_rx > WATCHDOG_IDLE_S then
         net.log_warn("ws stale (no rx for " .. tostring(WATCHDOG_IDLE_S) .. "s), recycling")
         local s = sock
-        -- clear BEFORE close: on_close sees sock==nil and just schedules
+        -- clear BEFORE close + bump gen so the abandoned socket's late on_close
+        -- can't clobber a socket the reconnect brings up in the meantime
         M.connected = false
         sock = nil
+        gen = gen + 1
         pcall(function() s:close() end)
         schedule_reconnect()
     end

@@ -49,7 +49,10 @@ local function build_yt_body(text, emotes)
     local map = {}
     for i, em in ipairs(emotes) do
         if i > MAX_EMOTE_TOKENS then break end
-        if type(em) == "table" and type(em.alt) == "string" and type(em.url) == "string" then
+        -- em.url + em.alt are raw ws-payload fields (untrusted, MITM-able) that
+        -- reach img.for_url / become map keys — bound them like every other
+        -- emote path does, else 250×50 arbitrary-size urls per frame is an OOM knob.
+        if type(em) == "table" and net.is_safe_name(em.alt) and net.is_safe_url(em.url) then
             map[em.alt] = em.url
         end
     end

@@ -711,6 +711,29 @@ do
     check(has_img, "multichat: youtube :shortcode: rendered as image")
 end
 
+-- yt emote url safety: a hostile/oversized url in the untrusted youtube:chat
+-- payload must NOT reach img.for_url — it falls back to the plain shortcode text
+ba = #chan.added
+sock.opts.on_text(register_payload({
+    type = "youtube:chat", channelId = "@somestreamer",
+    messages = { { type = "text", id = "y3", user = "YTuser",
+        text = "evil :bad: here",
+        emotes = { { type = "emoji", url = "https://yt3.ggpht.com/" .. string.rep("a", 5000), alt = ":bad:" } },
+        timestamp = 1730000000003 } },
+}))
+do
+    local msg = chan.added[#chan.added]
+    local has_img = false
+    if msg.init and msg.init.elements then
+        for _, e in ipairs(msg.init.elements) do
+            if type(e) == "table" and e.type == "scaling-image" then has_img = true end
+        end
+    end
+    -- rejected url → no image built from it; the line still injects (as plain text)
+    check(#chan.added == ba + 1 and not has_img,
+        "yt url-safety: an oversized emote url builds no image, line still delivered")
+end
+
 -- youtube:status connected → learns videoId (for later unsubscribe)
 sock.opts.on_text(register_payload({
     type = "youtube:status", channelId = "@somestreamer", videoId = "vid123", status = "connected", channelName = "x",
@@ -1472,6 +1495,19 @@ do
     check(ws_escapes == 0, "fuzz: 1000 malformed ws frames (4 seeds) — nothing escaped the dispatch guards")
     check(cmd_escapes == 0, "fuzz: 1000 command calls with random args (4 seeds) — no uncaught error" ..
         (first_crash and (" (" .. first_crash .. ")") or ""))
+end
+
+-- account-switch guard (LAST — mutates global inventory state): a slow refresh
+-- for account A, still in flight when the user switches to B, must NOT apply A's
+-- inventory under B's identity when it finally lands.
+do
+    local inv = require("inventory")
+    inv.refresh("acctA")  -- profile fetch for A fires; refreshing=true
+    inv.refresh("acctB")  -- switch mid-flight: M.login=B, this one queues
+    -- A's profile lands, but M.login is now B → the guard abandons it, so A's
+    -- emotes fetch never even fires and "ghostA" never enters the map
+    http_answer("/api/profile/acctA", { profile = { id = 111 } })
+    check(inv.resolve("ghostA") == nil, "account-switch: stale refresh for A does not apply under B")
 end
 
 print(failures == 0 and "\nALL PASS" or ("\n" .. failures .. " FAILURES"))

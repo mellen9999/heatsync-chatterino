@@ -449,7 +449,9 @@ local BACKPASS_DEPTH = 50
 local function run_backpass(login)
     if not M.started then return end
     for _, h in pairs(hooked) do
-        local ok = pcall(function()
+        -- isolate per channel: one channel throwing (e.g. it went stale between
+        -- the is_valid check and use) must not skip the backpass for the others.
+        pcall(function()
             if not h.ch:is_valid() then return end
             for _, msg in ipairs(h.ch:message_snapshot(BACKPASS_DEPTH)) do
                 if string.lower(msg.login_name or "") == login then
@@ -457,7 +459,6 @@ local function run_backpass(login)
                 end
             end
         end)
-        if not ok then return end
     end
 end
 
@@ -466,11 +467,21 @@ end
 -- 500 times back-to-back. collect the distinct logins touched in a tick and run
 -- each once, ~1 frame later. no timers (t0/t1) → run immediately, unchanged.
 local backpass_pending = {}
+local backpass_pending_n = 0
 local backpass_armed = false
 local BACKPASS_COALESCE_MS = 120
+-- cap distinct logins queued in one coalesce window: the ws has no incoming rate
+-- limit, so a hostile server could otherwise flood many batch-broadcast frames in
+-- 120ms and grow this set (and the drain's O(channels×snapshot) work) unbounded.
+-- a legit batch touches few distinct senders, so 256 is generous headroom.
+local BACKPASS_PENDING_MAX = 256
 function M.backpass(login)
     if not M.started or type(login) ~= "string" or login == "" then return end
     if not caps.later then return run_backpass(login) end
+    if backpass_pending[login] == nil then
+        if backpass_pending_n >= BACKPASS_PENDING_MAX then return end -- drop overflow
+        backpass_pending_n = backpass_pending_n + 1
+    end
     backpass_pending[login] = true
     if backpass_armed then return end
     backpass_armed = true
@@ -478,12 +489,15 @@ function M.backpass(login)
         backpass_armed = false
         local todo = backpass_pending
         backpass_pending = {}
+        backpass_pending_n = 0
         for lg in pairs(todo) do run_backpass(lg) end
     end, BACKPASS_COALESCE_MS)
-    if not ok then -- timer refused: fall back to immediate so nothing is lost
+    if not ok then -- timer refused: drain immediately so nothing is lost
         backpass_armed = false
-        backpass_pending[login] = nil
-        run_backpass(login)
+        local todo = backpass_pending
+        backpass_pending = {}
+        backpass_pending_n = 0
+        for lg in pairs(todo) do run_backpass(lg) end
     end
 end
 

@@ -116,6 +116,9 @@ function M.refresh(login)
 
     local profile_url = net.ORIGIN .. "/api/profile/" .. net.percent_encode(login)
     net.get_json(profile_url, 10000, function(data, err)
+        -- account switched while this was in flight: abandon A's response so it
+        -- can't apply A's inventory under B's identity. done() runs B's queued refresh.
+        if login ~= M.login then done(); return end
         if not data then
             net.log_warn("profile fetch failed: " .. tostring(err))
             note_possible_boot_failure()
@@ -134,6 +137,7 @@ function M.refresh(login)
         end
         local emotes_url = net.ORIGIN .. "/api/users/" .. tostring(uid) .. "/emotes"
         net.get_json(emotes_url, 10000, function(payload, err2)
+            if login ~= M.login then done(); return end -- account switched mid-flight
             if not payload then
                 net.log_warn("emote fetch failed: " .. tostring(err2))
                 note_possible_boot_failure()
