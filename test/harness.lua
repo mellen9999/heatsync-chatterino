@@ -973,6 +973,13 @@ local hschat_url = http_answer("/api/archive/search", { results = {} })
 check(hschat_url ~= nil and hschat_url:find("channel=somechannel", 1, true) ~= nil,
     "hschat: bare query scopes to the current channel")
 check(added_text_has("no archived lines", #chan.added - sb), "hschat: empty result is an honest line")
+-- recency_windowed flag → the header hints that older results need narrowing
+sb = #chan.added
+commands["/hschat"]({ words = { "/hschat", "windowed", "#bigchan" }, channel = chan })
+http_answer("/api/archive/search", { results = {
+    { message_id = "w1", platform = "twitch", channel = "bigchan", username = "u", display_name = "U", message = "windowed hit", timestamp = "2026-07-08T00:00:00.000Z" },
+}, recency_windowed = true })
+check(added_text_has("recent window", #chan.added - sb), "hschat: recency_windowed flag surfaces a narrow-for-older hint")
 -- short query → usage, no request
 commands["/hschat"]({ words = { "/hschat", "a" }, channel = chan })
 check(added_text_has("usage:", 1), "hschat: sub-2-char query shows usage")

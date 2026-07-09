@@ -219,9 +219,16 @@ function M.register()
                 u.sysmsg(ctx, "no archived lines for '" .. q .. "'" .. scope)
                 return
             end
-            -- next_cursor present → the server capped the page and more exist
-            local more = payload.next_cursor and " (more exist — narrow further)" or ""
-            u.sysmsg(ctx, #rows .. " archived line(s) for '" .. q .. "'" .. scope .. more .. ":")
+            -- recency_windowed → the server floored a broad/channel search to its
+            -- recent window; next_cursor → the page was capped and more exist.
+            -- (forward-compatible: both fields are simply absent on older servers.)
+            local hint = ""
+            if payload.recency_windowed then
+                hint = " (recent window — add @user or a date range for older)"
+            elseif payload.next_cursor then
+                hint = " (more exist — narrow further)"
+            end
+            u.sysmsg(ctx, #rows .. " archived line(s) for '" .. q .. "'" .. scope .. hint .. ":")
             for _, r in ipairs(rows) do
                 if type(r) == "table" and type(r.message_id) == "string" then
                     local plat = tostring(r.platform or "twitch")
