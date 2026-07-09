@@ -133,5 +133,31 @@ hb = #added
 commands["/hschat"]({ words = { "/hschat", "a" }, channel = ctx.channel })
 check(#added > hb, "/hschat alive on " .. MODE)
 
+-- exercise the network + picker commands under the STRIPPED API. on t1/t0 there
+-- is no c2.Image/windows and a narrower c2.LinkType — a nightly-only field
+-- access anywhere in these handlers would throw here (invoking a command that
+-- throws crashes this script), catching it off the real client. drives exactly
+-- the archive/discovery commands the coverage audit found were never run degraded.
+hb = #added
+commands["/hshot"]({ words = { "/hshot" }, channel = ctx.channel })
+http_answer("/api/live/top", { streams = { { platform = "twitch", username = "s1", displayName = "S1", viewerCount = 10, heat = 5 } } })
+commands["/hswhois"]({ words = { "/hswhois", "someone" }, channel = ctx.channel })
+http_answer("/api/profile/someone", { profile = { display_name = "Someone", stats = { user_heat = 1 } } })
+commands["/hssearch"]({ words = { "/hssearch", "hello" }, channel = ctx.channel })
+http_answer("/api/search", { results = { { base36_id = "00001o", display_name = "x", content = "hi", heat = 1 } } })
+commands["/hschat"]({ words = { "/hschat", "hello", "@grace" }, channel = ctx.channel })
+http_answer("/api/archive/search", { results = { { message_id = "u1", platform = "twitch", channel = "c", username = "grace", display_name = "Grace", message = "hello", timestamp = "2026-07-02T00:00:00.000Z" } } })
+commands["/hsfind"]({ words = { "/hsfind", "kappa" }, channel = ctx.channel })
+http_answer("/api/emote-search?q=kappa", { results = { ["7tv"] = { { name = "Kappa", url = "https://cdn.7tv.app/emote/0K/1x.webp" } } } })
+commands["/hsinv"]({ words = { "/hsinv", "grace" }, channel = ctx.channel })
+http_answer("/api/profile/grace", { profile = { id = 555, display_name = "Grace" } })
+http_answer("/api/users/555/emotes", { emotes = { { custom_name = "e1", url = "https://cdn.7tv.app/emote/0E/1x.webp", width = 32, height = 32 } } })
+commands["/hsmoments"]({ words = { "/hsmoments", "24h" }, channel = ctx.channel })
+http_answer("/api/moments", { moments = { { id = "m1", platform = "twitch", channel = "c", rate = 10, baseline = "1" } } })
+commands["/hsmulti"]({ words = { "/hsmulti", "kick:x" }, channel = ctx.channel })
+commands["/hsemotes"]({ words = { "/hsemotes" }, channel = ctx.channel })
+commands["/hsblocklist"]({ words = { "/hsblocklist" }, channel = ctx.channel })
+check(#added > hb, "network + picker commands survive the stripped API on " .. MODE)
+
 print(failures == 0 and "ALL PASS (" .. MODE .. ")" or (failures .. " FAILURES (" .. MODE .. ")"))
 host_os.exit(failures == 0 and 0 or 1)

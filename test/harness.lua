@@ -1133,5 +1133,70 @@ do
     check(imaged, "allowlist: emote on an allowlisted CDN still renders as an image")
 end
 
+-- ===== end-to-end with REAL production data =====
+-- drives the actual render/senders/seventv/inventory/img pipeline with real
+-- heatsync.org responses (test/fixtures/real.lua), proving the three things a
+-- user cares about, against production data shapes + real CDN URLs + real dims:
+--   1. seeing OTHER heatsync users' emotes   2. your OWN emotes rendering when
+--   you post   3. deep 7tv search results staying insert-only (privacy).
+require("store").set_flame(false)
+local FX = dofile(PLUGIN .. "/test/fixtures/real.lua")
+local function has_image_in(m)
+    for _, e in ipairs(m.new.init.elements) do
+        if type(e) == "table" and e.type == "scaling-image" then return true end
+    end
+    return false
+end
+
+-- (1) another heatsync user's REAL emote renders for you
+local se = FX.inventory[1] -- real ffz emote, 128x128
+senders.feed_broadcast("realsender", se.name, { url = se.url, width = se.width, height = se.height })
+do
+    local m = fake_msg("realsender", "550001", "gg " .. se.name .. " nice")
+    chan.msgs[#chan.msgs + 1] = m
+    chan.appended_cb(m, nil)
+    check(has_image_in(chan.replaced[#chan.replaced]),
+        "e2e/real: another user's real heatsync emote (" .. se.name .. ") renders as an image")
+end
+
+-- (2) your OWN real inventory renders when you post it (real 7tv 96x32 record —
+-- the wide/short case that must scale by height without stretch)
+do
+    local invp = { emotes = {} }
+    for _, e in ipairs(FX.inventory) do
+        invp.emotes[#invp.emotes + 1] = { custom_name = e.name, url = e.url, width = e.width, height = e.height, usage_count = 1 }
+    end
+    inventory.refresh("realmellen")
+    http_answer("/api/profile/realmellen", { profile = { id = 999 } })
+    http_answer("/api/users/999/emotes", invp)
+    check(inventory.count() == #FX.inventory, "e2e/real: real inventory loaded (" .. #FX.inventory .. " emotes)")
+    senders.own_login = "realmellen"
+    local own = FX.inventory[4].name -- BirdgeHmm, real 7tv 96x32
+    local m = fake_msg("realmellen", "999", "using " .. own .. " right now")
+    chan.msgs[#chan.msgs + 1] = m
+    chan.appended_cb(m, nil)
+    check(has_image_in(chan.replaced[#chan.replaced]),
+        "e2e/real: your own real heatsync emote (" .. own .. ") renders when you post it")
+end
+
+-- (3) deep 7tv search: real results are searchable/insertable but NEVER inline-render
+do
+    local sevp = { results = { ["7tv"] = {} } }
+    for _, e in ipairs(FX.sevtv_7tv) do sevp.results["7tv"][#sevp.results["7tv"] + 1] = { name = e.name, url = e.url } end
+    completion_cb({ query = "peepo" })
+    http_answer("/api/emote-search?q=peepo", sevp)
+    local seventv_m = require("seventv")
+    local deep = FX.sevtv_7tv[1].name -- real 7tv "Peepo", not in the inventory
+    check(select(1, seventv_m.resolve_render(deep)) ~= nil,
+        "e2e/real: deep 7tv search result (" .. deep .. ") is cached for /hsfind + tab-complete")
+    -- a chatter with no heatsync inventory posts that exact 7tv word → must stay text
+    local m = fake_msg("randomchatter", "550003", "haha " .. deep .. " lol that was funny")
+    chan.msgs[#chan.msgs + 1] = m
+    local rc = #chan.replaced
+    chan.appended_cb(m, nil)
+    check(#chan.replaced == rc,
+        "e2e/real: deep 7tv word (" .. deep .. ") does NOT inline-render from a non-owner (privacy invariant)")
+end
+
 print(failures == 0 and "\nALL PASS" or ("\n" .. failures .. " FAILURES"))
 host_os.exit(failures == 0 and 0 or 1)
