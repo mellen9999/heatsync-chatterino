@@ -672,6 +672,24 @@ sock.opts.on_text(register_payload({
 check(#chan.added == ba + 1, "multichat: youtube message injected")
 check(elem_has_text(chan.added[#chan.added], "[Y]"), "multichat: youtube message tagged [Y]")
 
+-- youtube history replay (server sends replay=true on subscribe/restart) must NOT
+-- dump into the tab — only the link line + new messages. this was the bug.
+ba = #chan.added
+sock.opts.on_text(register_payload({
+    type = "youtube:chat", channelId = "@somestreamer", replay = true,
+    messages = {
+        { type = "text", id = "yr1", user = "old1", text = "ancient history 1", timestamp = 1 },
+        { type = "text", id = "yr2", user = "old2", text = "ancient history 2", timestamp = 2 },
+    },
+}))
+check(#chan.added == ba, "multichat: youtube replay (history) batch is NOT injected")
+-- a subsequent live (non-replay) batch still injects
+sock.opts.on_text(register_payload({
+    type = "youtube:chat", channelId = "@somestreamer",
+    messages = { { type = "text", id = "ylive", user = "YTuser", text = "new live msg", timestamp = 1730000000009 } },
+}))
+check(#chan.added == ba + 1, "multichat: live youtube message after replay still injects")
+
 -- youtube emote shortcode → image
 ba = #chan.added
 sock.opts.on_text(register_payload({

@@ -443,6 +443,11 @@ function M.dispatch(msg)
     elseif t == "youtube:chat" then
         local tag = msg.channelId
         if type(tag) ~= "string" or tag == "" then return true end
+        -- skip the history replay batch the server sends on subscribe / poller
+        -- restart (replay=true) — the user wants the link line + only NEW
+        -- messages, not a dump of the whole youtube backlog. live messages come
+        -- as youtube:chat with no replay flag.
+        if msg.replay == true then return true end
         if type(msg.messages) == "table" then
             for i = batch_start(msg.messages), #msg.messages do
                 handle_yt(msg.messages[i], tag)
