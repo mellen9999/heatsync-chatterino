@@ -28,6 +28,7 @@ local watch_login = nil
 local BACKOFF_CAP_S = 60
 local WATCHDOG_IDLE_S = 90
 local HANDSHAKE_TIMEOUT_S = 30
+local STABLE_S = 30 -- a session must stay open this long before its backoff resets
 
 local function send(tbl)
     if not sock or not M.connected then return false end
@@ -56,6 +57,14 @@ end
 local function schedule_reconnect()
     if not enabled or reconnect_scheduled then return end
     reconnect_scheduled = true
+    -- reset the backoff ONLY after a session that stayed open past STABLE_S. a
+    -- hostile/flapping peer that accepts then instantly drops leaves connected_at
+    -- too recent, so attempts keeps climbing (up to the cap) instead of pinning us
+    -- in a ~2s reconnect hot-loop.
+    if M.connected_at and (net.now() - M.connected_at) >= STABLE_S then
+        M.attempts = 0
+    end
+    M.connected_at = nil
     M.attempts = M.attempts + 1
     local base = math.min(BACKOFF_CAP_S, 2 ^ math.min(M.attempts, 6))
     local jitter = 0.8 + 0.4 * math.random()
@@ -87,7 +96,7 @@ function M.connect()
         sock = c2.WebSocket.new(net.ORIGIN:gsub("^https", "wss") .. "/ws", {
             on_open = function()
                 M.connected = true
-                M.attempts = 0
+                M.connected_at = net.now() -- backoff resets only if this survives STABLE_S
                 M.last_rx = net.now()
                 net.log_info("ws connected")
                 replay_state()

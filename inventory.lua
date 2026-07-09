@@ -63,8 +63,11 @@ local function apply_rows(rows, login)
     local new_map = {}
     local entries = {}
     local count = 0
-    for _, e in ipairs(rows) do
-        if count >= MAX_INVENTORY_ROWS then
+    for i, e in ipairs(rows) do
+        -- cap on the RAW index, not the valid count: a flood of malformed rows
+        -- (e.g. [1,1,1,...] that all fail parse) would otherwise never advance
+        -- `count` and iterate the whole array, stalling this boot-critical path.
+        if i > MAX_INVENTORY_ROWS then
             net.log_warn("inventory response exceeded " .. MAX_INVENTORY_ROWS .. " rows; truncated")
             break
         end

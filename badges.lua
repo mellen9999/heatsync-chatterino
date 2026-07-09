@@ -24,8 +24,8 @@ function M.load()
         for gi, b in ipairs(payload.badges) do
             if gi > 200 or total_uids >= 20000 then break end
             local url = net.pick_first_str(b, "image1", "image2")
-            local tip = net.pick_first_str(b, "tooltip") or "chatterino"
-            if url and type(b.users) == "table" then
+            local tip = net.safe_text(net.pick_first_str(b, "tooltip"), 100) or "chatterino"
+            if net.is_safe_url(url) and type(b.users) == "table" then
                 groups = groups + 1
                 for _, uid in ipairs(b.users) do
                     if total_uids >= 20000 then break end

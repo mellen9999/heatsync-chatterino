@@ -171,13 +171,14 @@ end
 -- channel we're joined to. partial maps are fine — the emote in hand is the
 -- one that needs to render right now.
 function M.feed_broadcast(username, emote_name, emote_data)
-    if type(username) ~= "string" or username == "" then return end
-    if type(emote_name) ~= "string" or emote_name == "" then return end
     if type(emote_data) ~= "table" then return end
-    -- same name safety as the batch/inventory path (name → InsertText/tooltip)
+    -- username becomes an unbounded cache KEY, so it needs the same single-token
+    -- safety as an emote name (a login can't hold spaces/control bytes anyway).
+    -- emote_name → InsertText/tooltip; url must be bounded (never gated elsewhere).
+    if not net.is_safe_name(username) then return end
     if not net.is_safe_name(emote_name) then return end
     local url = net.pick_first_str(emote_data, "url", "src")
-    if not url then return end
+    if not net.is_safe_url(url) then return end
     local login = string.lower(username)
     if M.own_login and login == M.own_login then return end
     local entry = cache[login]

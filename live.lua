@@ -8,6 +8,7 @@
 -- kick/youtube, which chatterino has no native status for.
 local store = require("store")
 local multichat = require("multichat")
+local net = require("net")
 
 local M = {}
 
@@ -34,12 +35,16 @@ function M.handle(msg)
     local tabs = multichat.tabs_for(platform, string.lower(channel))
     if #tabs == 0 then return true end
 
+    -- the server/ws is untrusted: clamp every field spliced into the system line
+    -- (control-byte-free + length-capped) so a flood of megabyte-scale titles
+    -- can't grow scrollback allocations unbounded.
+    local chan_disp = net.safe_text(channel, 100) or channel
     local live = (t == "stream:online")
-    local line = (live and "🔴 " or "⚫ ") .. channel .. (live and (" is live on " .. platform) or (" went offline on " .. platform))
+    local line = (live and "🔴 " or "⚫ ") .. chan_disp .. (live and (" is live on " .. platform) or (" went offline on " .. platform))
     if live then
-        local game = type(msg.game) == "string" and msg.game ~= "" and (" · " .. msg.game) or ""
-        local title = type(msg.title) == "string" and msg.title ~= "" and (" · " .. msg.title) or ""
-        line = line .. game .. title
+        local game = net.safe_text(msg.game, 100)
+        local title = net.safe_text(msg.title, 140)
+        line = line .. (game and (" · " .. game) or "") .. (title and (" · " .. title) or "")
     end
     for _, cc in ipairs(tabs) do
         pcall(function()

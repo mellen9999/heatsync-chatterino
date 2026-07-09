@@ -102,14 +102,19 @@ function M.search_all(q, cb)
         -- cap total processed: nobody scrolls 500 results, and it bounds the work
         -- + render-cache churn if a response returns a pathological count.
         local MAX_RESULTS = 500
+        -- bound RAW items scanned, not just valid ones kept: a response of the same
+        -- name repeated (or malformed rows) never advances #out, so a `#out` cap
+        -- alone would iterate a pathological array in full on every keystroke.
+        local scanned = 0
         for _, provider in ipairs(PROVIDER_ORDER) do
             local items = payload.results[provider]
             if type(items) == "table" then
                 for _, e in ipairs(items) do
-                    if #out >= MAX_RESULTS then break end
+                    if #out >= MAX_RESULTS or scanned >= MAX_RESULTS then break end
+                    scanned = scanned + 1
                     local name = net.pick_first_str(e, "name", "code")
                     local eurl = net.pick_first_str(e, "url", "src")
-                    if name and eurl and net.is_safe_name(name) and not seen[name] then
+                    if name and eurl and net.is_safe_name(name) and net.is_safe_url(eurl) and not seen[name] then
                         seen[name] = true
                         cache_render(name, eurl, provider)
                         out[#out + 1] = { name = name, provider = provider, url = eurl, animated = e.animated == true }

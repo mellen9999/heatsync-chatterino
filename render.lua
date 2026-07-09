@@ -116,7 +116,13 @@ local function flush_run(elems, run, src)
     for i = #run, 1, -1 do run[i] = nil end
 end
 
-local function rebuild_text_element(elems, el, sender_map)
+-- one crafted line ("x x x ...") could otherwise carry hundreds of emote/thread
+-- elements, and the backpass re-runs this across up to BACKPASS_DEPTH messages on
+-- every inventory change — bound the images we inject per rebuilt MESSAGE. matches
+-- multichat's MAX_EMOTE_TOKENS. over budget → the word stays plain text.
+local MAX_RENDER_TOKENS = 50
+
+local function rebuild_text_element(elems, el, sender_map, budget)
     local run = {}
     local src = {}
     pcall(function()
@@ -144,9 +150,11 @@ local function rebuild_text_element(elems, el, sender_map)
         -- (served <=32px tall), so both the stored width AND a stored height above
         -- the 1x line height would mis-scale it — a 128-tall record rendered a 32px
         -- image at ~7px, i.e. invisible. renderable() guarantees emote.h > 0.
-        local set = renderable(emote) and not blocked
+        local over_budget = budget.n >= MAX_RENDER_TOKENS
+        local set = not over_budget and renderable(emote) and not blocked
             and hs_imageset(emote.url, emote.h) or nil
         if set then
+            budget.n = budget.n + 1
             flush_run(elems, run, src)
             table.insert(elems, {
                 type = "scaling-image",
@@ -160,8 +168,9 @@ local function rebuild_text_element(elems, el, sender_map)
                 link = { type = c2.LinkType.InsertText, value = word .. " " },
             })
         else
-            local tid = thread_id(word)
+            local tid = not over_budget and thread_id(word)
             if tid then
+                budget.n = budget.n + 1
                 flush_run(elems, run, src)
                 table.insert(elems, {
                     type = "text",
@@ -213,6 +222,7 @@ end
 local function build_replacement(msg, sender_map, want_flame)
     local elems = {}
     local markers_done = false
+    local budget = { n = 0 } -- emote/thread elements injected across THIS message
     for _, el in ipairs(msg:elements()) do
         local ok, ty = pcall(function() return el.type end)
         -- BEFORE the username, strip our own markers from a prior render so
@@ -230,7 +240,7 @@ local function build_replacement(msg, sender_map, want_flame)
             end
         end
         if ty == "text" then
-            rebuild_text_element(elems, el, sender_map)
+            rebuild_text_element(elems, el, sender_map, budget)
         else
             -- pass the object through; chatterino clones it (twitch emotes,
             -- badges, timestamps, mentions, reply curves stay verbatim)

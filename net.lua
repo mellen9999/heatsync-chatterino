@@ -61,12 +61,38 @@ function M.pick_first_str(obj, ...)
     return nil
 end
 
+-- an emote/badge dimension. reject non-finite (a raw JSON `1e400` parses to
+-- math.huge, which would sail past a bare `> 0` and mis-scale downstream) and
+-- anything past a sane pixel ceiling — no real emote is 65k px.
 function M.pick_first_num(obj, ...)
     for i = 1, select("#", ...) do
         local v = tonumber(obj[select(i, ...)])
-        if v and v > 0 then return v end
+        if v and v > 0 and v <= 65535 then return v end
     end
     return nil
+end
+
+-- a CDN url is short. reject a giant string outright: `url` never passes through
+-- is_safe_name, and a multi-MB value repeated across the row/entry count caps is
+-- a heap-exhaustion vector from a hostile server / ws frame.
+local MAX_URL_LEN = 2048
+function M.is_safe_url(s)
+    return type(s) == "string" and s ~= "" and #s <= MAX_URL_LEN
+        and not string.find(s, "%c")
+end
+
+-- clamp an untrusted display string (tooltip, stream title/game) that may hold
+-- spaces — unlike is_safe_name, which is for single-token link values. strips
+-- control bytes (newline injection) and truncates to `max` chars. nil in → nil.
+function M.safe_text(s, max)
+    if type(s) ~= "string" or s == "" then return nil end
+    s = (string.gsub(s, "%c", " ")) -- neutralize control bytes
+    local len = (utf8 and utf8.len and utf8.len(s)) or #s
+    if type(len) == "number" and len > max then
+        local cut = (utf8 and utf8.offset and utf8.offset(s, max + 1)) or (max + 1)
+        s = string.sub(s, 1, (cut or (max + 1)) - 1)
+    end
+    return s
 end
 
 -- parse one emote row from any heatsync/provider response shape into a
@@ -81,6 +107,14 @@ end
 function M.is_safe_name(s)
     if type(s) ~= "string" or s == "" then return false end
     if string.find(s, "%c") then return false end -- no control bytes (newline etc.)
+    -- an emote name is always a single token. reject ANY whitespace and a leading
+    -- command prefix: the picker/tab-complete insert the name VERBATIM into chat,
+    -- so a hostile name like "/ban user reason" (control-char-free, <100) would
+    -- otherwise become a real command one click + Enter away. legit names can't
+    -- hold spaces anyway, so this rejects nothing real.
+    if string.find(s, "%s") then return false end
+    local first = string.byte(s, 1)
+    if first == 47 or first == 46 then return false end -- "/" or "." command prefix
     -- length in CHARACTERS, not bytes, so a legit multibyte name (CJK/emoji/
     -- accented) isn't rejected at ~33 chars; fall back to bytes on invalid utf8.
     local len = (utf8 and utf8.len and utf8.len(s)) or #s
@@ -91,7 +125,7 @@ function M.parse_emote_row(e)
     if type(e) ~= "table" then return nil end
     local name = M.pick_first_str(e, "custom_name", "name", "code")
     local url = M.pick_first_str(e, "url", "src")
-    if not name or not url or not M.is_safe_name(name) then return nil end
+    if not name or not url or not M.is_safe_name(name) or not M.is_safe_url(url) then return nil end
     return {
         name = name,
         url = url,

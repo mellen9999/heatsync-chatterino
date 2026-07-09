@@ -26,9 +26,17 @@ local ALLOWED_HOST_SUFFIXES = {
 local function host_allowed(url)
     -- https ONLY — reject http:// (downgrade / cleartext beacon) even on an
     -- allowlisted host. every CDN we load from serves https.
-    local host = string.match(url, "^https://([^/]+)")
-    if not host then return false end
-    host = string.lower(string.match(host, "^([^:]+)") or host) -- drop any :port
+    local authority = string.match(url, "^https://([^/]+)")
+    if not authority then return false end
+    -- reject userinfo (user:pass@host) OUTRIGHT. a legit CDN url never carries it,
+    -- and it's the classic allowlist bypass: the real connect-to host is whatever
+    -- follows the last '@', so "kick.com:@evil.com" would otherwise colon-truncate
+    -- to "kick.com" and pass while the fetch hits evil.com. no '@' → no ambiguity.
+    if string.find(authority, "@", 1, true) then return false end
+    local host = string.lower(string.match(authority, "^([^:]+)") or authority) -- drop any :port
+    -- must be a bare hostname; anything else (stray delimiters, ipv6 brackets,
+    -- leftover authority cruft) fails safe rather than being suffix-matched.
+    if not string.match(host, "^[%w%.%-]+$") then return false end
     for _, suf in ipairs(ALLOWED_HOST_SUFFIXES) do
         -- exact host OR a real subdomain of it. the `.`-prefix check rejects the
         -- classic bypass (e.g. "heatsync.org.evil.com" does NOT end in ".heatsync.org").

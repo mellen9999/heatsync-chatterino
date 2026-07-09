@@ -59,8 +59,12 @@ function M.register()
                 -- the rest of the list.
                 pcall(function()
                     local link
-                    if plat == "twitch" and type(s.channel or s.username) == "string" then
-                        link = { type = c2.LinkType.JumpToChannel, value = string.lower(s.channel or s.username) }
+                    local chan = s.channel or s.username
+                    -- the server is untrusted: only a real twitch login (charset-
+                    -- validated) may reach the native JumpToChannel action; anything
+                    -- else falls back to the safe percent-encoded profile url.
+                    if plat == "twitch" and u.is_valid_name(chan) then
+                        link = { type = c2.LinkType.JumpToChannel, value = string.lower(chan) }
                     else
                         link = { type = c2.LinkType.Url, value = net.ORIGIN .. "/u/" .. net.percent_encode(name) }
                     end

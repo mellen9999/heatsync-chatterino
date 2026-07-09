@@ -1295,6 +1295,40 @@ do
     check(n.is_safe_name("Ｐｅｅｐｏ３"), "name-safety: a legit multibyte unicode name is allowed (char count, not bytes)")
     check(n.parse_emote_row({ name = "bad\nname", url = "https://cdn.7tv.app/e/1.webp" }) == nil,
         "name-safety: parse_emote_row drops a control-char name")
+    -- a name is inserted VERBATIM into chat on click (picker/tab-complete): a
+    -- space-bearing or command-prefixed name would become a runnable command
+    check(not n.is_safe_name("/ban victim reason"), "name-safety: a leading-/ command name is rejected")
+    check(not n.is_safe_name("two words"), "name-safety: a name with a space is rejected")
+    check(not n.is_safe_name(".timeout victim"), "name-safety: a leading-. command name is rejected")
+end
+-- url safety: a CDN url never passes is_safe_name, so it's the one unbounded
+-- string field — a multi-MB value repeated across the row caps is a heap-DoS
+do
+    local n = require("net")
+    check(n.is_safe_url("https://cdn.7tv.app/emote/X/1x.webp"), "url-safety: a normal cdn url is allowed")
+    check(not n.is_safe_url("https://cdn.7tv.app/" .. string.rep("a", 3000)), "url-safety: a >2KB url is rejected")
+    check(not n.is_safe_url("https://x/\n1.webp"), "url-safety: a control-byte url is rejected")
+    check(n.parse_emote_row({ name = "ok", url = "https://x/" .. string.rep("a", 4000) }) == nil,
+        "url-safety: parse_emote_row drops an over-long url")
+end
+-- dimension safety: a raw JSON 1e400 parses to math.huge and would sail past a
+-- bare `> 0`, mis-scaling downstream — reject non-finite + absurd pixel sizes
+do
+    local n = require("net")
+    check(n.pick_first_num({ width = 32 }, "width") == 32, "dim-safety: a normal dimension passes")
+    check(n.pick_first_num({ width = math.huge }, "width") == nil, "dim-safety: math.huge (1e400) is rejected")
+    check(n.pick_first_num({ width = 999999 }, "width") == nil, "dim-safety: an absurd pixel size is rejected")
+end
+-- image allowlist: the userinfo (user:pass@host) trick must NOT bypass the host
+-- allowlist — the real fetch host is after the '@', so "kick.com:@evil.com" is evil
+do
+    local img = require("img")
+    check(img.for_url("https://kick.com:@evil.com/beacon.png", 32, 32) == nil,
+        "allowlist: userinfo-colon bypass (kick.com:@evil.com) is rejected")
+    check(img.for_url("https://heatsync.org.evil.com/x.png", 32, 32) == nil,
+        "allowlist: suffix-append bypass (heatsync.org.evil.com) is rejected")
+    check(img.for_url("https://evil.com/x.png", 32, 32) == nil,
+        "allowlist: a non-allowlisted host is rejected")
 end
 -- per-message emote-token cap: one hostile kick line with 100 [emote:] tokens
 -- builds at most MAX_EMOTE_TOKENS(50) image elements, not 100
