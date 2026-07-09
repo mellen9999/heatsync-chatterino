@@ -1318,6 +1318,17 @@ do
     check(not senders.is_known_hs("ghostuser"), "senders: a failed lookup negative-caches (not known-HS)")
 end
 
+-- multichat: unlink a SINGLE platform leaves other sources on the tab linked
+-- (only the unlink-ALL path was covered before)
+do
+    multichat.link("uttab", "kick", "kk", nil)
+    multichat.link("uttab", "yt", "yy", nil)
+    local before = multichat.stats()
+    local removed = multichat.unlink("uttab", "kick", "kk")
+    check(removed == 1 and multichat.stats() == before - 1,
+        "multichat: unlink one platform leaves the tab's other source linked")
+end
+
 -- ===== fuzz: throw garbage at every entry point, assert nothing escapes =====
 -- the plugin's pcall guards + type checks should survive ANY malformed ws frame
 -- or command args. seeded so a failure is reproducible.
