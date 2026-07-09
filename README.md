@@ -7,7 +7,7 @@ no fork, no patched binary. one lua plugin that feature-detects the host build a
 | the build exposes… | what you get |
 |---|---|
 | message rendering + image APIs | everything: inline emotes, the emote menu, threadlinks, live sync, multichat, commands |
-| websocket + message injection | live-synced tab-complete, `/hsmulti` multichat, `/hsmoments`, `/hslogs` |
+| websocket + message injection | live-synced tab-complete, `/hsmulti` multichat, live status, `/hsmoments`, `/hslogs` |
 | commands only | tab-complete from your inventory + the global catalog |
 
 `/hsstatus` reports which capabilities your build exposed. nothing here assumes a version number — the plugin asks the binary what it can do at boot.
@@ -40,6 +40,10 @@ recents are learned from the emotes you actually send (the only usage signal a p
 
 chatterino has no native kick/youtube. this makes heatsync the cross-platform chat layer *inside* it. (youtube chat only exists while the channel is live.)
 
+## live status
+
+`/hslive on` surfaces a 🔴 line when a kick or youtube source you've merged goes live, and a ⚫ line when it goes offline — in the twitch tab it's linked to. off by default. twitch live status is left to chatterino, which shows it natively; the value here is kick/youtube, which it doesn't. the go-live signal rides the same anonymous websocket, scoped to the channels you've actually linked, so it costs nothing when off.
+
 ## live sync
 
 add an emote on heatsync.org and it's usable in chatterino within a second — a websocket push plus a debounced re-fetch. the socket is anonymous, reconnects with jittered backoff capped at 60s, heartbeats every 25s, and recycles itself if the server goes quiet; a periodic full re-fetch reconciles anything a dropped socket missed.
@@ -65,6 +69,7 @@ heatsync users get a 🔥 before their name in any chat, so they're identifiable
 | `/hsblock <name>` \| `/hsunblock` \| `/hsblocklist` | locally hide an emote (render + tab-complete) |
 | `/hsflame on\|off` | toggle the 🔥 heatsync-user marker |
 | `/hsbadges on\|off` | show chatterino global badges on chatters (opt-in) |
+| `/hslive on\|off` | 🔴/⚫ go-live + offline lines for your linked kick/youtube sources (opt-in) |
 | `/hsmoments [<n>h] [platform] [page]` | top live chat moments, clickable permalinks; `48h` sets the window, a bare number pages, filter by platform |
 | `/hslogs <user> [channel]` | chatter stats (messages, channels, active days, top channels) + archive link |
 | `/hshelp` | one-screen index of every command, with a note on what this build supports |
@@ -111,11 +116,11 @@ for the full experience (rendering, the emote menu, multichat), use a build whos
 
 ## architecture
 
-small single-purpose modules: `caps` (feature detection), `net` (http / json / timers / data files), `inventory` (your emotes), `seventv` (catalog search + render cache), `senders` (other chatters' sets), `recents` (learned usage), `picker` (clickable emote grids), `ws` (socket lifecycle), `multichat` (kick/youtube injection), `render` (hook → rebuild → replace), `store` (persisted toggles), `commands`, `init` (wiring). every hook is pcall-guarded and every capability is feature-detected, so a missing API degrades one feature instead of erroring. if chatterino ever exposes first-class plugin emote providers, `render.lua` is the only file that needs to change.
+small single-purpose modules: `caps` (feature detection), `net` (http / json / timers / data files), `inventory` (your emotes), `seventv` (catalog search + render cache), `senders` (other chatters' sets), `recents` (learned usage), `img` (image-set builder + CDN allowlist), `picker` (clickable emote grids), `ws` (socket lifecycle), `multichat` (kick/youtube injection), `live` (opt-in go-live status), `badges` (chatterino badges), `render` (hook → rebuild → replace), `store` (persisted toggles), and the command layer — `cmdutil` (shared helpers) plus `cmd_emotes` / `cmd_archive` / `cmd_multichat` / `cmd_system`, all wired by `init`. every hook is pcall-guarded and every capability is feature-detected, so a missing API degrades one feature instead of erroring. if chatterino ever exposes first-class plugin emote providers, `render.lua` is the only file that needs to change.
 
 ## tests
 
-a headless harness stubs the chatterino API and drives the real modules — caps detection, completion, sender batching, ws dispatch/backoff, the render rebuild, the emote menu + recents, multichat. no chatterino needed, just `lua5.4`:
+a headless harness stubs the chatterino API and drives the real modules — caps detection, completion, sender batching, ws dispatch/backoff, the render rebuild, the emote menu + recents, multichat, live status. it also runs the full pipeline against real heatsync.org responses (an end-to-end fixture) and fuzzes every entry point with malformed input, so a wrong-shaped server response or ws frame can't crash the client. no chatterino needed, just `lua5.4`:
 
 ```
 lua5.4 test/harness.lua              # full suite

@@ -267,6 +267,16 @@ function M.unlink(cc_name, platform, channel)
     return removed
 end
 
+-- reverse lookup for the live-status feature: which chatterino (twitch) tabs is
+-- this (platform, channel) source linked into? empty if none — so a stream event
+-- only surfaces for a source the user actually merged.
+function M.tabs_for(platform, channel)
+    local out = {}
+    local targets = routes[source_key(platform, channel)]
+    if targets then for cc in pairs(targets) do out[#out + 1] = cc end end
+    return out
+end
+
 function M.list(cc_name)
     local out = {}
     if links[cc_name] then

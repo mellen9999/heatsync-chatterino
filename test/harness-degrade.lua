@@ -155,6 +155,8 @@ http_answer("/api/users/555/emotes", { emotes = { { custom_name = "e1", url = "h
 commands["/hsmoments"]({ words = { "/hsmoments", "24h" }, channel = ctx.channel })
 http_answer("/api/moments", { moments = { { id = "m1", platform = "twitch", channel = "c", rate = 10, baseline = "1" } } })
 commands["/hsmulti"]({ words = { "/hsmulti", "kick:x" }, channel = ctx.channel })
+commands["/hslive"]({ words = { "/hslive", "on" }, channel = ctx.channel })
+commands["/hslive"]({ words = { "/hslive", "off" }, channel = ctx.channel })
 commands["/hsemotes"]({ words = { "/hsemotes" }, channel = ctx.channel })
 commands["/hsblocklist"]({ words = { "/hsblocklist" }, channel = ctx.channel })
 check(#added > hb, "network + picker commands survive the stripped API on " .. MODE)

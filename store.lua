@@ -15,6 +15,7 @@ local FLAME_FILE = "flame.txt"    -- "0" = off, anything else = on
 local ARCHIVE_FILE = "archive.txt" -- "0" = relay off (ON by default, opt-out)
 local AUTOMC_FILE = "automulti.txt" -- "0" = auto-multichat off (ON by default)
 local BADGES_FILE = "badges.txt"   -- "1" = badges on (OFF by default, opt-in)
+local LIVE_FILE = "live.txt"       -- "1" = live-status on (OFF by default, opt-in)
 
 -- blocked[name] = true
 local blocked = {}
@@ -22,6 +23,7 @@ local flame_on = true
 local archive_on = true -- default ON (opt-out) — archives public twitch chat
 local automc_on = true -- default ON (opt-out) — auto-merges a stream's kick/yt chat when publicly linked
 local badges_on = false
+local live_on = false -- default OFF (opt-in) — go-live lines for linked kick/yt sources
 
 -- exact toggle read: the whole file must BE the value (whitespace-tolerant),
 -- not merely contain it — an unanchored string.match("0") would misfire on any
@@ -44,8 +46,9 @@ local function load()
     -- default ON: only an explicit "0" on disk turns these off
     if file_is(ARCHIVE_FILE, "0") then archive_on = false end
     if file_is(AUTOMC_FILE, "0") then automc_on = false end
-    -- default OFF (opt-in): only an explicit "1" turns badges on
+    -- default OFF (opt-in): only an explicit "1" turns these on
     if file_is(BADGES_FILE, "1") then badges_on = true end
+    if file_is(LIVE_FILE, "1") then live_on = true end
 end
 
 local function persist_blocks()
@@ -127,6 +130,16 @@ end
 function M.set_badges(on)
     badges_on = on and true or false
     net.write_data(BADGES_FILE, badges_on and "1" or "0")
+end
+
+-- ----- live-status toggle (default off, opt-in) -----
+function M.live_enabled()
+    return live_on
+end
+
+function M.set_live(on)
+    live_on = on and true or false
+    net.write_data(LIVE_FILE, live_on and "1" or "0")
 end
 
 load()

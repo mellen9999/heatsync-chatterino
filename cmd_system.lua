@@ -48,6 +48,22 @@ function M.register(get_login)
         end
     end)
 
+    -- live-status toggle: go-live / went-offline lines for your linked kick/yt
+    -- sources (chatterino shows twitch natively, so those are skipped)
+    c2.register_command("/hslive", function(ctx)
+        local arg = ctx.words[2]
+        if arg == "on" then
+            store.set_live(true)
+            u.sysmsg(ctx, "live-status ON — 🔴/⚫ lines when a linked kick/youtube source goes live or offline")
+        elseif arg == "off" then
+            store.set_live(false)
+            u.sysmsg(ctx, "live-status OFF")
+        else
+            u.sysmsg(ctx, "live-status is " .. (store.live_enabled() and "on" or "off") ..
+                " · /hslive on|off · shows 🔴/⚫ for your linked kick/youtube sources")
+        end
+    end)
+
     -- flame marker toggle (the 🔥 tag on heatsync users' messages)
     c2.register_command("/hsflame", function(ctx)
         local arg = ctx.words[2]
@@ -95,7 +111,7 @@ function M.register(get_login)
         u.sysmsg(ctx, "heatsync commands · build " .. caps.name())
         u.sysmsg(ctx, "emotes: :name tab-complete · /hsemotes menu · /hsfind <q> search · /hsinv <user> [page]")
         u.sysmsg(ctx, "archive: /hssearch <q> posts · /hschat <q> [@user] [#chan] chat-logs · /hslogs <user> [chan] · /hsmoments [<n>h] [plat] [pg] · /hshot [plat] [pg] · /hswhois <user>")
-        u.sysmsg(ctx, "chat: /hsmulti kick:<slug>|yt:<handle>|off|auto on|off · /hsflame · /hsbadges · /hsblock <name> · /hsunblock <name> · /hsblocklist")
+        u.sysmsg(ctx, "chat: /hsmulti kick:<slug>|yt:<handle>|off|auto on|off · /hslive · /hsflame · /hsbadges · /hsblock <name> · /hsunblock <name> · /hsblocklist")
         u.sysmsg(ctx, "system: /hsstatus · /hsrefresh · /hsarchive on|off · /hsclear")
         u.sysmsg(ctx, "syntax: @user #channel narrow a search · plat:value links a multichat source · <n>h = hours")
         if caps.tier < 2 then

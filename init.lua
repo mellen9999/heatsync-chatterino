@@ -21,6 +21,7 @@ local store = require("store")
 local multichat = require("multichat")
 local badges = require("badges")
 local recents = require("recents")
+local live = require("live")
 
 -- tab-complete popup size (shared ceiling: own inventory fills first, then the
 -- 7tv/bttv/ffz catalog appends into whatever room is left). raised 25→40 so a
@@ -177,6 +178,8 @@ c2.register_callback(
 local function on_ws_event(msg)
     -- multichat (kick/yt live chat injection) claims its own message types
     if multichat.dispatch(msg) then return end
+    -- opt-in go-live / went-offline lines for linked kick/yt sources
+    if live.handle(msg) then return end
     local t = msg.type
     if t == "emote:added" or t == "emote:removed" or t == "emotes:refresh" then
         -- own-inventory delta (emote:watch room): one debounced re-fetch
@@ -196,8 +199,7 @@ local function on_ws_event(msg)
             end
         end
     end
-    -- everything else on joined rooms (heat updates, stream events, typing)
-    -- is deliberately ignored
+    -- everything else on joined rooms (heat updates, typing) is ignored
 end
 
 -- ----- boot -----

@@ -1329,6 +1329,36 @@ do
         "multichat: unlink one platform leaves the tab's other source linked")
 end
 
+-- ===== live-status (opt-in): go-live/offline lines for linked kick/yt =====
+require("store").set_live(true)
+commands["/hsmulti"]({ words = { "/hsmulti", "kick:livechan" }, channel = chan })
+do
+    local a0 = #chan.added
+    ssock.opts.on_text(register_payload({ type = "stream:online", platform = "kick",
+        channel = "livechan", game = "Slots", title = "big win" }))
+    check(added_text_has("is live on kick", #chan.added - a0), "live: a linked kick source going live shows a 🔴 line")
+    check(added_text_has("Slots", #chan.added - a0), "live: the go-live line carries the game/title")
+    a0 = #chan.added
+    ssock.opts.on_text(register_payload({ type = "stream:offline", platform = "kick", channel = "livechan" }))
+    check(added_text_has("went offline on kick", #chan.added - a0), "live: a linked kick source going offline shows a ⚫ line")
+end
+do -- an UNlinked channel's event must be ignored
+    local a0 = #chan.added
+    ssock.opts.on_text(register_payload({ type = "stream:online", platform = "kick", channel = "unlinkedchan" }))
+    check(#chan.added == a0, "live: an unlinked channel's go-live is ignored")
+end
+do -- twitch is skipped (native chatterino already shows it)
+    local a0 = #chan.added
+    ssock.opts.on_text(register_payload({ type = "stream:online", platform = "twitch", channel = "livechan" }))
+    check(#chan.added == a0, "live: twitch go-live is skipped (shown natively)")
+end
+require("store").set_live(false)
+do -- toggled off → no line even for a linked source
+    local a0 = #chan.added
+    ssock.opts.on_text(register_payload({ type = "stream:online", platform = "kick", channel = "livechan" }))
+    check(#chan.added == a0, "live: /hslive off suppresses go-live lines")
+end
+
 -- ===== fuzz: throw garbage at every entry point, assert nothing escapes =====
 -- the plugin's pcall guards + type checks should survive ANY malformed ws frame
 -- or command args. seeded so a failure is reproducible.
