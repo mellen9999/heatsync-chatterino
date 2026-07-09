@@ -1198,5 +1198,32 @@ do
         "e2e/real: deep 7tv word (" .. deep .. ") does NOT inline-render from a non-owner (privacy invariant)")
 end
 
+-- recents dead-name filtering: an emote recorded as recently-used must vanish
+-- from /hsemotes once it leaves the inventory (a stale recents.txt must never
+-- surface a dead name — the exact case recents.lua's comment warns about).
+do
+    local recents = require("recents")
+    recents.note("using BirdgeHmm now") -- BirdgeHmm is in the current real inventory → recorded
+    local function in_recents(n)
+        for _, x in ipairs(recents.names()) do if x == n then return true end end
+        return false
+    end
+    check(in_recents("BirdgeHmm"), "recents: a used inventory emote is recorded")
+    inventory.refresh("realmellen")
+    http_answer("/api/profile/realmellen", { profile = { id = 999 } })
+    http_answer("/api/users/999/emotes", { emotes = { { custom_name = "OnlyThis", url = "https://cdn.7tv.app/emote/0Z/1x.webp", width = 32, height = 32 } } })
+    check(not in_recents("BirdgeHmm"), "recents: an emote gone from inventory is filtered out (no dead name)")
+end
+
+-- multichat ephemeral auto-link reaping: an auto-link (from auto-multichat) must
+-- be reaped when its twitch tab closes; a manual link would persist.
+do
+    local before = multichat.stats()
+    multichat.link("autotab", "kick", "autochan", true) -- auto=true → ephemeral
+    check(multichat.stats() == before + 1, "multichat: ephemeral auto-link added")
+    multichat.unlink_auto("autotab")
+    check(multichat.stats() == before, "multichat: unlink_auto reaps the ephemeral auto-link on tab close")
+end
+
 print(failures == 0 and "\nALL PASS" or ("\n" .. failures .. " FAILURES"))
 host_os.exit(failures == 0 and 0 or 1)
