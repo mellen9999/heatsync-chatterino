@@ -410,6 +410,13 @@ end
 -- client with add_message calls. a real backfill is a few dozen.
 local MAX_BATCH = 250
 
+-- keep the LAST MAX_BATCH of an oversized batch: backfills arrive oldest-first,
+-- and a viewer wants the most-recent lines, not the oldest (dedup means the
+-- newest are what's missing from their view). returns the start index.
+local function batch_start(msgs)
+    return math.max(1, #msgs - MAX_BATCH + 1)
+end
+
 -- returns true if the message was a multichat message (handled)
 function M.dispatch(msg)
     local t = msg.type
@@ -418,9 +425,8 @@ function M.dispatch(msg)
         return true
     elseif t == "kick-chat-backfill" then
         if type(msg.messages) == "table" then
-            for i, d in ipairs(msg.messages) do
-                if i > MAX_BATCH then break end
-                handle_kick(d)
+            for i = batch_start(msg.messages), #msg.messages do
+                handle_kick(msg.messages[i])
             end
         end
         return true
@@ -428,9 +434,8 @@ function M.dispatch(msg)
         local tag = msg.channelId
         if type(tag) ~= "string" or tag == "" then return true end
         if type(msg.messages) == "table" then
-            for i, m in ipairs(msg.messages) do
-                if i > MAX_BATCH then break end
-                handle_yt(m, tag)
+            for i = batch_start(msg.messages), #msg.messages do
+                handle_yt(msg.messages[i], tag)
             end
         end
         return true

@@ -56,7 +56,12 @@ local function put(login, map)
     if cache[login] == nil then
         cache_count = cache_count + 1
     end
-    cache[login] = { map = map, ts = net.now() }
+    -- carry the map's entry count so feed_broadcast can enforce the per-login cap
+    -- in O(1) instead of rescanning the map on every insert. counted once here
+    -- (batch load / new login only), not on the hot broadcast path.
+    local n = 0
+    if type(map) == "table" then for _ in pairs(map) do n = n + 1 end end
+    cache[login] = { map = map, ts = net.now(), n = n }
     evict_if_full()
 end
 
@@ -175,23 +180,19 @@ function M.feed_broadcast(username, emote_name, emote_data)
     if not url then return end
     local login = string.lower(username)
     if M.own_login and login == M.own_login then return end
-    local hit = cache[login]
-    local map
-    if hit and type(hit.map) == "table" then
-        map = hit.map
-        hit.ts = net.now()
+    local entry = cache[login]
+    if entry and type(entry.map) == "table" then
+        entry.ts = net.now()
     else
-        map = {}
-        put(login, map)
+        put(login, {})
+        entry = cache[login]
     end
+    local map = entry.map
     -- cap distinct emotes per login so a broadcast flood can't grow one map
-    -- unbounded (bounded scan, only on a genuinely new name)
+    -- unbounded — O(1) via the maintained count, not a per-insert rescan
     if map[emote_name] == nil then
-        local cnt = 0
-        for _ in pairs(map) do
-            cnt = cnt + 1
-            if cnt >= MAX_SET_ENTRIES then return end
-        end
+        if (entry.n or 0) >= MAX_SET_ENTRIES then return end
+        entry.n = (entry.n or 0) + 1
     end
     map[emote_name] = {
         url = url,

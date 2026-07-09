@@ -1267,6 +1267,7 @@ do
     check(n.is_safe_name("peepoHappy"), "name-safety: a clean emote name is allowed")
     check(not n.is_safe_name("hi\n/w victim secret"), "name-safety: a newline-injection name is rejected")
     check(not n.is_safe_name(string.rep("x", 101)), "name-safety: an absurdly long name is rejected")
+    check(n.is_safe_name("Ｐｅｅｐｏ３"), "name-safety: a legit multibyte unicode name is allowed (char count, not bytes)")
     check(n.parse_emote_row({ name = "bad\nname", url = "https://cdn.7tv.app/e/1.webp" }) == nil,
         "name-safety: parse_emote_row drops a control-char name")
 end

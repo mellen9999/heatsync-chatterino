@@ -79,7 +79,12 @@ end
 -- server must never carry control bytes (newline → input injection) or a giant
 -- payload. legit names are short and control-char-free.
 function M.is_safe_name(s)
-    return type(s) == "string" and s ~= "" and #s <= 100 and string.find(s, "%c") == nil
+    if type(s) ~= "string" or s == "" then return false end
+    if string.find(s, "%c") then return false end -- no control bytes (newline etc.)
+    -- length in CHARACTERS, not bytes, so a legit multibyte name (CJK/emoji/
+    -- accented) isn't rejected at ~33 chars; fall back to bytes on invalid utf8.
+    local len = (utf8 and utf8.len and utf8.len(s)) or #s
+    return len <= 100
 end
 
 function M.parse_emote_row(e)
