@@ -99,10 +99,14 @@ function M.search_all(q, cb)
         end
         local out = {}
         local seen = {}
+        -- cap total processed: nobody scrolls 500 results, and it bounds the work
+        -- + render-cache churn if a response returns a pathological count.
+        local MAX_RESULTS = 500
         for _, provider in ipairs(PROVIDER_ORDER) do
             local items = payload.results[provider]
             if type(items) == "table" then
                 for _, e in ipairs(items) do
+                    if #out >= MAX_RESULTS then break end
                     local name = net.pick_first_str(e, "name", "code")
                     local eurl = net.pick_first_str(e, "url", "src")
                     if name and eurl and not seen[name] then

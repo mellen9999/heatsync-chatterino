@@ -1225,5 +1225,41 @@ do
     check(multichat.stats() == before, "multichat: unlink_auto reaps the ephemeral auto-link on tab close")
 end
 
+-- ===== Fort-Knox hardening =====
+local ssock = sockets[#sockets]
+-- https-only: an http:// URL even on an ALLOWLISTED host must be rejected
+senders.feed_broadcast("httpuser", "httpMote", { url = "http://cdn.7tv.app/emote/X/1x.webp", width = 32, height = 32 })
+do
+    local m = fake_msg("httpuser", "770001", "look httpMote here")
+    chan.msgs[#chan.msgs + 1] = m
+    chan.appended_cb(m, nil)
+    local imaged = false
+    for _, e in ipairs(chan.replaced[#chan.replaced].new.init.elements) do
+        if type(e) == "table" and e.type == "scaling-image" then imaged = true end
+    end
+    check(not imaged, "https-only: an http:// emote URL is rejected even on an allowlisted host")
+end
+-- source-scoped dedup: two sources sharing a message id both inject (no shadow)
+commands["/hsmulti"]({ words = { "/hsmulti", "kick:srca" }, channel = chan })
+commands["/hsmulti"]({ words = { "/hsmulti", "kick:srcb" }, channel = chan })
+do
+    local a0 = #chan.added
+    ssock.opts.on_text(register_payload({ type = "kick-chat-message", data = { platform = "kick", channel = "srca", id = "shared1", username = "u", content = "from A" } }))
+    ssock.opts.on_text(register_payload({ type = "kick-chat-message", data = { platform = "kick", channel = "srcb", id = "shared1", username = "u", content = "from B" } }))
+    check(#chan.added == a0 + 2, "dedup scope: same id from two distinct sources both inject")
+    local a1 = #chan.added
+    ssock.opts.on_text(register_payload({ type = "kick-chat-message", data = { platform = "kick", channel = "srca", id = "shared1", username = "u", content = "A dup" } }))
+    check(#chan.added == a1, "dedup scope: a repeat id from the same source is still deduped")
+end
+-- backfill cap: a hostile flood of >250 lines injects at most 250
+do
+    commands["/hsmulti"]({ words = { "/hsmulti", "kick:flood" }, channel = chan })
+    local msgs = {}
+    for i = 1, 400 do msgs[i] = { platform = "kick", channel = "flood", id = "f" .. i, username = "u", content = "x" } end
+    local a0 = #chan.added
+    ssock.opts.on_text(register_payload({ type = "kick-chat-backfill", channel = "flood", messages = msgs }))
+    check(#chan.added - a0 <= 250, "backfill cap: a 400-line flood injects at most 250 (got " .. (#chan.added - a0) .. ")")
+end
+
 print(failures == 0 and "\nALL PASS" or ("\n" .. failures .. " FAILURES"))
 host_os.exit(failures == 0 and 0 or 1)

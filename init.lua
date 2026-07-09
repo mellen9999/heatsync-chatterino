@@ -186,7 +186,10 @@ local function on_ws_event(msg)
         senders.feed_broadcast(msg.username, msg.emoteName, msg.emoteData)
     elseif t == "emotes:batch-broadcast" then
         if type(msg.data) == "table" then
-            for _, b in ipairs(msg.data) do
+            -- cap: the socket is anonymous, so bound how many sender entries one
+            -- broadcast can push into the cache (a real batch is small)
+            for i, b in ipairs(msg.data) do
+                if i > 500 then break end
                 if type(b) == "table" then
                     senders.feed_broadcast(b.username, b.emoteName, b.emoteData)
                 end

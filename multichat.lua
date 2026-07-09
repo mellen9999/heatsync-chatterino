@@ -283,7 +283,10 @@ local function inject(line)
     local key = source_key(line.platform, line.channel)
     local targets = routes[key]
     if not targets then return end
-    if is_dup(line.id) then return end
+    -- dedup scoped BY SOURCE: two sources linked to the same tab that happen to
+    -- share a message id can't shadow each other. a nil/blank id means "can't
+    -- dedup" and injects (is_dup handles the non-string case for the raw path).
+    if type(line.id) == "string" and line.id ~= "" and is_dup(key .. "\1" .. line.id) then return end
     local text = line.text
     if type(text) ~= "string" or text == "" then return end
     local display = line.display
@@ -384,6 +387,11 @@ local function handle_yt(m, routing_tag)
     })
 end
 
+-- cap per-batch injection: the socket is anonymous, so a compromised/hostile
+-- server (or a MITM) could push a backfill of a million lines to freeze the
+-- client with add_message calls. a real backfill is a few dozen.
+local MAX_BATCH = 250
+
 -- returns true if the message was a multichat message (handled)
 function M.dispatch(msg)
     local t = msg.type
@@ -392,14 +400,20 @@ function M.dispatch(msg)
         return true
     elseif t == "kick-chat-backfill" then
         if type(msg.messages) == "table" then
-            for _, d in ipairs(msg.messages) do handle_kick(d) end
+            for i, d in ipairs(msg.messages) do
+                if i > MAX_BATCH then break end
+                handle_kick(d)
+            end
         end
         return true
     elseif t == "youtube:chat" then
         local tag = msg.channelId
         if type(tag) ~= "string" or tag == "" then return true end
         if type(msg.messages) == "table" then
-            for _, m in ipairs(msg.messages) do handle_yt(m, tag) end
+            for i, m in ipairs(msg.messages) do
+                if i > MAX_BATCH then break end
+                handle_yt(m, tag)
+            end
         end
         return true
     elseif t == "youtube:status" then

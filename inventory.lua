@@ -55,11 +55,19 @@ local function note_possible_boot_failure()
     end
 end
 
+-- a real inventory is hundreds of emotes; cap the rows we'll build a map + sort
+-- from so a buggy/compromised response can't blow memory or freeze the sort.
+local MAX_INVENTORY_ROWS = 5000
+
 local function apply_rows(rows, login)
     local new_map = {}
     local entries = {}
     local count = 0
     for _, e in ipairs(rows) do
+        if count >= MAX_INVENTORY_ROWS then
+            net.log_warn("inventory response exceeded " .. MAX_INVENTORY_ROWS .. " rows; truncated")
+            break
+        end
         local rec = net.parse_emote_row(e)
         if rec then
             new_map[rec.name] = { url = rec.url, w = rec.w, h = rec.h, zw = rec.zw }

@@ -24,7 +24,9 @@ local ALLOWED_HOST_SUFFIXES = {
     "heatsync.org", "fourtf.com",                     -- first-party cdn + cc badges
 }
 local function host_allowed(url)
-    local host = string.match(url, "^https?://([^/]+)")
+    -- https ONLY — reject http:// (downgrade / cleartext beacon) even on an
+    -- allowlisted host. every CDN we load from serves https.
+    local host = string.match(url, "^https://([^/]+)")
     if not host then return false end
     host = string.lower(string.match(host, "^([^:]+)") or host) -- drop any :port
     for _, suf in ipairs(ALLOWED_HOST_SUFFIXES) do
