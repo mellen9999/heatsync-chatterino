@@ -24,21 +24,32 @@ local function valid_login(s)
     return lower
 end
 
--- a heatsync emote the plugin itself rendered carries tooltip "<name> ·
--- heatsync" — render.lua (own-inventory inline render) and multichat.lua
--- (sender hsEmotes in kick/youtube) are the only two places that build that
--- exact suffix. derive the name and re-validate it with is_safe_name; the
--- tooltip is still just a string on an element and is never trusted verbatim.
+-- a heatsync emote the plugin itself rendered is a scaling-image whose link
+-- inserts "<name> " (render.lua + multichat.lua build exactly that; native
+-- chatterino emotes are "emote" elements, never scaling-image). the tooltip
+-- we set is dropped by the real client (reads back ""), so the link is the
+-- reliable marker; the tooltip suffix stays as a fallback. el is userdata on
+-- the real client, so every field read is pcall'd. the derived name is
+-- re-validated with is_safe_name — it's still just a string off an element.
 local SUFFIX = " · heatsync"
+local function read_el(el)
+    return el.type, el.link, el.tooltip
+end
 local function hs_emote_name(el)
-    -- c2 objects are userdata on the real client (tables only in the harness),
-    -- so no type() gate on el itself — read the field under pcall instead
     if el == nil then return nil end
-    local ok, tt = pcall(function() return el.tooltip end)
-    if not ok or type(tt) ~= "string" then return nil end
-    if #tt <= #SUFFIX or string.sub(tt, -#SUFFIX) ~= SUFFIX then return nil end
-    local name = string.sub(tt, 1, #tt - #SUFFIX)
-    if not net.is_safe_name(name) then return nil end
+    local ok, ty, link, tt = pcall(read_el, el)
+    if not ok or ty ~= "scaling-image" then return nil end
+    local name = nil
+    local okl, is_insert = pcall(function()
+        return type(link) == "table" and link.type == c2.LinkType.InsertText
+    end)
+    if okl and is_insert and type(link.value) == "string" then
+        name = string.match(link.value, "^(%S+) $")
+    end
+    if not name and type(tt) == "string" and #tt > #SUFFIX and string.sub(tt, -#SUFFIX) == SUFFIX then
+        name = string.sub(tt, 1, #tt - #SUFFIX)
+    end
+    if not name or not net.is_safe_name(name) then return nil end
     return name
 end
 
