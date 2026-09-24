@@ -83,7 +83,7 @@ local function apply_rows(rows, login)
         end
         local rec = net.parse_emote_row(e)
         if rec then
-            new_map[rec.name] = { url = rec.url, w = rec.w, h = rec.h, zw = rec.zw }
+            new_map[rec.name] = { url = rec.url, w = rec.w, h = rec.h, zw = rec.zw, a = rec.a, u = rec.u }
             table.insert(entries, {
                 name = rec.name,
                 usage = tonumber(type(e) == "table" and (e.usage_count or e.uses) or 0) or 0,

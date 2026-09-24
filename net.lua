@@ -121,8 +121,90 @@ function M.is_safe_name(s)
     return len <= 100
 end
 
+-- days since the unix epoch for a proleptic-Gregorian Y-M-D, via Howard
+-- Hinnant's days_from_civil (http://howardhinnant.github.io/date_algorithms.html).
+-- pure arithmetic — no calendar table, no os.date (the sandbox has neither).
+local function days_from_civil(y, m, d)
+    if m <= 2 then y = y - 1 end
+    local era
+    if y >= 0 then era = y // 400 else era = (y - 399) // 400 end
+    local yoe = y - era * 400              -- [0, 399]
+    local mp = (m + 9) % 12                -- Mar=0 .. Feb=11
+    local doy = (153 * mp + 2) // 5 + d - 1 -- [0, 365]
+    local doe = yoe * 365 + yoe // 4 - yoe // 100 + doy -- [0, 146096]
+    return era * 146097 + doe - 719468
+end
+
+local function is_leap_year(y)
+    return (y % 4 == 0 and y % 100 ~= 0) or (y % 400 == 0)
+end
+local DAYS_IN_MONTH = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 }
+
+-- ISO-ish timestamp → epoch milliseconds, pure Lua (no os.date/os.time — the
+-- sandbox has neither). accepts 'YYYY-MM-DDTHH:MM:SS(.fff)?(Z|+HH:MM|-HH:MM)?'
+-- and a space in place of 'T' (added_at/until arrive as JSON-serialized dates,
+-- which JS renders with 'T'+'Z' and millisecond precision, but this also
+-- tolerates the Postgres-style space form). a number is passed through as an
+-- epoch already in ms or s (auto-detected by magnitude) if it's finite and
+-- falls in a plausible calendar range; anything else, or an out-of-range
+-- field, returns nil rather than guessing.
+function M.iso_to_ms(s)
+    if type(s) == "number" then
+        if s ~= s or s == math.huge or s == -math.huge then return nil end
+        if s >= 1e12 and s < 1e13 then return math.floor(s) end       -- ms epoch
+        if s >= 1e9 and s < 1e10 then return math.floor(s * 1000) end -- s epoch
+        return nil
+    end
+    if type(s) ~= "string" then return nil end
+    local y, mo, d, h, mi, sec, frac, tz = string.match(s,
+        "^(%d%d%d%d)-(%d%d)-(%d%d)[T ](%d%d):(%d%d):(%d%d)(%.?%d*)(.*)$")
+    if not y then return nil end
+    y, mo, d, h, mi, sec = tonumber(y), tonumber(mo), tonumber(d), tonumber(h), tonumber(mi), tonumber(sec)
+    if mo < 1 or mo > 12 or h > 23 or mi > 59 or sec > 60 then return nil end
+    local maxd = DAYS_IN_MONTH[mo]
+    if mo == 2 and is_leap_year(y) then maxd = 29 end
+    if d < 1 or d > maxd then return nil end
+    local ms = 0
+    if frac ~= "" then
+        ms = math.floor((tonumber("0" .. frac) or 0) * 1000 + 0.5)
+    end
+    local off_min = 0
+    if tz ~= "" and tz ~= "Z" then
+        local sign, oh, om = string.match(tz, "^([%+%-])(%d%d):?(%d%d)$")
+        if not sign then return nil end -- unrecognized suffix → garbage, not a guess
+        oh, om = tonumber(oh), tonumber(om)
+        if oh > 23 or om > 59 then return nil end -- no real UTC offset reaches this
+        off_min = oh * 60 + om
+        if sign == "-" then off_min = -off_min end
+    end
+    local days = days_from_civil(y, mo, d)
+    local total_s = days * 86400 + h * 3600 + mi * 60 + sec - off_min * 60
+    return total_s * 1000 + ms
+end
+
+-- content-warning categories the server default-hides from a viewer who never
+-- opted in (server/moderation/emote-category-filter.ts DEFAULT_HIDE) — an
+-- nsfw-flagged or sexual/gore-tagged row is skipped rather than rendered. most
+-- endpoints already omit `url` on a row like this (so it would fail the check
+-- below anyway), but a viewer's OWN inventory is never filtered server-side
+-- (by design — you keep what you chose), so this is the one place that
+-- actually changes what renders: nsfw/cw_cats own-inventory rows are hidden
+-- here as an inline image the same way the server itself treats them for
+-- everyone else's view of you.
+local function is_cw_blocked(e)
+    if e.nsfw == true then return true end
+    local cats = e.cw_cats
+    if type(cats) == "table" then
+        for _, c in ipairs(cats) do
+            if c == "sexual" or c == "gore" then return true end
+        end
+    end
+    return false
+end
+
 function M.parse_emote_row(e)
     if type(e) ~= "table" then return nil end
+    if is_cw_blocked(e) then return nil end
     local name = M.pick_first_str(e, "custom_name", "name", "code")
     local url = M.pick_first_str(e, "url", "src")
     if not name or not url or not M.is_safe_name(name) or not M.is_safe_url(url) then return nil end
@@ -132,6 +214,12 @@ function M.parse_emote_row(e)
         w = M.pick_first_num(e, "width"),
         h = M.pick_first_num(e, "height"),
         zw = e.zero_width == true,
+        -- render.lua's time gate: `a` (added_at) is a lower bound, `u` (until/
+        -- last_seen) an upper bound on when a message may show this emote for
+        -- its sender. live rows carry added_at only; historical (name-reuse)
+        -- rows carry until only — see server/routes/emotes.ts batch endpoint.
+        a = M.iso_to_ms(e.added_at),
+        u = M.iso_to_ms(e["until"]), -- bracket form: `until` is a Lua keyword
     }
 end
 

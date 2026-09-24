@@ -1458,6 +1458,133 @@ do
     check(n.pick_first_num({ width = math.huge }, "width") == nil, "dim-safety: math.huge (1e400) is rejected")
     check(n.pick_first_num({ width = 999999 }, "width") == nil, "dim-safety: an absurd pixel size is rejected")
 end
+-- render time gate: an emote with `a` (added_at) only renders once the message
+-- time is within 120s of it; with `u` (until) it stops rendering once the
+-- message time is 120s past it. exercised end-to-end through OWN inventory
+-- (own_map_fn; the current own login is "realmellen" — the e2e/real fixture
+-- above adopted it and never reverted) rather than the sender batch path — the sender
+-- cache's flush() is single-flight and best-effort (a request an earlier test
+-- left unanswered would wedge it for the rest of the suite; own inventory's
+-- refresh() is a separate, always-fresh request this test fully controls).
+do
+    local n = require("net")
+    local inv = require("inventory")
+    local added_iso = "2026-01-01T00:00:00Z"
+    local added_ms = n.iso_to_ms(added_iso)
+    inv.refresh("realmellen")
+    http_answer("/api/profile/realmellen", { profile = { id = 999 } })
+    http_answer("/api/users/999/emotes", { emotes = {
+        { custom_name = "gateEmoteA", url = "https://cdn.heatsync.org/e/ga.webp", width = 32, height = 32, added_at = added_iso },
+    } })
+    check(inv.resolve("gateEmoteA") ~= nil and inv.resolve("gateEmoteA").a == added_ms,
+        "render gate: precondition — own inventory carries the parsed added_at")
+
+    local function post(text, t)
+        local m = fake_msg("realmellen", "999", text)
+        m.server_received_time = t
+        chan.msgs[#chan.msgs + 1] = m
+        local before = #chan.replaced
+        chan.appended_cb(m, nil)
+        return #chan.replaced > before
+    end
+
+    check(not post("gateEmoteA before", added_ms - 200000),
+        "render gate: a message well before added_at does not render the emote")
+    check(post("gateEmoteA within slack", added_ms - 100000),
+        "render gate: a message within the 120s slack before added_at DOES render")
+    check(post("gateEmoteA long after", added_ms + 999999999),
+        "render gate: a message long after added_at (no until bound) still renders")
+end
+do
+    local n = require("net")
+    local inv = require("inventory")
+    local until_iso = "2026-01-01T00:00:00Z"
+    local until_ms = n.iso_to_ms(until_iso)
+    inv.refresh("realmellen")
+    http_answer("/api/profile/realmellen", { profile = { id = 999 } })
+    http_answer("/api/users/999/emotes", { emotes = {
+        { custom_name = "gateEmoteU", url = "https://cdn.heatsync.org/e/gu.webp", width = 32, height = 32, ["until"] = until_iso },
+    } })
+    check(inv.resolve("gateEmoteU") ~= nil and inv.resolve("gateEmoteU").u == until_ms,
+        "render gate: precondition — own inventory carries the parsed until")
+
+    local function post(text, t)
+        local m = fake_msg("realmellen", "999", text)
+        m.server_received_time = t
+        chan.msgs[#chan.msgs + 1] = m
+        local before = #chan.replaced
+        chan.appended_cb(m, nil)
+        return #chan.replaced > before
+    end
+
+    check(post("gateEmoteU before until", until_ms - 999999999),
+        "render gate: a message long before until DOES render")
+    check(post("gateEmoteU within slack", until_ms + 100000),
+        "render gate: a message within the 120s slack after until still renders")
+    check(not post("gateEmoteU long after", until_ms + 200000),
+        "render gate: a message well past until (+120s slack) does not render")
+end
+-- iso_to_ms: pure-Lua days-from-civil parser (no os.date/os.time available).
+-- edge cases: leap day, a fractional-second + Z suffix (JS Date.toJSON shape),
+-- a numeric +/- offset, epoch-number passthrough (both ms and s magnitudes),
+-- and garbage that must fail closed (nil), never a wrong-but-plausible guess.
+do
+    local n = require("net")
+    check(n.iso_to_ms("2024-02-29T00:00:00.000Z") == n.iso_to_ms("2024-02-29T00:00:00Z"),
+        "iso_to_ms: fractional .000 and bare-seconds agree")
+    check(n.iso_to_ms("2024-02-29T12:00:00Z") - n.iso_to_ms("2024-02-28T12:00:00Z") == 86400000,
+        "iso_to_ms: leap day (2024-02-29) is exactly one day after 02-28")
+    check(n.iso_to_ms("2023-02-29T00:00:00Z") == nil, "iso_to_ms: Feb 29 in a non-leap year is rejected")
+    check(n.iso_to_ms("2026-01-01T00:00:00.500Z") - n.iso_to_ms("2026-01-01T00:00:00Z") == 500,
+        "iso_to_ms: fractional seconds are honored")
+    check(n.iso_to_ms("2026-01-01T00:00:00+02:00") == n.iso_to_ms("2026-01-01T00:00:00Z") - 2 * 3600 * 1000,
+        "iso_to_ms: a positive offset shifts back toward UTC")
+    check(n.iso_to_ms("2026-01-01T00:00:00-05:00") == n.iso_to_ms("2026-01-01T00:00:00Z") + 5 * 3600 * 1000,
+        "iso_to_ms: a negative offset shifts forward toward UTC")
+    check(n.iso_to_ms("2026-01-01 00:00:00") == n.iso_to_ms("2026-01-01T00:00:00Z"),
+        "iso_to_ms: a space separator is accepted the same as 'T'")
+    check(n.iso_to_ms(1774000000000) == 1774000000000, "iso_to_ms: a plausible ms-epoch number passes through")
+    check(n.iso_to_ms(1774000000) == 1774000000000, "iso_to_ms: a plausible s-epoch number is scaled to ms")
+    check(n.iso_to_ms("not a date") == nil, "iso_to_ms: garbage text is rejected")
+    check(n.iso_to_ms("2026-13-01T00:00:00Z") == nil, "iso_to_ms: an out-of-range month is rejected")
+    check(n.iso_to_ms("2026-01-01T00:00:00+99:99") == nil, "iso_to_ms: a garbage offset is rejected")
+    check(n.iso_to_ms(math.huge) == nil, "iso_to_ms: non-finite numbers are rejected")
+    check(n.iso_to_ms(nil) == nil, "iso_to_ms: nil is rejected")
+    check(n.iso_to_ms({}) == nil, "iso_to_ms: a table is rejected")
+end
+-- content-warning gate: parse_emote_row skips nsfw/sexual/gore rows (matches
+-- the server's default-hide categories) but leaves an ungated row unchanged
+do
+    local n = require("net")
+    local clean = { custom_name = "clean", url = "https://cdn.heatsync.org/e/c.webp", width = 32, height = 32 }
+    check(n.parse_emote_row(clean) ~= nil, "cw-gate: an unflagged row parses normally")
+    local nsfw = { custom_name = "nsfw1", url = "https://cdn.heatsync.org/e/n.webp", width = 32, height = 32, nsfw = true }
+    check(n.parse_emote_row(nsfw) == nil, "cw-gate: nsfw=true is skipped")
+    local sexual = { custom_name = "sex1", url = "https://cdn.heatsync.org/e/s.webp", width = 32, height = 32, cw_cats = { "sexual" } }
+    check(n.parse_emote_row(sexual) == nil, "cw-gate: cw_cats containing 'sexual' is skipped")
+    local gore = { custom_name = "gore1", url = "https://cdn.heatsync.org/e/g.webp", width = 32, height = 32, cw_cats = { "gore" } }
+    check(n.parse_emote_row(gore) == nil, "cw-gate: cw_cats containing 'gore' is skipped")
+    local weapons = { custom_name = "wep1", url = "https://cdn.heatsync.org/e/w.webp", width = 32, height = 32, cw_cats = { "weapons" } }
+    check(n.parse_emote_row(weapons) ~= nil, "cw-gate: a non-sexual/gore category (weapons) is NOT skipped")
+end
+-- parse_emote_row a/u fields: present when the row carries them, absent (nil)
+-- when it doesn't — a row with no dates renders exactly as before the gate
+do
+    local n = require("net")
+    local live = { custom_name = "live1", url = "https://cdn.heatsync.org/e/l.webp", width = 32, height = 32,
+        added_at = "2026-01-01T00:00:00Z" }
+    local rec = n.parse_emote_row(live)
+    check(rec ~= nil and rec.a == n.iso_to_ms("2026-01-01T00:00:00Z") and rec.u == nil,
+        "parse_emote_row: added_at → rec.a, no until → rec.u is nil")
+    local hist = { custom_name = "hist1", url = "https://cdn.heatsync.org/e/h.webp", width = 32, height = 32,
+        ["until"] = "2026-01-01T00:00:00Z" }
+    local rec2 = n.parse_emote_row(hist)
+    check(rec2 ~= nil and rec2.u == n.iso_to_ms("2026-01-01T00:00:00Z") and rec2.a == nil,
+        "parse_emote_row: until → rec.u, no added_at → rec.a is nil")
+    local plain = { custom_name = "plain1", url = "https://cdn.heatsync.org/e/p.webp", width = 32, height = 32 }
+    local rec3 = n.parse_emote_row(plain)
+    check(rec3 ~= nil and rec3.a == nil and rec3.u == nil, "parse_emote_row: a row without dates is unchanged")
+end
 -- image allowlist: the userinfo (user:pass@host) trick must NOT bypass the host
 -- allowlist — the real fetch host is after the '@', so "kick.com:@evil.com" is evil
 do

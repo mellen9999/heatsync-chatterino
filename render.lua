@@ -70,20 +70,33 @@ local function thread_id(word)
     return string.match(word, "^>>([a-z0-9]+)$")
 end
 
--- an emote entry only counts as a hit if it can actually render — unknown
--- source dims mean no scale factor, and a raw-size image is worse than text
-local function renderable(emote)
-    return emote ~= nil and type(emote.h) == "number" and emote.h > 0
+-- extension-parity time gate: a message can only show an emote its sender
+-- actually held at send time. `a` (added_at) is a lower bound, `u` (until /
+-- last_seen, for a reused name) an upper bound — both ms, both optional. the
+-- 120s slack absorbs clock skew between chatterino's local clock and the
+-- server's timestamps. unknown message time (t == nil) never gates, matching
+-- pre-gate behaviour for a build/tier without a usable time field.
+local GATE_SLACK_MS = 120000
+
+-- an emote entry only counts as a hit if it can actually render (unknown
+-- source dims mean no scale factor, and a raw-size image is worse than text)
+-- AND, when it carries add/remove bounds, the message time falls inside them.
+local function renderable(emote, t)
+    if emote == nil or type(emote.h) ~= "number" or emote.h <= 0 then return false end
+    if type(t) ~= "number" then return true end
+    if emote.a and t < emote.a - GATE_SLACK_MS then return false end
+    if emote.u and t >= emote.u + GATE_SLACK_MS then return false end
+    return true
 end
 
 -- prescan: any word this sender's heatsync inventory renders, or a threadlink?
 -- (skips blocked names). NB: we deliberately do NOT match the global 7tv/bttv/
 -- ffz search cache here — see rebuild_text_element for why.
-local function has_hits(text, sender_map)
+local function has_hits(text, sender_map, t)
     for word in string.gmatch(text, "%S+") do
         -- sender_map first: for a sender with no HS inventory (the common case)
         -- this skips a needless is_blocked call + hash lookup on every word.
-        if sender_map and not store.is_blocked(word) and renderable(sender_map[word]) then
+        if sender_map and not store.is_blocked(word) and renderable(sender_map[word], t) then
             return true
         end
         if thread_id(word) then return true end
@@ -110,7 +123,7 @@ end
 -- multichat's MAX_EMOTE_TOKENS. over budget → the word stays plain text.
 local MAX_RENDER_TOKENS = 50
 
-local function rebuild_text_element(elems, el, sender_map, budget)
+local function rebuild_text_element(elems, el, sender_map, budget, t)
     local run = {}
     local src = {}
     pcall(function()
@@ -140,7 +153,7 @@ local function rebuild_text_element(elems, el, sender_map, budget)
         local over_budget = budget.n >= MAX_RENDER_TOKENS
         -- is_blocked only when the word is actually a renderable emote — a plain
         -- word (the majority) skips the lookup via short-circuit.
-        local set = not over_budget and renderable(emote) and not store.is_blocked(word)
+        local set = not over_budget and renderable(emote, t) and not store.is_blocked(word)
             and hs_imageset(emote.url, emote.h) or nil
         if set then
             budget.n = budget.n + 1
@@ -214,7 +227,7 @@ local function is_flame_el(el)
     return ok and type(w) == "table" and #w == 1 and w[1] == FLAME
 end
 
-local function build_replacement(msg, sender_map, want_flame)
+local function build_replacement(msg, sender_map, want_flame, t)
     local elems = {}
     local markers_done = false
     local budget = { n = 0 } -- emote/thread elements injected across THIS message
@@ -235,7 +248,7 @@ local function build_replacement(msg, sender_map, want_flame)
             end
         end
         if ty == "text" then
-            rebuild_text_element(elems, el, sender_map, budget)
+            rebuild_text_element(elems, el, sender_map, budget, t)
         else
             -- pass the object through; chatterino clones it (twitch emotes,
             -- badges, timestamps, mentions, reply curves stay verbatim)
@@ -267,6 +280,19 @@ local function build_replacement(msg, sender_map, want_flame)
         highlight_color = highlight,
         elements = elems,
     })
+end
+
+-- best-effort message time for the gate above. server_received_time is a
+-- stable field read directly elsewhere in this file (build_replacement);
+-- timestamp is pcall-guarded since it's a newer/alternate field (hedges a
+-- possible future rename) that may not exist on every build. nil (unknown,
+-- including chatterino's zero-value placeholder) means renderable() never gates.
+local function msg_time(msg)
+    local t = msg.server_received_time
+    if type(t) == "number" and t == t and t ~= math.huge and t > 0 then return t end
+    local ok, t2 = pcall(function() return msg.timestamp end)
+    if ok and type(t2) == "number" and t2 == t2 and t2 ~= math.huge and t2 > 0 then return t2 end
+    return nil
 end
 
 -- the per-message body, factored out so `process` can pcall it by reference
@@ -301,11 +327,12 @@ local function do_process(ch, msg, hint)
     -- would drop your native channel badges (e.g. your sub badge).
     local want_flame = store.flame_enabled() and login ~= senders.own_login
         and senders.is_known_hs(login)
+    local t = msg_time(msg)
     -- O(1) checks first; only pay the O(words) has_hits scan when neither the
     -- flame nor a badge already forces the rebuild (Lua `or` short-circuits).
-    if not (want_flame or badges.has(msg.user_id) or has_hits(text, sender_map)) then return end
+    if not (want_flame or badges.has(msg.user_id) or has_hits(text, sender_map, t)) then return end
 
-    local repl = build_replacement(msg, sender_map, want_flame)
+    local repl = build_replacement(msg, sender_map, want_flame, t)
     if hint then
         ch:replace_message(msg, repl, hint)
     else

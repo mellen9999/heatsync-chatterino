@@ -136,7 +136,7 @@ local function rows_to_map(rows)
         if i > MAX_SET_ENTRIES then break end
         local rec = net.parse_emote_row(e)
         if rec then
-            map[rec.name] = { url = rec.url, w = rec.w, h = rec.h, zw = rec.zw }
+            map[rec.name] = { url = rec.url, w = rec.w, h = rec.h, zw = rec.zw, a = rec.a, u = rec.u }
             any = true
         end
     end
