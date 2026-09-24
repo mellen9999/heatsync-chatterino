@@ -48,10 +48,22 @@ local function host_allowed(url)
     return false
 end
 
+-- heatsync now ships 7tv urls as .avif, which chatterino's qt build can't
+-- decode (no avif imageformat plugin by default) — the element lays out but
+-- draws blank. 7tv serves the same emote (animated too) as .webp at the same
+-- path, so swap the extension. the one place every image url passes through.
+function M.decodable(url)
+    if type(url) ~= "string" then return url end
+    local fixed, n = string.gsub(url, "^(https://cdn%.7tv%.app/emote/[%w]+/%dx)%.avif$", "%1.webp")
+    if n > 0 then return fixed end
+    return url
+end
+
 -- target_h defaults to emote height (28); badges pass ~18. keyed by url+target
 -- so the same image can be cached at two display sizes without collision.
 function M.for_url(url, w, h, target_h)
     if type(url) ~= "string" or url == "" then return nil end
+    url = M.decodable(url)
     target_h = target_h or TARGET_H
     -- cache FIRST: a popular emote repeated across a raid must not re-pay host
     -- validation (pattern scans + the suffix loop) on every hit. the url IS the

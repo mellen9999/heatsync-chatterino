@@ -2393,5 +2393,18 @@ do
     check(posted ~= nil and posted.channel_name == "hstestchan", "/hstest: self-test message carries the tab's channel_name")
 end
 
+-- 7tv .avif urls (what heatsync ships now) must load as .webp — chatterino's
+-- qt has no avif decoder, so an avif image lays out but draws blank
+do
+    local img = require("img")
+    local set = img.for_hs_emote("https://cdn.7tv.app/emote/01F7736F6R0005BGS0Y3MAFMV6/1x.avif", 128)
+    check(set ~= nil and set.i1.url == "https://cdn.7tv.app/emote/01F7736F6R0005BGS0Y3MAFMV6/1x.webp",
+        "img: 7tv .avif loads as .webp")
+    check(img.decodable("https://cdn.betterttv.net/emote/abc/1x.avif") == "https://cdn.betterttv.net/emote/abc/1x.avif",
+        "img: non-7tv urls untouched by the avif swap")
+    check(img.decodable("https://cdn.7tv.app.evil.com/emote/abc/1x.avif") == "https://cdn.7tv.app.evil.com/emote/abc/1x.avif",
+        "img: avif swap is anchored to the real 7tv cdn")
+end
+
 print(failures == 0 and "\nALL PASS" or ("\n" .. failures .. " FAILURES"))
 host_os.exit(failures == 0 and 0 or 1)

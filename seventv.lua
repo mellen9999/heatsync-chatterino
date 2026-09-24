@@ -4,6 +4,7 @@
 -- next one.
 local net = require("net")
 local caps = require("caps")
+local img = require("img")
 
 local M = {}
 
@@ -66,7 +67,8 @@ local RENDER_MAX = 600
 local function cache_render(name, url1x, provider)
     if render_cache[name] then return end
     local p = PROVIDER[provider or "7tv"] or PROVIDER["7tv"]
-    local hires, n = url1x:gsub(p.pat, p.rep)
+    -- normalize .avif → .webp first so the 1x → 2x bump below still matches
+    local hires, n = img.decodable(url1x):gsub(p.pat, p.rep)
     render_cache[name] = { url = hires, h = (n > 0) and p.h_hi or p.h_lo }
     render_order[#render_order + 1] = name
     while #render_order > RENDER_MAX do
