@@ -396,16 +396,80 @@ chan.msgs[#chan.msgs + 1] = m5
 chan.appended_cb(m5, nil)
 check(#chan.replaced >= 4, "ws: broadcast-fed emote renders on next message")
 
--- ws emote:added → debounced refresh fires new profile fetch
-sockets[1].opts.on_text(register_payload({ type = "emote:added", name = "newEmote" }))
+-- ws emote:added on OUR own emote:watch room ("emotes/<id>", _seq set) →
+-- debounced refresh fires a new profile fetch, cache-busted with ?v=<seq>
+sockets[1].opts.on_text(register_payload({ type = "emote:added", name = "newEmote", _ch = "emotes/42", _seq = 7 }))
 advance(6000)
 local refetched = http_answer("/api/profile/mellen", { profile = { id = 42 } })
-check(refetched ~= nil, "ws: inventory delta triggers re-fetch")
-http_answer("/api/users/42/emotes", { emotes = {
+check(refetched ~= nil, "ws: own-inventory delta (_ch=emotes/<id>) triggers re-fetch")
+local emurl = http_answer("/api/users/42/emotes?v=7", { emotes = {
     { custom_name = "peepoHS", url = "https://cdn.heatsync.org/e/1.webp", width = 112, height = 112, usage_count = 9 },
     { custom_name = "newEmote", url = "https://cdn.heatsync.org/e/3.webp", width = 64, height = 64, usage_count = 0 },
 } })
+check(emurl ~= nil, "ws: own-inventory refetch carries ?v=<seq> cache-bust")
 check(inventory.resolve("newEmote") ~= nil, "ws: new emote in inventory after delta")
+
+-- a flood of OTHER users' viewer pushes (no _ch → global broadcast, not ours)
+-- must never touch our own inventory: zero additional profile/emote fetches
+do
+    local before_fetches = #http_queue
+    for i = 1, 100 do
+        sockets[1].opts.on_text(register_payload({
+            type = "emote:added", username = "otheruser" .. i, emoteName = "x", ver = i,
+        }))
+    end
+    check(#http_queue == before_fetches, "ws: 100 other-user viewer pushes fire zero inventory fetches")
+end
+
+-- senderKeys invalidation: a real cached key refetches with &v=; anything
+-- else in the frame (unmatched/uncached) is ignored. emily (twitch id 3003)
+-- was cached by the earlier "senders: unknown sender" batch-lookup test.
+do
+    check(senders.is_known_hs("emily"), "senders: precondition — emily is cached before invalidate")
+    local before = #http_queue
+    sockets[1].opts.on_text(register_payload({
+        type = "emote:removed", username = "someoneelse", emoteName = "notEmily",
+        senderKeys = { "twitch:3003", "kick:999", "twitch:99999999" }, ver = 55,
+    }))
+    check(#http_queue == before + 1, "senders: invalidate refetches exactly the one cached twitch key")
+    local iurl = http_answer("/api/users/emotes/batch?ids=twitch:3003", { sets = { ["twitch:3003"] = {
+        { custom_name = "emilyDance", url = "https://cdn.heatsync.org/e/9.webp", width = 64, height = 64 },
+    } } })
+    check(iurl ~= nil and iurl:find("twitch:3003", 1, true) ~= nil and iurl:find("&v=55", 1, true) ~= nil,
+        "senders: invalidate refetch carries &v=<ver>")
+    check(senders.is_known_hs("emily"), "senders: emily re-cached after invalidate refetch")
+end
+
+-- hostile senderKeys: non-strings, 1000 entries, injection-flavored strings —
+-- capped at 50 scanned, nothing matches/is cached → no crash, no refetch
+do
+    local before = #http_queue
+    local hostile = {}
+    for i = 1, 1000 do hostile[i] = i end -- non-string garbage
+    hostile[1] = "twitch:3003\n; rm -rf /" -- looks close but fails the exact-match pattern
+    local ok = pcall(function()
+        sockets[1].opts.on_text(register_payload({
+            type = "emote:added", username = "z", senderKeys = hostile, ver = "not-a-number",
+        }))
+    end)
+    check(ok, "senders: 1000-entry hostile senderKeys frame doesn't crash the dispatch")
+    check(#http_queue == before, "senders: hostile/non-matching senderKeys trigger no refetch")
+end
+
+-- emote:removed with username+emoteName scrubs the cached name immediately,
+-- independent of the (slower) invalidate round trip above
+do
+    sockets[1].opts.on_text(register_payload({
+        type = "emote:broadcast", username = "scrubme", emoteName = "goingAway",
+        emoteData = { url = "https://cdn.heatsync.org/e/8.webp", width = 32, height = 32 },
+    }))
+    check(senders.resolve("scrubme", "424242") ~= nil, "senders: scrubme cached via broadcast before removal")
+    sockets[1].opts.on_text(register_payload({
+        type = "emote:removed", username = "scrubme", emoteName = "goingAway",
+    }))
+    local map = senders.resolve("scrubme", "424242")
+    check(type(map) == "table" and map["goingAway"] == nil, "senders: emote:removed scrubs the name immediately")
+end
 
 -- reconnect with backoff after close
 local sock_count = #sockets
@@ -1493,8 +1557,17 @@ do
             "stream:online", "heat:update", "presence:count", "", "unknown-type-xyz" }
         local msg = { type = types[math.random(#types)] }
         for _, k in ipairs({ "data", "messages", "channelId", "username", "emoteName", "emoteData",
-            "channel", "id", "content", "videoId", "status", "color", "timestamp", "emotes", "displayName" }) do
+            "channel", "id", "content", "videoId", "status", "color", "timestamp", "emotes", "displayName",
+            "_ch", "_seq", "ver", "senderKeys" }) do
             if math.random() < 0.5 then msg[k] = garb() end
+        end
+        -- senderKeys is specifically an ARRAY of strings on the wire; fuzz that
+        -- shape too (not just garb()'s generic tables) so a hostile-but-array-
+        -- shaped frame gets exercised, not only scalar garbage in that slot.
+        if math.random() < 0.3 then
+            local keys = {}
+            for i = 1, math.random(0, 60) do keys[i] = garb() end
+            msg.senderKeys = keys
         end
         return msg
     end
@@ -1537,6 +1610,26 @@ do
     -- emotes fetch never even fires and "ghostA" never enters the map
     http_answer("/api/profile/acctA", { profile = { id = 111 } })
     check(inv.resolve("ghostA") == nil, "account-switch: stale refresh for A does not apply under B")
+end
+
+-- ws resync (LAST — senders.expire_all() marks EVERY cached sender stale, so
+-- this must not run before any earlier test that assumes a sender it cached
+-- stays "known"): a reconnect that follows a >60s rx gap resyncs, so a
+-- previously-known sender reads unknown again until its next lazy refetch.
+-- net.now() is huge by this point in the suite, so rewinding last_rx by 65s
+-- stays positive — a negative value would misread as "never received
+-- anything yet" and skip the resync (see ws.lua on_open).
+do
+    local rsock = sockets[#sockets]
+    rsock.opts.on_open()
+    rsock.opts.on_text(register_payload({
+        type = "emote:broadcast", username = "resyncuser", emoteName = "beforeResync",
+        emoteData = { url = "https://cdn.heatsync.org/e/r.webp", width = 32, height = 32 },
+    }))
+    check(senders.is_known_hs("resyncuser"), "senders: resyncuser known before the reconnect")
+    ws.last_rx = net.now() - 65
+    rsock.opts.on_open() -- simulates the reconnect's on_open firing
+    check(not senders.is_known_hs("resyncuser"), "senders: reconnect after a >60s rx gap resyncs (marks senders stale)")
 end
 
 print(failures == 0 and "\nALL PASS" or ("\n" .. failures .. " FAILURES"))

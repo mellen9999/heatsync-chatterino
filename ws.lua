@@ -16,6 +16,7 @@ local M = {
     last_rx = 0,
     on_event = nil,     -- fn(data) for parsed server messages
     on_reconnect = nil, -- fn() after desired-state replay (multichat re-subs)
+    on_resync = nil,    -- fn() when a reconnect follows a >60s rx gap (senders.expire_all)
 }
 
 local enabled = false
@@ -35,6 +36,7 @@ local BACKOFF_CAP_S = 60
 local WATCHDOG_IDLE_S = 90
 local HANDSHAKE_TIMEOUT_S = 30
 local STABLE_S = 30 -- a session must stay open this long before its backoff resets
+local RESYNC_GAP_S = 60 -- rx gap past this on a fresh connect means missed pushes
 
 local function send(tbl)
     if not sock or not M.connected then return false end
@@ -106,8 +108,17 @@ function M.connect()
                 if my_id ~= gen then return end -- superseded socket: ignore late open
                 M.connected = true
                 M.connected_at = net.now() -- backoff resets only if this survives STABLE_S
+                -- a rx gap this big (idle watchdog fired, laptop slept, etc) means
+                -- invalidations could have been missed while we were down — resync
+                -- before folding last_rx forward below erases the gap. last_rx == 0
+                -- means never-received-anything (fresh boot), nothing to resync.
+                local had_rx = M.last_rx > 0
+                local gap = net.now() - M.last_rx
                 M.last_rx = net.now()
                 net.log_info("ws connected")
+                if had_rx and gap > RESYNC_GAP_S and M.on_resync then
+                    pcall(M.on_resync)
+                end
                 replay_state()
             end,
             on_text = function(data)

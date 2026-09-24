@@ -16,8 +16,18 @@ local M = {
 
 local refreshing = false
 local refresh_queued = false
+local refresh_queued_v = nil -- cache-bust carried by a queued ws-triggered refresh
 local last_refresh_ts = 0
 local REFRESH_MIN_GAP_S = 1
+
+-- a cache-bust token must be a finite non-negative integer to be worth adding
+-- to the URL (it only needs to differ from what the edge has already cached).
+local function valid_v(v)
+    v = tonumber(v)
+    if not v or v ~= v or v == math.huge or v == -math.huge then return nil end
+    if v < 0 or math.floor(v) ~= v then return nil end
+    return v
+end
 
 -- boot-retry state, consumed by init's login loop (and the t0 completion
 -- piggyback): a transport failure before the first successful load is worth
@@ -87,7 +97,11 @@ local function apply_rows(rows, login)
     if M.on_change then pcall(M.on_change) end
 end
 
-function M.refresh(login)
+-- v (optional): a cache-bust token from a ws delta's _seq/ver, appended as
+-- ?v=<n> so the edge-cached GET below (60s s-maxage) can't serve a response
+-- from before the change. plain calls (boot, account switch, /hsrefresh,
+-- periodic reconcile) pass nothing and hit the cache as before.
+function M.refresh(login, v)
     if not login or login == "" then
         net.log_warn("no account login; skipping refresh")
         return
@@ -97,8 +111,10 @@ function M.refresh(login)
     -- at the old account (its done() would refetch the wrong inventory). the
     -- in-flight callbacks close over their own `login` param, so this is safe.
     M.login = login
+    v = valid_v(v)
     if refreshing then
         refresh_queued = true
+        if v then refresh_queued_v = v end
         return
     end
     refreshing = true
@@ -109,8 +125,10 @@ function M.refresh(login)
         refreshing = false
         if refresh_queued then
             refresh_queued = false
+            local qv = refresh_queued_v
+            refresh_queued_v = nil
             -- coalesced ws deltas that arrived mid-flight: go again
-            M.refresh(M.login)
+            M.refresh(M.login, qv)
         end
     end
 
@@ -136,6 +154,7 @@ function M.refresh(login)
             return
         end
         local emotes_url = net.ORIGIN .. "/api/users/" .. tostring(uid) .. "/emotes"
+        if v then emotes_url = emotes_url .. "?v=" .. tostring(v) end
         net.get_json(emotes_url, 10000, function(payload, err2)
             if login ~= M.login then done(); return end -- account switched mid-flight
             if not payload then
@@ -158,19 +177,23 @@ end
 
 -- ws delta events (emote:added / emote:removed / emotes:refresh) all funnel
 -- here: one debounced full re-fetch keeps every path consistent (renames,
--- undo, set swaps) instead of maintaining three mutation codepaths.
-function M.refresh_soon()
+-- undo, set swaps) instead of maintaining three mutation codepaths. v is the
+-- frame's _seq/ver, carried through as the ?v= cache-bust (see M.refresh).
+function M.refresh_soon(v)
     if not M.login then return end
+    v = valid_v(v)
     if refreshing then
         refresh_queued = true
+        if v then refresh_queued_v = v end
         return
     end
     if net.now() - last_refresh_ts < REFRESH_MIN_GAP_S then
         refresh_queued = true
+        if v then refresh_queued_v = v end
         -- picked up by the in-flight done() or the next timer tick
         return
     end
-    M.refresh(M.login)
+    M.refresh(M.login, v)
 end
 
 -- called by init's timer loop to drain a queued refresh that arrived inside
@@ -178,7 +201,9 @@ end
 function M.drain_queued()
     if refresh_queued and not refreshing and M.login then
         refresh_queued = false
-        M.refresh(M.login)
+        local v = refresh_queued_v
+        refresh_queued_v = nil
+        M.refresh(M.login, v)
     end
 end
 

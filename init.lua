@@ -183,6 +183,19 @@ c2.register_callback(
     end
 )
 
+-- own-inventory delta iff `_ch` is our emote:watch room ("emotes/<id>").
+-- emitInventoryEvent (server) always dual-emits to `user:<id>` (auth-only,
+-- never reaches this anonymous socket) AND `emotes/<id>` (what emote:watch
+-- joins) — server/services/ws-connections.ts:emitInventoryEvent, verified
+-- against the running server 2026-09-24. `emotes:refresh` goes through the
+-- exact same helper, so it ALWAYS carries this _ch too; there's no bare
+-- (unmarked) form to hedge for. everything else with these types is the
+-- global viewer-push broadcast (ws-connections.ts:broadcast, no _ch at all)
+-- for some OTHER user's inventory change.
+local function is_own_inventory_ch(ch)
+    return type(ch) == "string" and string.sub(ch, 1, 7) == "emotes/"
+end
+
 -- ----- websocket event dispatch -----
 local function on_ws_event(msg)
     -- multichat (kick/yt live chat injection) claims its own message types
@@ -191,22 +204,25 @@ local function on_ws_event(msg)
     if live.handle(msg) then return end
     local t = msg.type
     if t == "emote:added" or t == "emote:removed" or t == "emotes:refresh" then
-        -- own-inventory delta (emote:watch room): one debounced re-fetch
-        -- covers add/remove/rename/undo/set-swap identically
-        inventory.refresh_soon()
-    elseif t == "emote:broadcast" then
-        senders.feed_broadcast(msg.username, msg.emoteName, msg.emoteData)
-    elseif t == "emotes:batch-broadcast" then
-        if type(msg.data) == "table" then
-            -- cap: the socket is anonymous, so bound how many sender entries one
-            -- broadcast can push into the cache (a real batch is small)
-            for i, b in ipairs(msg.data) do
-                if i > 500 then break end
-                if type(b) == "table" then
-                    senders.feed_broadcast(b.username, b.emoteName, b.emoteData)
-                end
+        if is_own_inventory_ch(msg._ch) then
+            -- own-inventory delta: one debounced re-fetch covers add/remove/
+            -- rename/undo/set-swap identically. _seq doubles as the cache-bust
+            -- query param since GET /api/users/<id>/emotes is edge-cached 60s.
+            inventory.refresh_soon(msg._seq)
+        else
+            -- another user's change, fanned out to every anonymous socket. we
+            -- never cache the pushed emoteData directly (it isn't filtered per
+            -- viewer server-side) — senderKeys below drives an authoritative
+            -- refetch through the same parse_emote_row gate as everything else.
+            if t == "emote:removed" and type(msg.username) == "string" and type(msg.emoteName) == "string" then
+                senders.forget(msg.username, msg.emoteName)
+            end
+            if type(msg.senderKeys) == "table" then
+                senders.invalidate(msg.senderKeys, msg.ver)
             end
         end
+    elseif t == "emote:broadcast" then
+        senders.feed_broadcast(msg.username, msg.emoteName, msg.emoteData)
     end
     -- everything else on joined rooms (heat updates, typing) is ignored
 end
@@ -229,6 +245,9 @@ if caps.tier >= 1 then
     -- tier>=1 alongside ws. re-subscribe its sources whenever the ws (re)connects.
     multichat.load()
     ws.on_reconnect = multichat.on_ws_up
+    -- a reconnect after a long rx gap may have missed invalidations — mark
+    -- every cached sender stale so the next message from them refetches.
+    ws.on_resync = senders.expire_all
     ws.start()
 end
 

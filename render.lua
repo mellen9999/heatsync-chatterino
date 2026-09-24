@@ -455,18 +455,19 @@ local function run_backpass(login)
     end
 end
 
--- coalesce backpasses: one emotes:batch-broadcast fires on_loaded per entry (up
--- to 500), which without this would run the O(channels × 50-msg snapshot) scan
--- 500 times back-to-back. collect the distinct logins touched in a tick and run
--- each once, ~1 frame later. no timers (t0/t1) → run immediately, unchanged.
+-- coalesce backpasses: senders.on_loaded fires once per resolved sender, and a
+-- senderKeys invalidate (up to 50 targets) or a batch flush (up to 15) can land
+-- several in one tick — without this each would run the O(channels × 50-msg
+-- snapshot) scan back-to-back. collect the distinct logins touched in a tick
+-- and run each once, ~1 frame later. no timers (t0/t1) → run immediately, unchanged.
 local backpass_pending = {}
 local backpass_pending_n = 0
 local backpass_armed = false
 local BACKPASS_COALESCE_MS = 120
 -- cap distinct logins queued in one coalesce window: the ws has no incoming rate
--- limit, so a hostile server could otherwise flood many batch-broadcast frames in
--- 120ms and grow this set (and the drain's O(channels×snapshot) work) unbounded.
--- a legit batch touches few distinct senders, so 256 is generous headroom.
+-- limit, so a hostile server could otherwise flood many broadcast/invalidate
+-- frames in 120ms and grow this set (and the drain's O(channels×snapshot) work)
+-- unbounded. a legit batch touches few distinct senders, so 256 is generous headroom.
 local BACKPASS_PENDING_MAX = 256
 function M.backpass(login)
     if not M.started or type(login) ~= "string" or login == "" then return end

@@ -1,13 +1,16 @@
 -- other chatters' heatsync emote sets, so their emotes render for the local
 -- user (extension parity: a word renders iff the SENDER's inventory has it).
 --
--- two feeds:
---   1) live: emote:broadcast / emotes:batch-broadcast over the websocket
---      (extension users announce emotes they post, keyed by login)
+-- three feeds:
+--   1) live: emote:broadcast over the websocket (a chatter in a joined channel
+--      announces the one emote they just posted, keyed by login)
 --   2) cold-start: GET /api/users/emotes/batch?ids=twitch:<id>,... — one
 --      batched call per flush window, same endpoint the extension uses,
 --      edge-cached server-side. chatterino gives us msg.user_id (the twitch
 --      numeric id) directly, so no per-login profile hop is needed.
+--   3) invalidate: a global emote:added/emote:removed viewer push names the
+--      changed sender's batch-endpoint keys (senderKeys) — a cached one is
+--      dropped and refetched with a ?v= cache-bust (see M.invalidate).
 local net = require("net")
 
 local M = {
@@ -35,6 +38,13 @@ local POSITIVE_TTL_S = 15 * 60
 local NEGATIVE_TTL_S = 90
 local BATCH_MAX = 15      -- matches the extension's batch sizing (cf-safe)
 
+-- reverse index for the viewer-push invalidation path: a `senderKeys` frame
+-- carries "twitch:<id>", not a login, so cache entries loaded with a known
+-- twitch id are indexed both ways. entries fed purely by emote:broadcast (no
+-- id, just a username) are simply absent here — invalidate() treats that as
+-- "not currently cached" and leaves them for their own TTL/broadcast feed.
+local id_index = {} -- twitch id (string) -> login
+
 -- evict the least-recently-used entry (oldest ts) when over cap. O(n) scan,
 -- but only runs when inserting past CACHE_MAX — rare — so it stays cheap on
 -- the hot path (which only reads/touches, never evicts).
@@ -47,21 +57,27 @@ local function evict_if_full()
             end
         end
         if not victim then break end
+        if cache[victim].id then id_index[cache[victim].id] = nil end
         cache[victim] = nil
         cache_count = cache_count - 1
     end
 end
 
-local function put(login, map)
+-- id (twitch numeric id, string) is optional — only the batch-lookup path
+-- (flush/invalidate) knows it; feed_broadcast doesn't and passes nil.
+local function put(login, map, id)
     if cache[login] == nil then
         cache_count = cache_count + 1
     end
+    local prev = cache[login]
+    if prev and prev.id and prev.id ~= id then id_index[prev.id] = nil end
     -- carry the map's entry count so feed_broadcast can enforce the per-login cap
     -- in O(1) instead of rescanning the map on every insert. counted once here
     -- (batch load / new login only), not on the hot broadcast path.
     local n = 0
     if type(map) == "table" then for _ in pairs(map) do n = n + 1 end end
-    cache[login] = { map = map, ts = net.now(), n = n }
+    cache[login] = { map = map, ts = net.now(), n = n, id = id }
+    if id then id_index[id] = login end
     evict_if_full()
 end
 
@@ -150,7 +166,7 @@ function M.flush()
             net.log_warn("sender batch lookup failed: " .. tostring(err))
             -- negative-cache the whole batch briefly so a flaky upstream
             -- doesn't hot-loop; ttl on false entries is the shorter one
-            for _, b in ipairs(batch) do put(b.login, false) end
+            for _, b in ipairs(batch) do put(b.login, false, b.id) end
             return
         end
         for _, b in ipairs(batch) do
@@ -159,12 +175,100 @@ function M.flush()
             if type(rows) == "table" then
                 map = rows_to_map(rows)
             end
-            put(b.login, map)
+            put(b.login, map, b.id)
             if map and M.on_loaded then
                 pcall(M.on_loaded, b.login)
             end
         end
     end)
+end
+
+-- ver must be a finite non-negative integer to ride as a cache-bust query
+-- param (the edge only partitions on the exact string, so any other shape is
+-- just noise) — invalid/missing ver still refetches, just without busting.
+local function valid_ver(v)
+    v = tonumber(v)
+    if not v or v ~= v or v == math.huge or v == -math.huge then return nil end
+    if v < 0 or math.floor(v) ~= v then return nil end
+    return v
+end
+
+-- a viewer-push frame named the exact sender keys its change resolves to
+-- (senderKeys). Only "twitch:<id>" keys are ours to act on (kick/yt keys don't
+-- correspond to anything in this login-keyed cache); only ones we're CURRENTLY
+-- caching are worth a refetch — an id we've never queued was never stale to
+-- begin with. capped at 50 keys scanned (matches the batch endpoint's own
+-- token cap), so a hostile 1000-entry array can't turn one push into a scan
+-- or a refetch storm.
+local INVALIDATE_MAX = 50
+function M.invalidate(keys, ver)
+    if type(keys) ~= "table" then return end
+    local ver_ok = valid_ver(ver)
+    local targets = {}
+    for i = 1, math.min(#keys, INVALIDATE_MAX) do
+        local key = keys[i]
+        if type(key) == "string" then
+            local id = string.match(key, "^twitch:(%d+)$")
+            if id then
+                local login = id_index[id]
+                if login and cache[login] then
+                    table.insert(targets, { id = id, login = login })
+                end
+            end
+        end
+    end
+    if #targets == 0 then return end
+    -- drop now so a render miss during the refetch shows plain text rather
+    -- than the stale (possibly just-removed) emote
+    for _, t in ipairs(targets) do
+        cache[t.login] = nil
+        cache_count = cache_count - 1
+        id_index[t.id] = nil
+    end
+    local ids = {}
+    for _, t in ipairs(targets) do table.insert(ids, "twitch:" .. t.id) end
+    local url = net.ORIGIN .. "/api/users/emotes/batch?ids=" .. table.concat(ids, ",")
+    if ver_ok then url = url .. "&v=" .. tostring(ver_ok) end
+    net.get_json(url, 10000, function(payload, err)
+        if not payload or type(payload.sets) ~= "table" then
+            net.log_warn("sender invalidate refetch failed: " .. tostring(err))
+            return
+        end
+        for _, t in ipairs(targets) do
+            local rows = payload.sets["twitch:" .. t.id]
+            local map = false
+            if type(rows) == "table" then map = rows_to_map(rows) end
+            put(t.login, map, t.id)
+            if map and M.on_loaded then pcall(M.on_loaded, t.login) end
+        end
+    end)
+end
+
+-- an emote:removed viewer push names the sender + the exact name that's gone —
+-- scrub it from the cached map immediately instead of waiting on invalidate()'s
+-- round trip (which also fires, from the same frame's senderKeys, and will
+-- confirm this — but a removed emote shouldn't keep rendering for the ~10s a
+-- fetch takes).
+function M.forget(username, emote_name)
+    if not net.is_safe_name(username) then return end
+    if not net.is_safe_name(emote_name) then return end
+    local login = string.lower(username)
+    if M.own_login and login == M.own_login then return end
+    local entry = cache[login]
+    if entry and type(entry.map) == "table" and entry.map[emote_name] ~= nil then
+        entry.map[emote_name] = nil
+        if entry.n and entry.n > 0 then entry.n = entry.n - 1 end
+    end
+end
+
+-- a reconnect after a long gap may have missed invalidations while it was
+-- down — mark every cached entry stale (rather than nuking the cache outright)
+-- so the NEXT time each sender posts, resolve() treats it as expired and
+-- queues a fresh lookup. lazy: a quiet sender pays nothing.
+function M.expire_all()
+    for _, entry in pairs(cache) do
+        entry.ts = -1/0
+    end
 end
 
 -- live feed from the websocket: an extension user posted an emote in a
@@ -211,6 +315,7 @@ end
 function M.clear()
     cache = {}
     cache_count = 0
+    id_index = {}
     pending = {}
     pending_count = 0
 end
