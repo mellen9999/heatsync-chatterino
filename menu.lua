@@ -31,8 +31,11 @@ end
 -- tooltip is still just a string on an element and is never trusted verbatim.
 local SUFFIX = " · heatsync"
 local function hs_emote_name(el)
-    if type(el) ~= "table" or type(el.tooltip) ~= "string" then return nil end
-    local tt = el.tooltip
+    -- c2 objects are userdata on the real client (tables only in the harness),
+    -- so no type() gate on el itself — read the field under pcall instead
+    if el == nil then return nil end
+    local ok, tt = pcall(function() return el.tooltip end)
+    if not ok or type(tt) ~= "string" then return nil end
     if #tt <= #SUFFIX or string.sub(tt, -#SUFFIX) ~= SUFFIX then return nil end
     local name = string.sub(tt, 1, #tt - #SUFFIX)
     if not net.is_safe_name(name) then return nil end
@@ -59,9 +62,11 @@ end
 -- shape change) degrades to "no menu added", never a thrown error into
 -- chatterino's native context-menu dispatch.
 local function on_context_menu(args)
-    if type(args) ~= "table" then return end
+    -- args/message/menu are sol userdata on the real client: nil-check only,
+    -- every field read below is pcall'd (the outer pcall is the backstop)
+    if args == nil then return end
     local msg = args.message
-    if type(msg) ~= "table" then return end
+    if msg == nil then return end
 
     -- system messages have no sender to act on. multichat-injected kick/
     -- youtube lines carry an empty channel_name (they're built with
@@ -81,9 +86,9 @@ local function on_context_menu(args)
     if not channel then return end
 
     local menu = args.menu
-    if type(menu) ~= "table" then return end
+    if menu == nil then return end
     local sub = menu:add_menu("heatsync")
-    if type(sub) ~= "table" then return end
+    if sub == nil then return end
 
     sub:add_action("emotes", function() cmd_emotes.inv(channel, login, 1) end)
     sub:add_action("chat logs", function() cmd_archive.logs(channel, login, nil) end)
