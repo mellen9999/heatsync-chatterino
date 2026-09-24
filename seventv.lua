@@ -83,46 +83,69 @@ function M.resolve_render(word)
 end
 
 -- one search, all providers. /api/emote-search with no `p` returns
--- {results:{7tv:[],bttv:[],ffz:[]}}. seeds the render cache and returns a
--- merged list {name, provider, url, animated} ordered 7tv→bttv→ffz (7tv is
--- the biggest catalog so it leads). cb receives the list.
+-- {results:{7tv:[],bttv:[],ffz:[],hs:[]}, merged:[...], partial?:true}.
+-- `merged` (when present) is the server's own cross-provider ranking —
+-- already ordered, already includes the native `hs` directory — so it
+-- replaces the old client-side 7tv→bttv→ffz concat rather than adding to it.
+-- an older server without `merged` still works via the per-provider fallback.
+-- seeds the render cache either way. cb(list, partial) — partial is true when
+-- the live upstream leg didn't finish inside the server's budget, i.e. this
+-- answer may be catalog-only and could firm up moments later.
 local PROVIDER_ORDER = { "7tv", "bttv", "ffz" }
+-- cap total processed: nobody scrolls 500 results, and it bounds the work +
+-- render-cache churn if a response returns a pathological count. bounds RAW
+-- items scanned, not just valid ones kept: a response of the same name
+-- repeated (or malformed rows) never advances #out, so a `#out` cap alone
+-- would iterate a pathological array in full on every keystroke.
+local MAX_RESULTS = 500
 function M.search_all(q, cb)
     if type(q) ~= "string" or string.len(q) < M.MIN_CHARS or not M.is_sane_query(q) then
         cb({}); return
     end
     local url = net.ORIGIN .. "/api/emote-search?q=" .. net.percent_encode(q)
     net.get_json(url, 8000, function(payload, err)
-        if not payload or type(payload.results) ~= "table" then
+        if not payload or (type(payload.merged) ~= "table" and type(payload.results) ~= "table") then
             net.log_warn("emote search failed for '" .. q .. "': " .. tostring(err))
             cb({}); return
         end
         local out = {}
         local seen = {}
-        -- cap total processed: nobody scrolls 500 results, and it bounds the work
-        -- + render-cache churn if a response returns a pathological count.
-        local MAX_RESULTS = 500
-        -- bound RAW items scanned, not just valid ones kept: a response of the same
-        -- name repeated (or malformed rows) never advances #out, so a `#out` cap
-        -- alone would iterate a pathological array in full on every keystroke.
         local scanned = 0
-        for _, provider in ipairs(PROVIDER_ORDER) do
-            local items = payload.results[provider]
-            if type(items) == "table" then
-                for _, e in ipairs(items) do
-                    if #out >= MAX_RESULTS or scanned >= MAX_RESULTS then break end
-                    scanned = scanned + 1
-                    local name = net.pick_first_str(e, "name", "code")
-                    local eurl = net.pick_first_str(e, "url", "src")
-                    if name and eurl and net.is_safe_name(name) and net.is_safe_url(eurl) and not seen[name] then
-                        seen[name] = true
-                        cache_render(name, eurl, provider)
-                        out[#out + 1] = { name = name, provider = provider, url = eurl, animated = e.animated == true }
+        -- returns false once a cap is hit, so the caller can stop iterating.
+        local function consider(e, provider)
+            if type(e) ~= "table" or #out >= MAX_RESULTS or scanned >= MAX_RESULTS then return false end
+            scanned = scanned + 1
+            local name = net.pick_first_str(e, "name", "code")
+            local eurl = net.pick_first_str(e, "url", "src")
+            local prov = provider or e.provider
+            if name and eurl and net.is_safe_name(name) and net.is_safe_url(eurl) and not seen[name] then
+                seen[name] = true
+                cache_render(name, eurl, prov)
+                out[#out + 1] = {
+                    name = name, provider = prov, url = eurl, animated = e.animated == true,
+                    -- camelCase (current server shape); zero_width kept for an
+                    -- older/renamed server so a zero-width flag never silently
+                    -- goes missing across a field rename.
+                    zw = e.zeroWidth == true or e.zero_width == true,
+                }
+            end
+            return true
+        end
+        if type(payload.merged) == "table" then
+            for _, e in ipairs(payload.merged) do
+                if not consider(e) then break end
+            end
+        else
+            for _, provider in ipairs(PROVIDER_ORDER) do
+                local items = payload.results[provider]
+                if type(items) == "table" then
+                    for _, e in ipairs(items) do
+                        if not consider(e, provider) then break end
                     end
                 end
             end
         end
-        cb(out)
+        cb(out, payload.partial == true)
     end)
 end
 
@@ -130,7 +153,7 @@ local function kick_off(q)
     if inflight[q] then return end
     if get_fresh(q) then return end
     inflight[q] = true
-    M.search_all(q, function(results)
+    M.search_all(q, function(results, partial)
         inflight[q] = nil
         if #results == 0 then
             -- on t0 (no c2.later) net.now() is frozen at 0, so ERROR_TTL_S never
@@ -145,7 +168,10 @@ local function kick_off(q)
         -- keystroke while the exact query's search is still in flight.
         local names = {}
         for _, e in ipairs(results) do names[#names + 1] = { name = e.name, lower = string.lower(e.name) } end
-        put(q, names)
+        -- a partial answer is catalog-only (the live upstream leg didn't land in
+        -- time) and may firm up seconds later — cache it, but under the short
+        -- error TTL instead of the normal one so a fresher search retries soon.
+        put(q, names, partial)
     end)
 end
 

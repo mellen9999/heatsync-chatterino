@@ -231,8 +231,12 @@ function M.parse_emote_row(e)
     }
 end
 
--- One-shot GET expecting JSON. cb(data) on success, cb(nil, err) on any
--- failure. Never throws; the callback always fires exactly once.
+-- One-shot GET expecting JSON. cb(data, nil, status) on success, cb(nil, err,
+-- status, body) on any failure — status/body let a caller branch on 429/503
+-- without a second request shape; both are best-effort (pcall'd: an older
+-- build's HTTPResponse may not expose status()) and simply nil when
+-- unavailable, so every existing 2-arg callback keeps working untouched.
+-- Never throws; the callback always fires exactly once.
 function M.get_json(url, timeout_ms, cb)
     local ok, err = pcall(function()
         local req = c2.HTTPRequest.create(c2.HTTPMethod.Get, url)
@@ -242,21 +246,29 @@ function M.get_json(url, timeout_ms, cb)
         -- must be guarded here or a bug in any handler — indexing a wrong-shaped
         -- field, a bad element table — escapes into chatterino's native dispatch.
         -- this is the single choke that makes every get_json consumer crash-safe.
-        local function safe_cb(a, b)
-            local ok, err = pcall(cb, a, b)
+        local function safe_cb(a, b, c, d)
+            local ok, err = pcall(cb, a, b, c, d)
             if not ok then M.log_warn("get_json callback failed: " .. tostring(err)) end
         end
         req:on_error(function(res)
             local e = "http error"
             pcall(function() e = tostring(res:error()) end)
-            safe_cb(nil, e)
+            local status = nil
+            pcall(function() status = res:status() end)
+            -- a non-ok status still ships a JSON error body (rate-limit/busy
+            -- payloads carry retry hints) — best-effort parse, nil on garbage.
+            local body = nil
+            pcall(function() body = M.safe_json_parse(res:data()) end)
+            safe_cb(nil, e, status, body)
         end)
         req:on_success(function(res)
             local data = M.safe_json_parse(res:data())
             if data == nil then
                 safe_cb(nil, "unparseable response")
             else
-                safe_cb(data)
+                local status = nil
+                pcall(function() status = res:status() end)
+                safe_cb(data, nil, status)
             end
         end)
         req:execute()

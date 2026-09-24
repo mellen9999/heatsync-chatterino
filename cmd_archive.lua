@@ -21,9 +21,22 @@ function M.register()
                 u.sysmsg(ctx, "hot streams unavailable: " .. tostring(err))
                 return
             end
+            -- a simulcast card carries every leg's platform in `platforms[]` —
+            -- match the filter against that when present so `/hshot kick` still
+            -- finds a kick+twitch merged card whose primary leg is twitch.
+            -- unmerged streams have no `platforms` at all; fall back to `platform`.
+            local function has_platform(s, plat)
+                if type(s.platforms) == "table" then
+                    for _, p in ipairs(s.platforms) do
+                        if tostring(p) == plat then return true end
+                    end
+                    return false
+                end
+                return tostring(s.platform) == plat
+            end
             local rows = {}
             for _, s in ipairs(payload.streams) do
-                if type(s) == "table" and (not plat_filter or tostring(s.platform) == plat_filter) then
+                if type(s) == "table" and (not plat_filter or has_platform(s, plat_filter)) then
                     rows[#rows + 1] = s
                 end
             end
@@ -59,11 +72,16 @@ function M.register()
                 -- the rest of the list.
                 pcall(function()
                     local link
-                    local chan = s.channel or s.username
+                    -- a simulcast card names its legs in platformUsernames{twitch,
+                    -- kick,youtube} — prefer the twitch leg (chatterino only has a
+                    -- native twitch jump) even when the card's primary platform is
+                    -- something else; fall back to the un-merged twitch shape.
+                    local pu = type(s.platformUsernames) == "table" and s.platformUsernames or nil
+                    local chan = (pu and pu.twitch) or ((plat == "twitch") and (s.channel or s.username) or nil)
                     -- the server is untrusted: only a real twitch login (charset-
                     -- validated) may reach the native JumpToChannel action; anything
                     -- else falls back to the safe percent-encoded profile url.
-                    if plat == "twitch" and u.is_valid_name(chan) then
+                    if chan and u.is_valid_name(chan) then
                         link = { type = c2.LinkType.JumpToChannel, value = string.lower(chan) }
                     else
                         link = { type = c2.LinkType.Url, value = net.ORIGIN .. "/u/" .. net.percent_encode(name) }
@@ -96,7 +114,7 @@ function M.register()
             if tonumber(st.user_heat) then bits[#bits + 1] = "heat " .. tostring(math.floor(tonumber(st.user_heat))) end
             if tonumber(st.total_posts) then bits[#bits + 1] = tostring(st.total_posts) .. " posts" end
             if tonumber(st.followers) then bits[#bits + 1] = tostring(st.followers) .. " hs-followers" end
-            if p.twitch_is_live or p.kick_is_live then bits[#bits + 1] = "LIVE" end
+            if p.twitch_is_live or p.kick_is_live or p.youtube_is_live then bits[#bits + 1] = "LIVE" end
             if tonumber(p.twitch_followers) then bits[#bits + 1] = tostring(p.twitch_followers) .. " twitch-followers" end
             local line = name .. (p.is_shadow_profile and " (not on heatsync)" or "") ..
                 (#bits > 0 and (" · " .. table.concat(bits, " · ")) or "")
@@ -114,7 +132,8 @@ function M.register()
     -- and get clickable thread permalinks + an inline preview. this closes the
     -- flywheel — the archive relay writes chat in, /hssearch reads posts back out.
     -- (note: this searches heatsync POSTS via /api/search; the relayed twitch-chat
-    -- log corpus is a separate, web-only surface with no fast json api yet.)
+    -- LOG corpus is a separate corpus — see /hschat below, which searches it via
+    -- /api/archive/search.)
     local SEARCH_LIMIT = 8
     c2.register_command("/hssearch", function(ctx)
         local q = u.join_args(ctx.words)
@@ -172,7 +191,8 @@ function M.register()
     -- search the twitch-chat archive from chat — the other half of the
     -- flywheel: the channel signal tells heatsync what to archive server-side,
     -- /hschat reads the result back. filters: @user #channel, everything else
-    -- is the query text. the server's
+    -- is the query text (which also accepts the search box's own operators:
+    -- from:<user> in:<channel> has:<word> before:/after:<date>). the server's
     -- /api/archive/search is instant when narrowed to a user or a rare term; a
     -- broad common word across the ~40M-row corpus can hit the 10s ceiling and
     -- 503 — so a bare query defaults to the current channel, and the failure
@@ -191,7 +211,7 @@ function M.register()
         end
         local q = table.concat(qparts, " ")
         if string.len(q) < 2 then
-            u.sysmsg(ctx, "usage: /hschat <query> [@user] [#channel] — search the chat archive; narrow with @user or #channel (broad terms may time out)")
+            u.sysmsg(ctx, "usage: /hschat <query> [@user] [#channel] — search the chat archive; narrow with @user or #channel (broad terms may time out) · operators: from: in: has: before: after:")
             return
         end
         if user and not u.is_valid_name(user) then u.sysmsg(ctx, "invalid @user"); return end
@@ -212,12 +232,30 @@ function M.register()
         -- so tell the user it's working instead of a silent gap that reads as a
         -- swallowed command.
         u.sysmsg(ctx, "searching the chat archive…")
-        net.get_json(url, 12000, function(payload, err)
-            -- a 10s statement-timeout 503 also lands here (get_json only sees
-            -- success/failure); the narrow-it advice is the right answer for both.
+        net.get_json(url, 12000, function(payload, err, status, body)
             if not payload or type(payload.results) ~= "table" then
-                u.sysmsg(ctx, "archive search failed or timed out — narrow it with @user or #channel (" .. tostring(err) .. ")")
+                if status == 429 then
+                    local secs = type(body) == "table" and tonumber(body.retry_after_seconds)
+                    u.sysmsg(ctx, "rate limited" .. (secs and (" — retry in " .. tostring(math.floor(secs)) .. "s") or " — try again shortly"))
+                elseif status == 503 then
+                    -- the statement-timeout 503 ships its own narrow-it message;
+                    -- fall back to a terse one if the body doesn't parse.
+                    local msg = type(body) == "table" and net.safe_text(body.error, 120)
+                    u.sysmsg(ctx, msg or "archive search is busy — narrow it with @user or #channel")
+                else
+                    u.sysmsg(ctx, "archive search failed or timed out — narrow it with @user or #channel (" .. tostring(err) .. ")")
+                end
                 return
+            end
+            -- operator typos (unknown operator, bad date) — surfaced, capped,
+            -- never let a hostile/garbled string blow up the line.
+            if type(payload.query_errors) == "table" and #payload.query_errors > 0 then
+                local errs = {}
+                for i = 1, math.min(3, #payload.query_errors) do
+                    local e = net.safe_text(payload.query_errors[i], 80)
+                    if e then errs[#errs + 1] = e end
+                end
+                if #errs > 0 then u.sysmsg(ctx, "query warning: " .. table.concat(errs, "; ")) end
             end
             local rows = payload.results
             local scope = (user and (" @" .. user) or "") .. (chan and (" #" .. chan) or "")
@@ -225,32 +263,42 @@ function M.register()
                 u.sysmsg(ctx, "no archived lines for '" .. q .. "'" .. scope)
                 return
             end
-            -- recency_windowed → the server floored a broad/channel search to its
-            -- recent window; next_cursor → the page was capped and more exist.
-            -- (forward-compatible: both fields are simply absent on older servers.)
+            -- coverage.hint → the server is telling you a scoped, all-time search
+            -- WAS available but this query's scope didn't reach it (replaces the
+            -- old recency_windowed flag); next_cursor → the page was capped and
+            -- more exist. (forward-compatible: every field here is simply absent
+            -- on an older server.)
             local hint = ""
-            if payload.recency_windowed then
-                hint = " (recent window — add @user or a date range for older)"
+            local cov = type(payload.coverage) == "table" and payload.coverage or nil
+            local cov_hint = cov and type(cov.hint) == "string" and net.safe_text(cov.hint, 100) or nil
+            if cov_hint then
+                hint = " (" .. cov_hint .. ")"
             elseif payload.next_cursor then
                 hint = " (more exist — narrow further)"
             end
             u.sysmsg(ctx, #rows .. " archived line(s) for '" .. q .. "'" .. scope .. hint .. ":")
             for _, r in ipairs(rows) do
-                if type(r) == "table" and type(r.message_id) == "string" then
+                if type(r) == "table" then
                     local plat = tostring(r.platform or "twitch")
                     local rchan = tostring(r.channel or "?")
                     local who = tostring(r.display_name or r.username or "?")
-                    local body = who .. " · #" .. rchan .. ": " .. u.preview(r.message, 80)
+                    local body_line = who .. " · #" .. rchan .. ": " .. u.preview(r.message, 80)
                     -- timestamp is ISO ("2026-07-02T04:42:00.775Z") → the SSR log
                     -- page path wants the UTC date (first 10 chars), ?m=<id> anchors
                     -- the exact message. no os.date needed (sandbox has no os).
                     local date = type(r.timestamp) == "string" and r.timestamp:sub(1, 10) or nil
                     if date and date:match("^%d%d%d%d%-%d%d%-%d%d$") then
-                        u.linkmsg(ctx, body, net.ORIGIN .. "/logs/" .. net.percent_encode(plat) ..
-                            "/" .. net.percent_encode(rchan) .. "/" .. date ..
-                            "?m=" .. net.percent_encode(r.message_id))
+                        local link = net.ORIGIN .. "/logs/" .. net.percent_encode(plat) ..
+                            "/" .. net.percent_encode(rchan) .. "/" .. date
+                        -- a hot-archive row can carry message_id:null (the walk
+                        -- doesn't always resolve it) — still link to the day page,
+                        -- just without the exact-line anchor.
+                        if type(r.message_id) == "string" then
+                            link = link .. "?m=" .. net.percent_encode(r.message_id)
+                        end
+                        u.linkmsg(ctx, body_line, link)
                     else
-                        u.sysmsg(ctx, body)
+                        u.sysmsg(ctx, body_line)
                     end
                 end
             end
@@ -350,8 +398,17 @@ function M.register()
         if chan then url = url .. "&channel=" .. net.percent_encode(string.lower(chan)) end
         -- fetch cross-platform chat stats for a summary line; the archive link
         -- is always shown even if stats are opted-out / unavailable.
-        net.get_json(net.ORIGIN .. "/api/chatter/twitch/" .. net.percent_encode(luser) .. "/stats", 8000, function(payload)
-            local t = payload and payload.totals
+        net.get_json(net.ORIGIN .. "/api/chatter/twitch/" .. net.percent_encode(luser) .. "/stats", 8000, function(payload, err, status, body)
+            if not payload then
+                if status == 404 and type(body) == "table" and body.error_code == "opted_out" then
+                    u.sysmsg(ctx, luser .. " opted out of logs")
+                elseif status == 503 then
+                    u.sysmsg(ctx, "chat stats are busy — try again later")
+                end
+                u.linkmsg(ctx, "archive: " .. luser .. (chan and (" in #" .. string.lower(chan)) or ""), url)
+                return
+            end
+            local t = payload.totals
             if t then
                 local bits = {}
                 if tonumber(t.messages) then bits[#bits + 1] = tostring(t.messages) .. " msgs" end

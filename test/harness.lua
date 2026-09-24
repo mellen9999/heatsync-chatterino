@@ -140,6 +140,24 @@ local function http_fail(pattern)
     end
     return false
 end
+-- simulates a non-ok HTTP status with a JSON error body (429/503/404 etc) —
+-- real chatterino routes any non-ok status through on_error (see
+-- HTTPRequest:on_error doc: "fails or returns a non-ok status"), still
+-- carrying a readable body via res:data().
+local function http_error(pattern, status, payload_table)
+    for i, r in ipairs(http_queue) do
+        if string.find(r.url, pattern, 1, true) then
+            table.remove(http_queue, i)
+            local key = payload_table and register_payload(payload_table) or ""
+            r.err({ error = function() return "http " .. tostring(status) end,
+                    data = function() return key end,
+                    status = function() return status end })
+            if r.fin then r.fin() end
+            return true
+        end
+    end
+    return false
+end
 
 function c2.register_command(name, fn) commands[name] = fn return true end
 function c2.register_callback(_, fn) completion_cb = fn end
@@ -725,6 +743,50 @@ http_answer("/api/emote-search?q=nichemote", { results = { ["7tv"] = {
 } } })
 local seventv = require("seventv")
 check(select(1, seventv.resolve_render("nichEmote")) ~= nil, "search: emote still cached for the /hsfind picker")
+
+-- merged ranking: the server's cross-provider list (includes hs) replaces the
+-- old per-provider 7tv→bttv→ffz concat when present
+do
+    local got
+    seventv.search_all("mergedq", function(list) got = list end)
+    http_answer("/api/emote-search?q=mergedq", {
+        results = { ["7tv"] = { { name = "shouldnotappear", url = "https://cdn.7tv.app/emote/0X/1x.webp" } } },
+        merged = {
+            { name = "hsOne", url = "https://cdn.heatsync.org/e/1.webp", provider = "hs", animated = false, zeroWidth = true },
+            { name = "sevenTwo", url = "https://cdn.7tv.app/emote/0Y/1x.webp", provider = "7tv", animated = true },
+        },
+    })
+    check(got ~= nil and #got == 2, "seventv: merged list used when present, not the per-provider concat")
+    local byname = {}
+    for _, e in ipairs(got) do byname[e.name] = e end
+    check(byname.shouldnotappear == nil, "seventv: merged present → results{} is not also concatenated")
+    check(byname.hsOne ~= nil and byname.hsOne.provider == "hs" and byname.hsOne.zw == true,
+        "seventv: merged 'hs' item kept, camelCase zeroWidth read into zw")
+end
+
+-- a merged row still goes through is_safe_name/is_safe_url like any other
+do
+    local got
+    seventv.search_all("hostilemq", function(list) got = list end)
+    http_answer("/api/emote-search?q=hostilemq", { merged = {
+        { name = "bad\tname", url = "https://cdn.7tv.app/emote/0Z/1x.webp", provider = "7tv" }, -- unsafe name
+        { name = "okname2", url = "https://cdn.7tv.app/emote/0Z\n/1x.webp", provider = "7tv" }, -- unsafe url
+        { name = "fine", url = "https://cdn.7tv.app/emote/0Z/1x.webp", provider = "7tv" },
+    } })
+    check(got ~= nil and #got == 1 and got[1].name == "fine",
+        "seventv: a merged row still passes is_safe_name/is_safe_url")
+end
+
+-- partial:true is reported to the caller (kick_off then short-TTLs it instead
+-- of discarding it — see the 7tv completion negative-cache tests elsewhere)
+do
+    local partial_seen = "unset"
+    seventv.search_all("partialq", function(_, partial) partial_seen = partial end)
+    http_answer("/api/emote-search?q=partialq", { merged = {
+        { name = "partialHit", url = "https://cdn.7tv.app/emote/0P/1x.webp", provider = "7tv" },
+    }, partial = true })
+    check(partial_seen == true, "seventv: partial:true is surfaced to the caller")
+end
 -- a non-HS sender posts words that are ONLY in the global search cache → the
 -- message must NOT be rebuilt (no false-positive inline render).
 local sm = fake_msg("rando", "9999", "i totally lost the game nichEmote")
@@ -1359,21 +1421,58 @@ local hschat_url = http_answer("/api/archive/search", { results = {} })
 check(hschat_url ~= nil and hschat_url:find("channel=somechannel", 1, true) ~= nil,
     "hschat: bare query scopes to the current channel")
 check(added_text_has("no archived lines", #chan.added - sb), "hschat: empty result is an honest line")
--- recency_windowed flag → the header hints that older results need narrowing
+-- coverage.hint (replaces the old recency_windowed flag) → the header hints
+-- that a scoped, all-time search was available but this scope didn't reach it
 sb = #chan.added
 commands["/hschat"]({ words = { "/hschat", "windowed", "#bigchan" }, channel = chan })
 http_answer("/api/archive/search", { results = {
     { message_id = "w1", platform = "twitch", channel = "bigchan", username = "u", display_name = "U", message = "windowed hit", timestamp = "2026-07-08T00:00:00.000Z" },
-}, recency_windowed = true })
-check(added_text_has("recent window", #chan.added - sb), "hschat: recency_windowed flag surfaces a narrow-for-older hint")
--- short query → usage, no request
+}, coverage = { mode = "hot", via = "fts", hint = "scope with from:<user> or in:<channel> to search the permanent archive" } })
+check(added_text_has("scope with from:", #chan.added - sb), "hschat: coverage.hint surfaces the scope-further hint")
+-- coverage present but hint absent/non-string → no hint text, no crash
+sb = #chan.added
+commands["/hschat"]({ words = { "/hschat", "plain", "#bigchan" }, channel = chan })
+http_answer("/api/archive/search", { results = {
+    { message_id = "p1", platform = "twitch", channel = "bigchan", username = "u", display_name = "U", message = "plain hit", timestamp = "2026-07-08T00:00:00.000Z" },
+}, coverage = { mode = "permanent", via = "channel" } })
+-- "searching…" ack + header + 1 result row = 3; no extra hint line
+check(#chan.added == sb + 3, "hschat: coverage without a hint adds no extra line")
+-- query_errors: surfaced (capped at 3), each line safe_text-clamped
+sb = #chan.added
+commands["/hschat"]({ words = { "/hschat", "bad", "#bigchan" }, channel = chan })
+http_answer("/api/archive/search", { results = {}, query_errors = { "unknown operator 'foo:'", "bad date 'never'", "e3", "e4" } })
+check(added_text_has("query warning: unknown operator", #chan.added - sb), "hschat: query_errors surfaced")
+check(not added_text_has("e4", #chan.added - sb), "hschat: query_errors capped at 3")
+-- message_id:null (arrives as a missing/non-string field, same as JSON null
+-- decoded through this harness's table-based payloads) → still shown, day-
+-- page link with no ?m= anchor
+sb = #chan.added
+commands["/hschat"]({ words = { "/hschat", "nullid", "#bigchan" }, channel = chan })
+http_answer("/api/archive/search", { results = {
+    { platform = "twitch", channel = "bigchan", username = "u", display_name = "U", message = "no id here", timestamp = "2026-07-08T00:00:00.000Z" },
+} })
+check(added_link_has("/logs/twitch/bigchan/2026-07-08", #chan.added - sb), "hschat: null message_id still links to the day page")
+check(not added_link_has("?m=", #chan.added - sb), "hschat: null message_id → no ?m= anchor")
+-- short query → usage, mentions the query operators
 commands["/hschat"]({ words = { "/hschat", "a" }, channel = chan })
 check(added_text_has("usage:", 1), "hschat: sub-2-char query shows usage")
+check(added_text_has("from:", 1) and added_text_has("has:", 1), "hschat: usage mentions the query operators")
 -- 503 / failure path advises narrowing
 sb = #chan.added
 commands["/hschat"]({ words = { "/hschat", "broadterm", "#bigchan" }, channel = chan })
 http_fail("/api/archive/search")
-check(added_text_has("narrow it", #chan.added - sb), "hschat: timeout/failure suggests narrowing")
+check(added_text_has("narrow it", #chan.added - sb), "hschat: generic failure suggests narrowing")
+-- 503 with a real server error body → that message surfaces, not the generic one
+sb = #chan.added
+commands["/hschat"]({ words = { "/hschat", "toobroad", "#bigchan" }, channel = chan })
+http_error("/api/archive/search", 503, { error = "search took too long — narrow the query (channel/username/date range)" })
+check(added_text_has("search took too long", #chan.added - sb), "hschat: 503 body message surfaces verbatim")
+-- 429 with retry_after_seconds → terse rate-limit line naming the wait
+sb = #chan.added
+commands["/hschat"]({ words = { "/hschat", "ratelimited", "#bigchan" }, channel = chan })
+http_error("/api/archive/search", 429, { error = "Rate limit exceeded", retry_after_seconds = 7 })
+check(added_text_has("rate limited", #chan.added - sb) and added_text_has("7s", #chan.added - sb),
+    "hschat: 429 surfaces retry_after_seconds")
 
 -- /hsinv: browse anyone's inventory → click-to-insert grid
 sb = #chan.added
@@ -1401,6 +1500,38 @@ check(#chan.added == sb + 3, "hshot: kick filter → header + 2 kick lines")
 check(added_text_has("heat 80", 3), "hshot: heat surfaced")
 check(not added_text_has("TW1", 3), "hshot: platform filter excludes twitch")
 
+-- /hswhois: youtube_is_live alone (no twitch/kick) still surfaces LIVE
+wa = #chan.added
+commands["/hswhois"]({ words = { "/hswhois", "ytonly" }, channel = chan })
+http_answer("/api/profile/ytonly", { profile = { display_name = "YtOnly", youtube_is_live = true,
+    stats = { user_heat = 1 } } })
+check(added_text_has("LIVE", #chan.added - wa), "whois: youtube_is_live surfaces LIVE")
+
+-- /hshot: a kick filter must also match a simulcast card whose primary leg is
+-- twitch but whose platforms[] includes kick (merged card, server/platform-
+-- api.ts collapseSimulcast)
+sb = #chan.added
+commands["/hshot"]({ words = { "/hshot", "kick" }, channel = chan })
+http_answer("/api/live/top?limit=50", { streams = {
+    { platform = "twitch", username = "primaryname", displayName = "Primary", viewerCount = 300,
+      platforms = { "twitch", "kick" }, platformUsernames = { twitch = "primaryname", kick = "primarykick" } },
+    { platform = "youtube", username = "yt1", displayName = "YT1", viewerCount = 40 },
+} })
+check(#chan.added == sb + 2, "hshot: kick filter matches a twitch-primary simulcast card via platforms[]")
+-- the merged card's twitch leg still gets a native JumpToChannel, keyed off
+-- platformUsernames.twitch rather than the row's own username/channel
+check(added_link_has("primaryname", #chan.added - sb), "hshot: merged card jumps via platformUsernames.twitch")
+
+-- /hshot: platformUsernames.twitch wins the jump link even when the row's own
+-- platform/username is NOT twitch (a kick-primary card with a twitch leg)
+sb = #chan.added
+commands["/hshot"]({ words = { "/hshot" }, channel = chan })
+http_answer("/api/live/top?limit=50", { streams = {
+    { platform = "kick", username = "kickprimary", displayName = "KickPrimary", viewerCount = 90,
+      platforms = { "kick", "twitch" }, platformUsernames = { twitch = "thetwitchleg", kick = "kickprimary" } },
+} })
+check(added_link_has("thetwitchleg", #chan.added - sb), "hshot: kick-primary card still jumps to its twitch leg")
+
 -- /hsmoments: hours + platform filter + platform prefix
 sb = #chan.added
 commands["/hsmoments"]({ words = { "/hsmoments", "48h", "kick" }, channel = chan })
@@ -1422,6 +1553,20 @@ http_answer("/api/chatter/twitch/topuser/stats", { totals = { messages = 1000, c
 check(added_text_has("top channels:", #chan.added - sb), "hslogs: top-channels line emitted")
 check(added_text_has("#a (500)", #chan.added - sb), "hslogs: top channel with message count")
 check(not added_text_has("#d", #chan.added - sb), "hslogs: capped at 3 channels")
+
+-- /hslogs: 404 opted_out → honest "opted out" line; archive link still shown
+sb = #chan.added
+commands["/hslogs"]({ words = { "/hslogs", "hiddenuser" }, channel = chan })
+http_error("/api/chatter/twitch/hiddenuser/stats", 404, { error = "opted_out", error_code = "opted_out" })
+check(added_text_has("opted out of logs", #chan.added - sb), "hslogs: opted_out surfaces an honest line")
+check(added_link_has("/logs/search", #chan.added - sb), "hslogs: archive link still shown when opted out")
+
+-- /hslogs: 503 busy → terse retry line; archive link still shown
+sb = #chan.added
+commands["/hslogs"]({ words = { "/hslogs", "busyuser" }, channel = chan })
+http_error("/api/chatter/twitch/busyuser/stats", 503, { error = "busy" })
+check(added_text_has("busy", #chan.added - sb), "hslogs: 503 busy surfaces a retry line")
+check(added_link_has("/logs/search", #chan.added - sb), "hslogs: archive link still shown when busy")
 
 -- /hshelp: tier-gated command index
 sb = #chan.added
@@ -1824,6 +1969,18 @@ do
         "allowlist: suffix-append bypass (heatsync.org.evil.com) is rejected")
     check(img.for_url("https://evil.com/x.png", 32, 32) == nil,
         "allowlist: a non-allowlisted host is rejected")
+end
+-- image allowlist: static-cdn.jtvnw.net (twitch-hosted inventory emotes) is
+-- allowed exactly, and neither a subdomain-prefix nor a suffix-append trick
+-- rides in on it
+do
+    local img = require("img")
+    check(img.for_url("https://static-cdn.jtvnw.net/emoticons/v2/1/default/dark/3.0", 32, 32) ~= nil,
+        "allowlist: static-cdn.jtvnw.net is allowed")
+    check(img.for_url("https://static-cdn.jtvnw.net.evil.com/x.png", 32, 32) == nil,
+        "allowlist: suffix-append bypass (static-cdn.jtvnw.net.evil.com) is rejected")
+    check(img.for_url("https://evil-jtvnw.net/x.png", 32, 32) == nil,
+        "allowlist: unrelated host sharing a substring (evil-jtvnw.net) is rejected")
 end
 -- per-message emote-token cap: one hostile kick line with 100 [emote:] tokens
 -- builds at most MAX_EMOTE_TOKENS(50) image elements, not 100

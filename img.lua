@@ -21,6 +21,7 @@ local TARGET_H = 28   -- twitch 1x emote line height
 local ALLOWED_HOST_SUFFIXES = {
     "7tv.app", "betterttv.net", "frankerfacez.com", -- emote providers
     "kick.com", "ggpht.com", "googleusercontent.com", -- kick + youtube emotes
+    "static-cdn.jtvnw.net",                           -- twitch-hosted inventory emotes
     "heatsync.org", "fourtf.com",                     -- first-party cdn + cc badges
 }
 local function host_allowed(url)
