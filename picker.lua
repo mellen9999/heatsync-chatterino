@@ -2,6 +2,7 @@
 -- into a grid; every emote is left-click-to-insert (LinkType.InsertText), the
 -- same primitive /hsfind and inline rendering use. callers: /hsfind (catalog
 -- search) and /hsemotes (your inventory menu).
+local net = require("net")
 local caps = require("caps")
 local img = require("img")
 
@@ -42,7 +43,7 @@ function M.render(ch, header, items)
                 }
             end
         end
-        ch:add_message(c2.Message.new({ elements = elems }))
+        ch:add_message(net.new_message({ elements = elems }))
     end))
 end
 

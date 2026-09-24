@@ -1,4 +1,5 @@
 -- shared helpers for the /hs* command modules.
+local net = require("net")
 local M = {}
 
 function M.sysmsg(ctx, text)
@@ -9,7 +10,7 @@ end
 -- builds a minimal message with a link element instead. works on 2.5.5+.
 function M.linkmsg(ctx, text, url)
     local ok = pcall(function()
-        ctx.channel:add_message(c2.Message.new({
+        ctx.channel:add_message(net.new_message({
             elements = {
                 { type = "text", text = "[heatsync]", color = "system" },
                 {

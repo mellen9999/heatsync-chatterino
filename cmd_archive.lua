@@ -34,7 +34,7 @@ function M.whois(channel, user)
         local line = name .. (p.is_shadow_profile and " (not on heatsync)" or "") ..
             (#bits > 0 and (" · " .. table.concat(bits, " · ")) or "")
         pcall(function()
-            ctx.channel:add_message(c2.Message.new({ elements = {
+            ctx.channel:add_message(net.new_message({ elements = {
                 { type = "text", text = "[heatsync]", color = "system" },
                 { type = "text", text = line, color = "link",
                   link = { type = c2.LinkType.Url, value = net.ORIGIN .. "/u/" .. net.percent_encode(name) } },
@@ -180,7 +180,7 @@ function M.register()
                     else
                         link = { type = c2.LinkType.Url, value = net.ORIGIN .. "/u/" .. net.percent_encode(name) }
                     end
-                    ctx.channel:add_message(c2.Message.new({ elements = {
+                    ctx.channel:add_message(net.new_message({ elements = {
                         { type = "text", text = "[heatsync]", color = "system" },
                         { type = "text", text = text, color = "link", link = link },
                     } }))

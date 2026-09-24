@@ -274,7 +274,7 @@ local function build_replacement(msg, sender_map, want_flame, t)
     end
     local highlight = msg.highlight_color
     if highlight == "" then highlight = nil end
-    return c2.Message.new({
+    return net.new_message({
         flags = msg.flags,
         id = msg.id,
         parse_time = msg.parse_time,

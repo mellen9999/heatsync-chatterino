@@ -2335,7 +2335,10 @@ do
     check(pcall(fire, throwmsg), "menu: a throwing message field doesn't escape the handler")
 
     -- clicked element is a heatsync emote we rendered → block/unblock toggle
-    local hsElem = { tooltip = "menuTestEmote · heatsync" }
+    -- shaped like the real client: chatterino drops our tooltip (reads "") but
+    -- keeps the InsertText link render.lua sets
+    local hsElem = { type = "scaling-image", tooltip = "",
+        link = { type = c2.LinkType.InsertText, value = "menuTestEmote " } }
     local sub2 = fire(fake_msg("menuuser123", "9001", "look menuTestEmote"), { message_element = hsElem }).submenus["heatsync"]
     check(type(sub2.actions["block menuTestEmote"]) == "function", "menu: block action offered for a heatsync emote element")
     check(store.is_blocked("menuTestEmote") == false, "menu: precondition — not blocked yet")
@@ -2349,13 +2352,27 @@ do
 
     -- a hostile emote-name tooltip (space in the derived name) never yields a
     -- block/unblock action
-    local subH1 = fire(fake_msg("menuuser123", "9001", "x"), { message_element = { tooltip = "bad name · heatsync" } }).submenus["heatsync"]
+    local subH1 = fire(fake_msg("menuuser123", "9001", "x"), { message_element = { type = "scaling-image", tooltip = "bad name · heatsync" } }).submenus["heatsync"]
     check(not has_action_matching(subH1.actions, "block"), "menu: a hostile emote-name tooltip yields no block action")
 
     -- a tooltip suffix that ISN'T " · heatsync" (kick/youtube emotes, or any
     -- other element) never yields a block/unblock action either
-    local subH2 = fire(fake_msg("menuuser123", "9001", "x"), { message_element = { tooltip = "shroud · kick" } }).submenus["heatsync"]
+    local subH2 = fire(fake_msg("menuuser123", "9001", "x"), { message_element = { type = "scaling-image", tooltip = "shroud · kick" } }).submenus["heatsync"]
     check(not has_action_matching(subH2.actions, "block"), "menu: a non-heatsync tooltip suffix yields no block action")
+
+    -- older-build fallback: the tooltip suffix alone still identifies our emote
+    local subT = fire(fake_msg("menuuser123", "9001", "x"),
+        { message_element = { type = "scaling-image", tooltip = "tipEmote · heatsync" } }).submenus["heatsync"]
+    check(type(subT.actions["block tipEmote"]) == "function", "menu: tooltip suffix still works as a fallback")
+
+    -- a native chatterino emote ("emote" element) is never ours to block, and a
+    -- hostile insert value (command, space) yields nothing
+    local subN = fire(fake_msg("menuuser123", "9001", "x"), { message_element = { type = "emote",
+        link = { type = c2.LinkType.InsertText, value = "nativeEmote " } } }).submenus["heatsync"]
+    check(not has_action_matching(subN.actions, "block"), "menu: a native emote element yields no block action")
+    local subX = fire(fake_msg("menuuser123", "9001", "x"), { message_element = { type = "scaling-image",
+        link = { type = c2.LinkType.InsertText, value = "/ban victim " } } }).submenus["heatsync"]
+    check(not has_action_matching(subX.actions, "block"), "menu: a hostile insert value yields no block action")
 end
 
 -- ws resync (LAST — senders.expire_all() marks EVERY cached sender stale, so
@@ -2404,6 +2421,25 @@ do
         "img: non-7tv urls untouched by the avif swap")
     check(img.decodable("https://cdn.7tv.app.evil.com/emote/abc/1x.avif") == "https://cdn.7tv.app.evil.com/emote/abc/1x.avif",
         "img: avif swap is anchored to the real 7tv cdn")
+end
+
+-- net.new_message re-applies a tooltip chatterino drops when a link is set
+do
+    local saved = c2.Message.new
+    local applied = {}
+    c2.Message.new = function(init)
+        local els = {}
+        for i = 1, #init.elements do
+            els[i] = setmetatable({}, { __newindex = function(_, k, v) if k == "tooltip" then applied[i] = v end end })
+        end
+        return { elements = function() return els end }
+    end
+    net.new_message({ elements = {
+        { type = "text", text = "plain" },
+        { type = "scaling-image", tooltip = "kek · heatsync", link = { type = c2.LinkType.InsertText, value = "kek " } },
+    } })
+    c2.Message.new = saved
+    check(applied[2] == "kek · heatsync" and applied[1] == nil, "net.new_message: tooltip re-applied only on linked elements")
 end
 
 print(failures == 0 and "\nALL PASS" or ("\n" .. failures .. " FAILURES"))

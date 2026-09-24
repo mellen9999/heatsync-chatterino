@@ -431,7 +431,7 @@ local function inject_one(cc_name, line, tag, tag_color, display, uname_color, b
     end
     local uname = type(line.username) == "string" and line.username or display
     if #uname > 100 then uname = uname:sub(1, 100) end
-    ch:add_message(c2.Message.new({
+    ch:add_message(net.new_message({
         login_name = string.lower(uname),
         display_name = display,
         message_text = text,

@@ -231,6 +231,33 @@ function M.parse_emote_row(e)
     }
 end
 
+-- c2.Message.new, but tooltips survive. chatterino's elementFromTable ignores
+-- an init's `tooltip` whenever it also has a `link` (it derives its own —
+-- empty for InsertText), so every clickable emote lost its hover text. the
+-- message isn't frozen until it's added, so re-apply the requested tooltip on
+-- the built element (init elements map 1:1 onto msg:elements()). best-effort:
+-- a build without the tooltip setter just keeps the old behavior.
+local function set_tooltip(els, i, tt) els[i].tooltip = tt end
+function M.new_message(init)
+    local msg = c2.Message.new(init)
+    local elems = init.elements
+    if type(elems) ~= "table" then return msg end
+    local built = nil
+    for i = 1, #elems do
+        local e = elems[i]
+        if type(e) == "table" and e.link ~= nil and type(e.tooltip) == "string" and e.tooltip ~= "" then
+            if built == nil then
+                -- a sol container (userdata) on the real client, not a table
+                local ok, els = pcall(function() return msg:elements() end)
+                if not ok or els == nil then return msg end
+                built = els
+            end
+            pcall(set_tooltip, built, i, e.tooltip)
+        end
+    end
+    return msg
+end
+
 -- One-shot GET expecting JSON. cb(data, nil, status) on success, cb(nil, err,
 -- status, body) on any failure — status/body let a caller branch on 429/503
 -- without a second request shape; both are best-effort (pcall'd: an older
