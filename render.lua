@@ -34,8 +34,12 @@ local function signal_relay(channel)
     local last = relay_sent[channel]
     local now = net.now()
     if last and (now - last) < RELAY_RESIGNAL_S then return end
-    relay_sent[channel] = now
-    ws.send({ type = "twitch:chat:relay", channel = channel })
+    -- record only a frame that actually went out: while the socket is down
+    -- the next 5s sweep retries, so a reconnect re-signals within seconds
+    -- instead of waiting out a window that was never used
+    if ws.send({ type = "twitch:chat:relay", channel = channel }) then
+        relay_sent[channel] = now
+    end
 end
 
 local M = {
