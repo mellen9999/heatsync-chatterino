@@ -245,6 +245,9 @@ if caps.tier >= 1 then
     -- tier>=1 alongside ws. re-subscribe its sources whenever the ws (re)connects.
     multichat.load()
     ws.on_reconnect = multichat.on_ws_up
+    -- youtube has no stream:online/offline of its own — feed live.lua's
+    -- go-live/offline line off youtube:status changes instead (see live.lua).
+    multichat.on_youtube_status = live.youtube_status
     -- a reconnect after a long rx gap may have missed invalidations — mark
     -- every cached sender stale so the next message from them refetches.
     ws.on_resync = senders.expire_all
@@ -324,6 +327,10 @@ if caps.later then
     if caps.tier >= 1 then
         net.every(25 * 1000, ws.heartbeat)
         net.every(30 * 1000, ws.watchdog)
+        -- reuses the same 60s cadence as the reconcile tick above rather than a
+        -- bespoke interval; multichat.retry_yt_tick halves it to ~120s itself
+        -- (server limit is 5 yt subs/60s/socket).
+        net.every(60 * 1000, multichat.retry_yt_tick)
     end
     if caps.tier == 2 then
         net.every(5 * 1000, render.discover)

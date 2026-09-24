@@ -276,6 +276,10 @@ end
 -- one that needs to render right now.
 function M.feed_broadcast(username, emote_name, emote_data)
     if type(emote_data) ~= "table" then return end
+    -- the server does not filter this push per viewer (unlike a fetched batch
+    -- response, which already excludes cw rows) — emoteData carries the same
+    -- nsfw/cw_cats fields as any other row, so gate it here the same way.
+    if net.is_cw_blocked(emote_data) then return end
     -- username becomes an unbounded cache KEY, so it needs the same single-token
     -- safety as an emote name (a login can't hold spaces/control bytes anyway).
     -- emote_name → InsertText/tooltip; url must be bounded (never gated elsewhere).

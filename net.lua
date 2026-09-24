@@ -191,7 +191,15 @@ end
 -- actually changes what renders: nsfw/cw_cats own-inventory rows are hidden
 -- here as an inline image the same way the server itself treats them for
 -- everyone else's view of you.
-local function is_cw_blocked(e)
+--
+-- shared (not just parse_emote_row): the same nsfw/cw_cats fields ride on the
+-- pushed emote:broadcast emoteData AND on the server-computed hsEmotes refs
+-- attached to kick-chat-message/youtube:chat (server/services/emote-enrich.ts
+-- HsEmoteRef) — the server explicitly leaves per-viewer gating of those to the
+-- client, so every path that renders a not-our-own-inventory emote reuses this
+-- one check rather than re-deriving it.
+function M.is_cw_blocked(e)
+    if type(e) ~= "table" then return false end
     if e.nsfw == true then return true end
     local cats = e.cw_cats
     if type(cats) == "table" then
@@ -204,7 +212,7 @@ end
 
 function M.parse_emote_row(e)
     if type(e) ~= "table" then return nil end
-    if is_cw_blocked(e) then return nil end
+    if M.is_cw_blocked(e) then return nil end
     local name = M.pick_first_str(e, "custom_name", "name", "code")
     local url = M.pick_first_str(e, "url", "src")
     if not name or not url or not M.is_safe_name(name) or not M.is_safe_url(url) then return nil end

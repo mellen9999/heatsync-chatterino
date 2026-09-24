@@ -12,20 +12,36 @@
 --   kick sub   → channel:join {platform:kick, channel:slug}  (rides ws.join,
 --                so it auto-replays on reconnect)
 --   kick live  → kick-chat-message { data:{channel,username,displayName,
---                content,color,id,timestamp,...} }
+--                content,color,id,timestamp,hsEmotes:{word->ref},...} }
 --   kick hist  → kick-chat-backfill { channel, messages:[<same data>...] }
 --   yt sub     → youtube:subscribe {url:<handle|url>, channelId:<routing tag>}
 --                (channelId is echoed back on every youtube:chat → we route on
 --                it; the channel must be LIVE or subscribe errors)
 --   yt live+hist → youtube:chat { channelId, messages:[{id,user,text,emotes,
---                timestamp,color,amount,systemMsg,...}], replay? }
---   yt status  → youtube:status { videoId, status, error?, channelId }
+--                timestamp,color,amount,systemMsg,hsEmotes:{word->ref},...}],
+--                replay? }
+--   yt status  → youtube:status { videoId, status, error?, channelId,
+--                channelName?, title? } — status is one of connected|ended|
+--                not-live|chat-off|no-slot|error (server/services/ws-protocol.ts
+--                YouTubeLegStatus)
+--
+-- hsEmotes: server/services/emote-enrich.ts computes each ref
+-- {url,provider,zeroWidth?,nsfw?,cw_cats?} from the SENDER's own heatsync
+-- inventory (server-side, at fanout time) — never from this plugin's search/
+-- catalog cache, so rendering these preserves the privacy invariant the same
+-- way render.lua's sender-inventory-only rule does.
 local net = require("net")
 local ws = require("ws")
 local img = require("img")
 local caps = require("caps")
+local store = require("store")
 
-local M = {}
+local M = {
+    -- fn(routing_tag, status) — wired by init.lua to live.lua's youtube feed.
+    -- NOT required directly (live.lua already requires multichat; requiring it
+    -- back here would be circular) — same indirection pattern as ws.on_reconnect.
+    on_youtube_status = nil,
+}
 
 local LINKS_FILE = "multichat.txt"
 local KICK_COLOR = "#53fc18"
@@ -42,90 +58,172 @@ local KICK_EMOTE_URL = "https://files.kick.com/emotes/%s/fullsize"
 -- cap emote elements built from ONE message: the batch cap bounds messages, but
 -- a single hostile line could carry hundreds of thousands of emote tokens and
 -- blow the element table + image-load attempts. a real message has a handful.
+-- shared with hsEmotes rendering below (native platform emotes + heatsync
+-- emotes come out of the same per-message image-element budget).
 local MAX_EMOTE_TOKENS = 50
 
-local function build_yt_body(text, emotes)
-    if type(text) ~= "string" or type(emotes) ~= "table" or #emotes == 0 then return nil end
-    local map = {}
-    for i, em in ipairs(emotes) do
-        if i > MAX_EMOTE_TOKENS then break end
-        -- em.url + em.alt are raw ws-payload fields (untrusted, MITM-able) that
-        -- reach img.for_url / become map keys — bound them like every other
-        -- emote path does, else 250×50 arbitrary-size urls per frame is an OOM knob.
-        if type(em) == "table" and net.is_safe_name(em.alt) and net.is_safe_url(em.url) then
-            map[em.alt] = em.url
+-- hsEmotes refs are a server-computed map word->ref for THIS message's sender
+-- (see the module comment). cap how many entries we even validate: the field
+-- rides on an untrusted ws frame, so a hostile/misbehaving server attaching a
+-- huge map must not turn one message into an unbounded gate-check scan — a
+-- real message uses a handful of distinct emotes.
+local MAX_HS_REFS_SCANNED = 100
+
+-- validate + content-warning-gate the raw hsEmotes map once per message,
+-- rather than re-checking each field on every word-scan hit. returns nil if
+-- there's nothing usable (matches the "no map" fast path everywhere else).
+local function sanitize_hs_refs(raw)
+    if type(raw) ~= "table" then return nil end
+    local out = nil
+    local n = 0
+    for name, ref in pairs(raw) do
+        n = n + 1
+        if n > MAX_HS_REFS_SCANNED then break end
+        if type(ref) == "table" and net.is_safe_name(name) and net.is_safe_url(ref.url)
+            and not net.is_cw_blocked(ref) then
+            out = out or {}
+            out[name] = ref
         end
     end
-    if not next(map) then return nil end
+    return out
+end
+
+-- one heatsync-emote element for an already-sanitized (name, ref) pair, or nil
+-- if it's locally blocked or the image fails to build (caller falls back to
+-- the plain word). dims are unknown on a ref (see HsEmoteRef) — 32 matches the
+-- 1x tier height for_hs_emote already clamps every heatsync emote to.
+local function build_hs_elem(word, ref)
+    if store.is_blocked(word) then return nil end
+    local set = caps.images and img.for_hs_emote(ref.url, 32) or nil
+    if not set then return nil end
+    return {
+        type = "scaling-image",
+        images = set,
+        flags = c2.MessageElementFlag.EmoteImage,
+        tooltip = word .. " · heatsync",
+        -- left-click inserts the name, same as render.lua's own hs emotes
+        link = { type = c2.LinkType.InsertText, value = word .. " " },
+    }
+end
+
+-- emit `text` as elements, splitting on words that match a sanitized hs-refs
+-- map (nil hs → the whole span is one text element, the common/fast path).
+-- shares `budget` (a {n=} table) with the caller's native-emote token count.
+-- returns true iff at least one hs emote actually rendered (so the caller
+-- knows the message was worth rebuilding even with no native emote tokens).
+local function emit_text_with_hs(elems, text, hs, budget)
+    if text == "" then return false end
+    if not hs then
+        elems[#elems + 1] = { type = "text", text = text }
+        return false
+    end
+    local run = {}
+    local found = false
+    for word in text:gmatch("%S+") do
+        local ref = budget.n < MAX_EMOTE_TOKENS and hs[word]
+        local el = ref and build_hs_elem(word, ref)
+        if el then
+            if #run > 0 then
+                elems[#elems + 1] = { type = "text", text = table.concat(run, " ") }
+                for i = #run, 1, -1 do run[i] = nil end
+            end
+            elems[#elems + 1] = el
+            budget.n = budget.n + 1
+            found = true
+        else
+            run[#run + 1] = word
+        end
+    end
+    if #run > 0 then elems[#elems + 1] = { type = "text", text = table.concat(run, " ") } end
+    return found
+end
+
+local function build_yt_body(text, emotes, hs_raw)
+    if type(text) ~= "string" or text == "" then return nil end
+    local hs = sanitize_hs_refs(hs_raw)
+    local map = {}
+    if type(emotes) == "table" then
+        for i, em in ipairs(emotes) do
+            if i > MAX_EMOTE_TOKENS then break end
+            -- em.url + em.alt are raw ws-payload fields (untrusted, MITM-able) that
+            -- reach img.for_url / become map keys — bound them like every other
+            -- emote path does, else 250×50 arbitrary-size urls per frame is an OOM knob.
+            if type(em) == "table" and net.is_safe_name(em.alt) and net.is_safe_url(em.url) then
+                map[em.alt] = em.url
+            end
+        end
+    end
+    local has_yt_map = next(map) ~= nil
+    if not has_yt_map and not hs then return nil end
     local elems = {}
     local last = 1
     local found = false
-    local ntok = 0
-    for s, tok, e in text:gmatch("()(:[%w_+%-]+:)()") do
-        local url = map[tok]
-        if url then
-            found = true
-            if s > last then
-                local pre = text:sub(last, s - 1)
-                if pre ~= "" then elems[#elems + 1] = { type = "text", text = pre } end
+    local budget = { n = 0 }
+    if has_yt_map then
+        for s, tok, e in text:gmatch("()(:[%w_+%-]+:)()") do
+            if budget.n >= MAX_EMOTE_TOKENS then break end
+            local url = map[tok]
+            if url then
+                found = true
+                if s > last and emit_text_with_hs(elems, text:sub(last, s - 1), hs, budget) then found = true end
+                -- bump the ggpht size param to 48px for a crisp downscale. only
+                -- assert {48,48} dims when the bump actually applied (we then know
+                -- the image is 48px); otherwise w=nil so chatterino scales the
+                -- real image to height — asserting a wrong size renders it huge
+                -- (the bug that hit kick's variable-size emotes).
+                local big, bumped = url:gsub("=w%d+%-h%d+", "=w48-h48")
+                local set = caps.images and img.for_url(big, bumped > 0 and 48 or nil, 48) or nil
+                if set then
+                    elems[#elems + 1] = { type = "scaling-image", images = set,
+                        flags = c2.MessageElementFlag.EmoteImage, tooltip = tok .. " · youtube" }
+                else
+                    elems[#elems + 1] = { type = "text", text = tok }
+                end
+                last = e
+                budget.n = budget.n + 1
             end
-            -- bump the ggpht size param to 48px for a crisp downscale. only
-            -- assert {48,48} dims when the bump actually applied (we then know
-            -- the image is 48px); otherwise w=nil so chatterino scales the
-            -- real image to height — asserting a wrong size renders it huge
-            -- (the bug that hit kick's variable-size emotes).
-            local big, bumped = url:gsub("=w%d+%-h%d+", "=w48-h48")
-            local set = caps.images and img.for_url(big, bumped > 0 and 48 or nil, 48) or nil
-            if set then
-                elems[#elems + 1] = { type = "scaling-image", images = set,
-                    flags = c2.MessageElementFlag.EmoteImage, tooltip = tok .. " · youtube" }
-            else
-                elems[#elems + 1] = { type = "text", text = tok }
-            end
-            last = e
-            ntok = ntok + 1
-            if ntok >= MAX_EMOTE_TOKENS then break end
         end
     end
+    if emit_text_with_hs(elems, text:sub(last), hs, budget) then found = true end
     if not found then return nil end
-    local tail = text:sub(last)
-    if tail ~= "" then elems[#elems + 1] = { type = "text", text = tail } end
     return elems
 end
 
--- split a kick message body on [emote:id:name] tokens into text runs +
--- scaling-image emotes. returns nil if there are no emote tokens (caller uses
--- a single plain-text element) — keeps the common path allocation-free.
-local function build_kick_body(content)
-    if type(content) ~= "string" or not content:find("[emote:", 1, true) then return nil end
+-- split a kick message body on [emote:id:name] tokens (and, separately, any
+-- word matching an hsEmotes ref) into text runs + scaling-image emotes.
+-- returns nil if nothing rendered (caller uses a single plain-text element) —
+-- keeps the common path allocation-free.
+local function build_kick_body(content, hs_raw)
+    if type(content) ~= "string" or content == "" then return nil end
+    local hs = sanitize_hs_refs(hs_raw)
+    local has_bracket = content:find("[emote:", 1, true) ~= nil
+    if not has_bracket and not hs then return nil end
     local elems = {}
     local last = 1
     local found = false
-    local ntok = 0
-    for s, id, name, e in content:gmatch("()%[emote:(%d+):([^%]]+)%]()") do
-        found = true
-        if s > last then
-            local pre = content:sub(last, s - 1)
-            if pre ~= "" then elems[#elems + 1] = { type = "text", text = pre } end
+    local budget = { n = 0 }
+    if has_bracket then
+        for s, id, name, e in content:gmatch("()%[emote:(%d+):([^%]]+)%]()") do
+            if budget.n >= MAX_EMOTE_TOKENS then break end
+            found = true
+            if s > last and emit_text_with_hs(elems, content:sub(last, s - 1), hs, budget) then found = true end
+            -- w=nil so chatterino scales the ACTUAL loaded image to line height
+            -- (like the 7tv path). kick emotes aren't a fixed 70x70 — widths vary
+            -- per frame and some are smaller — so passing explicit {70,70} forced a
+            -- literal 70px (huge/stretched) render. h=70 = the emote box max height.
+            local set = caps.images and img.for_url(string.format(KICK_EMOTE_URL, id), nil, 70) or nil
+            if set then
+                elems[#elems + 1] = { type = "scaling-image", images = set,
+                    flags = c2.MessageElementFlag.EmoteImage, tooltip = name .. " · kick" }
+            else
+                elems[#elems + 1] = { type = "text", text = name }
+            end
+            last = e
+            budget.n = budget.n + 1
         end
-        -- w=nil so chatterino scales the ACTUAL loaded image to line height
-        -- (like the 7tv path). kick emotes aren't a fixed 70x70 — widths vary
-        -- per frame and some are smaller — so passing explicit {70,70} forced a
-        -- literal 70px (huge/stretched) render. h=70 = the emote box max height.
-        local set = caps.images and img.for_url(string.format(KICK_EMOTE_URL, id), nil, 70) or nil
-        if set then
-            elems[#elems + 1] = { type = "scaling-image", images = set,
-                flags = c2.MessageElementFlag.EmoteImage, tooltip = name .. " · kick" }
-        else
-            elems[#elems + 1] = { type = "text", text = name }
-        end
-        last = e
-        ntok = ntok + 1
-        if ntok >= MAX_EMOTE_TOKENS then break end
     end
+    if emit_text_with_hs(elems, content:sub(last), hs, budget) then found = true end
     if not found then return nil end
-    local tail = content:sub(last)
-    if tail ~= "" then elems[#elems + 1] = { type = "text", text = tail } end
     return elems
 end
 
@@ -136,6 +234,9 @@ local links = {}
 local routes = {}
 -- yt_video[routing_tag] = videoId  (learned from youtube:status, for unsub)
 local yt_video = {}
+-- yt_status[routing_tag] = last known status string — dedupes the status line
+-- (and the live.lua feed) to fire only on an actual CHANGE, not every poll.
+local yt_status = {}
 -- dedup seen ids: a fixed-size circular buffer instead of a fifo array. the old
 -- table.remove(order, 1) was an O(n) shift on EVERY message once full (800-wide
 -- at scale) — the ring evicts in O(1) by overwriting the oldest slot.
@@ -184,6 +285,7 @@ local function unsubscribe(platform, channel)
         -- prune the entry either way so the map can't grow one string per distinct
         -- youtube channel ever linked over days of channel-hopping uptime.
         yt_video[key] = nil
+        yt_status[key] = nil
     end
 end
 
@@ -385,9 +487,9 @@ local function inject(line)
     -- youtube's per-message shortcode+url list
     local body
     if line.platform == "kick" then
-        body = build_kick_body(text)
+        body = build_kick_body(text, line.hsEmotes)
     elseif line.platform == "yt" then
-        body = build_yt_body(text, line.emotes)
+        body = build_yt_body(text, line.emotes, line.hsEmotes)
     end
 
     for cc_name in pairs(targets) do
@@ -416,6 +518,7 @@ local function handle_kick(d)
         text = d.content,
         color = d.color,
         time_ms = tonumber(d.timestamp),
+        hsEmotes = d.hsEmotes,
     })
 end
 
@@ -438,6 +541,7 @@ local function handle_yt(m, routing_tag)
         color = m.color,
         time_ms = tonumber(m.timestamp),
         emotes = m.emotes,
+        hsEmotes = m.hsEmotes,
     })
 end
 
@@ -452,6 +556,16 @@ local MAX_BATCH = 250
 local function batch_start(msgs)
     return math.max(1, #msgs - MAX_BATCH + 1)
 end
+
+-- terse lowercase status lines for a linked yt source that isn't chatting.
+-- "connected" and "error" aren't here: connected is silent (the chat just
+-- starts flowing) and error already gets its own log_warn below.
+local STATUS_LINE = {
+    ["not-live"] = "youtube: not live",
+    ["ended"] = "youtube: stream ended",
+    ["chat-off"] = "youtube: chat is off for this stream",
+    ["no-slot"] = "youtube: no free youtube slot right now (retrying)",
+}
 
 -- returns true if the message was a multichat message (handled)
 function M.dispatch(msg)
@@ -482,14 +596,50 @@ function M.dispatch(msg)
         return true
     elseif t == "youtube:status" then
         local tag = type(msg.channelId) == "string" and string.lower(msg.channelId) or nil
-        if msg.status == "connected" and tag and type(msg.videoId) == "string" then
+        local status = msg.status
+        if tag and type(status) == "string" and yt_status[tag] ~= status then
+            yt_status[tag] = status
+            local line = STATUS_LINE[status]
+            if line then
+                for _, cc in ipairs(M.tabs_for("yt", tag)) do
+                    pcall(function()
+                        local ch = c2.Channel.by_name(cc)
+                        if ch and ch:is_valid() then ch:add_system_message("[heatsync] " .. line) end
+                    end)
+                end
+            end
+            -- youtube never emits stream:online/offline (that taxonomy is kick/
+            -- twitch's) — feed live.lua's go-live/offline line straight off this
+            -- status change instead. no-op if live.lua's hook isn't wired (t0/t1
+            -- boot order, or the toggle is off — live.lua checks that itself).
+            if M.on_youtube_status then pcall(M.on_youtube_status, tag, status) end
+        end
+        if status == "connected" and tag and type(msg.videoId) == "string" then
             yt_video[tag] = msg.videoId
-        elseif msg.status == "error" then
+        elseif status == "error" then
             net.log_warn("multichat youtube: " .. tostring(msg.error))
         end
         return true
     end
     return false
+end
+
+-- driven by init's existing 60s reconcile tick (no new timer): a linked yt
+-- source that isn't connected re-subscribes every OTHER call (~120s), well
+-- under the server's 5-subs/60s-per-socket cap even with several linked yt
+-- sources. stops on its own once the source reports connected, or once it's
+-- unlinked (links[] no longer has it, so the loop below never sees it again).
+local yt_retry_ticks = 0
+function M.retry_yt_tick()
+    yt_retry_ticks = yt_retry_ticks + 1
+    if yt_retry_ticks % 2 ~= 0 then return end
+    for _, srcs in pairs(links) do
+        for _, s in pairs(srcs) do
+            if s.platform == "yt" and yt_status[string.lower(s.channel)] ~= "connected" then
+                subscribe("yt", s.channel)
+            end
+        end
+    end
 end
 
 -- load persisted links at boot; re-subscribe on ws connect

@@ -471,6 +471,28 @@ do
     check(type(map) == "table" and map["goingAway"] == nil, "senders: emote:removed scrubs the name immediately")
 end
 
+-- content-warning gate on emote:broadcast: the pushed emoteData is NOT filtered
+-- per-viewer server-side (unlike a fetched batch row), so feed_broadcast must
+-- gate nsfw/cw_cats itself the same way parse_emote_row does for fetched rows.
+do
+    sockets[1].opts.on_text(register_payload({
+        type = "emote:broadcast", username = "nsfwsender", emoteName = "nsfwEmote",
+        emoteData = { url = "https://cdn.heatsync.org/e/nsfw.webp", width = 32, height = 32, nsfw = true },
+    }))
+    check(senders.resolve("nsfwsender", "313131") == nil, "senders: cw-gate — nsfw emote:broadcast is never cached")
+    sockets[1].opts.on_text(register_payload({
+        type = "emote:broadcast", username = "goresender", emoteName = "goreEmote",
+        emoteData = { url = "https://cdn.heatsync.org/e/gore.webp", width = 32, height = 32, cw_cats = { "gore" } },
+    }))
+    check(senders.resolve("goresender", "313132") == nil, "senders: cw-gate — gore-cat emote:broadcast is never cached")
+    -- a clean broadcast from the same shape still caches normally (gate isn't over-firing)
+    sockets[1].opts.on_text(register_payload({
+        type = "emote:broadcast", username = "cleansender", emoteName = "cleanEmote",
+        emoteData = { url = "https://cdn.heatsync.org/e/clean.webp", width = 32, height = 32, cw_cats = { "weapons" } },
+    }))
+    check(senders.resolve("cleansender", "313133") ~= nil, "senders: cw-gate — a non-sexual/gore category still caches")
+end
+
 -- reconnect with backoff after close
 local sock_count = #sockets
 sockets[1]:close()
@@ -802,6 +824,116 @@ end
 sock.opts.on_text(register_payload({
     type = "youtube:status", channelId = "@somestreamer", videoId = "vid123", status = "connected", channelName = "x",
 }))
+
+-- hsEmotes: server-computed sender-inventory refs on kick/youtube live frames
+-- (server/services/emote-enrich.ts) render as heatsync-emote images, sharing
+-- MAX_EMOTE_TOKENS with each platform's own native emote tokens. this is the
+-- sender's own inventory, resolved server-side — the privacy invariant holds.
+local function has_scaling_image(m)
+    if type(m) ~= "table" or not m.init or not m.init.elements then return false, nil end
+    for _, e in ipairs(m.init.elements) do
+        if type(e) == "table" and e.type == "scaling-image" then return true, e.tooltip end
+    end
+    return false, nil
+end
+
+ba = #chan.added
+sock.opts.on_text(register_payload({
+    type = "kick-chat-message",
+    data = { platform = "kick", channel = "xqc", id = "hs1", username = "hsuser", content = "gg peepoHS well played",
+        hsEmotes = { peepoHS = { url = "https://cdn.heatsync.org/e/hs1.webp", provider = "heatsync" } } },
+}))
+check(#chan.added == ba + 1, "multichat: kick hsEmotes message injected")
+do
+    local has_img, tip = has_scaling_image(chan.added[#chan.added])
+    check(has_img, "multichat: kick hsEmotes word rendered as image")
+    check(tip == "peepoHS · heatsync", "multichat: kick hsEmotes tooltip is '<word> · heatsync'")
+end
+
+-- content-warning gate on an hsEmotes ref: nsfw=true must never render (falls
+-- back to the plain word, same as parse_emote_row's gate for fetched rows)
+ba = #chan.added
+sock.opts.on_text(register_payload({
+    type = "kick-chat-message",
+    data = { platform = "kick", channel = "xqc", id = "hs2", username = "hsuser", content = "nsfwEmote here",
+        hsEmotes = { nsfwEmote = { url = "https://cdn.heatsync.org/e/hs2.webp", provider = "heatsync", nsfw = true } } },
+}))
+do
+    local has_img = has_scaling_image(chan.added[#chan.added])
+    check(#chan.added == ba + 1 and not has_img, "multichat: nsfw hsEmotes ref is gated (falls back to text)")
+end
+
+-- hostile hsEmotes ref: an over-length name (fails is_safe_name) is dropped by
+-- the sanitize pass even though it's a real word in the message
+ba = #chan.added
+local longname = string.rep("x", 150)
+sock.opts.on_text(register_payload({
+    type = "kick-chat-message",
+    data = { platform = "kick", channel = "xqc", id = "hs3", username = "hsuser",
+        content = "check " .. longname .. " out",
+        hsEmotes = { [longname] = { url = "https://cdn.heatsync.org/e/hs3.webp" } } },
+}))
+do
+    local has_img = has_scaling_image(chan.added[#chan.added])
+    check(#chan.added == ba + 1 and not has_img, "multichat: an over-length hsEmotes name never reaches an image")
+end
+
+-- hostile hsEmotes ref: a non-https url is rejected by img.lua's host_allowed
+-- the same as every other emote path (is_safe_url alone doesn't gate scheme)
+ba = #chan.added
+sock.opts.on_text(register_payload({
+    type = "kick-chat-message",
+    data = { platform = "kick", channel = "xqc", id = "hs4", username = "hsuser", content = "insecureWord shown",
+        hsEmotes = { insecureWord = { url = "http://cdn.heatsync.org/e/hs4.webp" } } },
+}))
+do
+    local has_img = has_scaling_image(chan.added[#chan.added])
+    check(#chan.added == ba + 1 and not has_img, "multichat: a non-https hsEmotes url never renders")
+end
+
+-- youtube messages[].hsEmotes renders the same way as kick's data.hsEmotes
+ba = #chan.added
+sock.opts.on_text(register_payload({
+    type = "youtube:chat", channelId = "@somestreamer",
+    messages = { { type = "text", id = "yhs1", user = "ytuser", text = "peepoHS nice",
+        hsEmotes = { peepoHS = { url = "https://cdn.heatsync.org/e/hs5.webp", provider = "heatsync" } },
+        timestamp = 1730000000010 } },
+}))
+do
+    local has_img = has_scaling_image(chan.added[#chan.added])
+    check(#chan.added == ba + 1 and has_img, "multichat: youtube hsEmotes word rendered as image")
+end
+
+-- a locally-blocked emote name still gets blocked when it arrives via hsEmotes
+require("store").block("blockedHS")
+ba = #chan.added
+sock.opts.on_text(register_payload({
+    type = "kick-chat-message",
+    data = { platform = "kick", channel = "xqc", id = "hs6", username = "hsuser", content = "blockedHS here",
+        hsEmotes = { blockedHS = { url = "https://cdn.heatsync.org/e/hs6.webp" } } },
+}))
+do
+    local has_img = has_scaling_image(chan.added[#chan.added])
+    check(#chan.added == ba + 1 and not has_img, "multichat: a locally-blocked name doesn't render via hsEmotes")
+end
+require("store").unblock("blockedHS")
+
+-- a hostile/huge hsEmotes map (500 entries) doesn't crash the sanitize pass and
+-- still renders the one legit word within it (MAX_HS_REFS_SCANNED caps the scan,
+-- not correctness for a map under the cap)
+do
+    local huge = {}
+    for i = 1, 500 do huge["junk" .. i] = { url = "https://cdn.heatsync.org/e/junk" .. i .. ".webp" } end
+    huge.peepoHS = { url = "https://cdn.heatsync.org/e/hs1.webp", provider = "heatsync" }
+    local ok = pcall(function()
+        sock.opts.on_text(register_payload({
+            type = "kick-chat-message",
+            data = { platform = "kick", channel = "xqc", id = "hs7", username = "hsuser", content = "peepoHS spam",
+                hsEmotes = huge },
+        }))
+    end)
+    check(ok, "multichat: a 500-entry hsEmotes map doesn't crash the sanitize pass")
+end
 
 commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = chan })
 ba = #chan.added -- after off's confirmation sysmsg (add_system_message also lands in .added)
@@ -1662,6 +1794,78 @@ do -- toggled off → no line even for a linked source
     check(#chan.added == a0, "live: /hslive off suppresses go-live lines")
 end
 
+-- ===== youtube:status: dedup'd status lines + live.lua feed + slow retry =====
+-- (youtube has no stream:online/offline of its own — see live.lua M.youtube_status)
+do
+    local multichat = require("multichat")
+    require("store").set_live(true)
+    commands["/hsmulti"]({ words = { "/hsmulti", "yt:@statusyt" }, channel = chan })
+
+    local a0 = #chan.added
+    ssock.opts.on_text(register_payload({ type = "youtube:status", channelId = "@statusyt", status = "not-live" }))
+    check(added_text_has("youtube: not live", #chan.added - a0), "youtube:status: not-live shows a status line")
+    local after_first = #chan.added
+    ssock.opts.on_text(register_payload({ type = "youtube:status", channelId = "@statusyt", status = "not-live" }))
+    check(#chan.added == after_first, "youtube:status: repeating the same status doesn't re-show the line (dedupe)")
+
+    a0 = #chan.added
+    ssock.opts.on_text(register_payload({ type = "youtube:status", channelId = "@statusyt", status = "chat-off" }))
+    check(added_text_has("chat is off", #chan.added - a0), "youtube:status: chat-off shows a status line")
+    a0 = #chan.added
+    ssock.opts.on_text(register_payload({ type = "youtube:status", channelId = "@statusyt", status = "no-slot" }))
+    check(added_text_has("no free youtube slot", #chan.added - a0), "youtube:status: no-slot shows a status line")
+
+    -- connected/ended feed live.lua's go-live/offline line (youtube never
+    -- emits stream:online/offline itself)
+    a0 = #chan.added
+    ssock.opts.on_text(register_payload({ type = "youtube:status", channelId = "@statusyt", status = "connected", videoId = "v1" }))
+    check(added_text_has("is live on yt", #chan.added - a0), "youtube:status: connected feeds live.lua a go-live line")
+    a0 = #chan.added
+    ssock.opts.on_text(register_payload({ type = "youtube:status", channelId = "@statusyt", status = "ended" }))
+    check(added_text_has("went offline on yt", #chan.added - a0), "youtube:status: ended feeds live.lua a went-offline line")
+
+    -- /hslive off suppresses only the live.lua feed, not the plain status lines
+    require("store").set_live(false)
+    a0 = #chan.added
+    ssock.opts.on_text(register_payload({ type = "youtube:status", channelId = "@statusyt", status = "not-live" }))
+    ssock.opts.on_text(register_payload({ type = "youtube:status", channelId = "@statusyt", status = "connected", videoId = "v2" }))
+    check(not added_text_has("is live on yt", #chan.added - a0), "youtube:status: /hslive off suppresses the connected go-live line")
+    require("store").set_live(true)
+
+    -- slow retry: driven by init's 60s tick, but retry_yt_tick halves that to
+    -- ~120s itself — fires on every OTHER call, only while not connected. the
+    -- module-level tick counter has already advanced from earlier advance()
+    -- calls elsewhere in this suite (the real net.every(60s,...) loop has been
+    -- running the whole time), so its current parity is unknown here — assert
+    -- on two CONSECUTIVE calls instead of a specific "1st skip, 2nd fires" order.
+    ssock.opts.on_text(register_payload({ type = "youtube:status", channelId = "@statusyt", status = "not-live" }))
+    -- scoped to THIS source specifically: other yt sources may already be
+    -- linked-and-non-connected from earlier in the suite (e.g. "uttab"/yy,
+    -- Fort-Knox section) and retry_yt_tick legitimately re-subscribes those
+    -- too — that's correct behavior, just not what this test is asserting on.
+    local function subs_sent()
+        local n = 0
+        for _, s in ipairs(ssock.sent) do
+            if s:find("youtube:subscribe", 1, true) and s:find("statusyt", 1, true) then n = n + 1 end
+        end
+        return n
+    end
+    local before_subs = subs_sent()
+    multichat.retry_yt_tick()
+    multichat.retry_yt_tick()
+    check(subs_sent() == before_subs + 1,
+        "youtube retry: exactly one of two consecutive ticks re-subscribes a non-connected linked yt source")
+
+    -- once connected, the retry loop stops touching this source regardless of tick parity
+    ssock.opts.on_text(register_payload({ type = "youtube:status", channelId = "@statusyt", status = "connected", videoId = "v3" }))
+    before_subs = subs_sent()
+    multichat.retry_yt_tick()
+    multichat.retry_yt_tick()
+    check(subs_sent() == before_subs, "youtube retry: a connected source is not retried")
+
+    commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = chan })
+end
+
 -- ===== fuzz: throw garbage at every entry point, assert nothing escapes =====
 -- the plugin's pcall guards + type checks should survive ANY malformed ws frame
 -- or command args. seeded so a failure is reproducible.
@@ -1681,11 +1885,12 @@ do
     local function rand_ws()
         local types = { "kick-chat-message", "kick-chat-backfill", "youtube:chat", "youtube:status",
             "emote:added", "emote:removed", "emotes:refresh", "emote:broadcast", "emotes:batch-broadcast",
-            "stream:online", "heat:update", "presence:count", "", "unknown-type-xyz" }
+            "stream:online", "heat:update", "presence:count", "", "unknown-type-xyz",
+            "batch", "server:shutdown", "ack:channels" }
         local msg = { type = types[math.random(#types)] }
         for _, k in ipairs({ "data", "messages", "channelId", "username", "emoteName", "emoteData",
             "channel", "id", "content", "videoId", "status", "color", "timestamp", "emotes", "displayName",
-            "_ch", "_seq", "ver", "senderKeys" }) do
+            "_ch", "_seq", "ver", "senderKeys", "reconnectSpreadMs", "signal", "channels" }) do
             if math.random() < 0.5 then msg[k] = garb() end
         end
         -- senderKeys is specifically an ARRAY of strings on the wire; fuzz that
@@ -1695,6 +1900,39 @@ do
             local keys = {}
             for i = 1, math.random(0, 60) do keys[i] = garb() end
             msg.senderKeys = keys
+        end
+        -- hsEmotes is a map word->ref (kick: on `data`, youtube: on each of
+        -- `messages[]`) — fuzz that shape too, not just scalar garbage.
+        if math.random() < 0.3 then
+            msg.data = type(msg.data) == "table" and msg.data or {}
+            local hs = {}
+            for i = 1, math.random(0, 20) do hs["k" .. i] = garb() end
+            msg.data.hsEmotes = hs
+        end
+        if math.random() < 0.3 then
+            local msgs = {}
+            for i = 1, math.random(0, 5) do
+                local hs = {}
+                for j = 1, math.random(0, 10) do hs["w" .. j] = garb() end
+                msgs[i] = { text = "fuzz", hsEmotes = hs, user = "fuzzer" }
+            end
+            msg.messages = msgs
+        end
+        -- batch: a whole-frame wrapper, sometimes carrying more of the above
+        -- shapes as its inner messages (nested batch is a garb() scalar/table,
+        -- deliberately never a real batch — handle_text must not recurse into it)
+        if math.random() < 0.2 then
+            local inner = {}
+            for i = 1, math.random(0, 10) do inner[i] = garb() end
+            msg.messages = inner
+        end
+        -- ack:channels' own array-of-{channel,lastSeq} shape
+        if math.random() < 0.2 then
+            local chans = {}
+            for i = 1, math.random(0, 10) do
+                chans[i] = { channel = garb(), lastSeq = garb() }
+            end
+            msg.channels = chans
         end
         return msg
     end
