@@ -6,6 +6,100 @@ local u = require("cmdutil")
 
 local M = {}
 
+-- heatsync profile card for any streamer (works for non-hs streamers too).
+-- shared by the /hswhois command and the right-click "whois" menu action —
+-- `channel` is a real c2.Channel either way (a menu action's ctx.channel is
+-- never a raw name), so a `{channel=...}` shim is all cmdutil's ctx-shaped
+-- helpers (sysmsg/linkmsg) need.
+function M.whois(channel, user)
+    local ctx = { channel = channel }
+    if not user or user == "" then
+        u.sysmsg(ctx, "usage: /hswhois <user> — heatsync profile card (heat, followers, live, posts)")
+        return
+    end
+    net.get_json(net.ORIGIN .. "/api/profile/" .. net.percent_encode(string.lower(user)), 8000, function(payload, err)
+        local p = payload and payload.profile
+        if not p then
+            u.sysmsg(ctx, "no profile for '" .. user .. "'" .. (err and (" (" .. tostring(err) .. ")") or ""))
+            return
+        end
+        local name = tostring(p.display_name or p.username or user)
+        local st = p.stats or {}
+        local bits = {}
+        if tonumber(st.user_heat) then bits[#bits + 1] = "heat " .. tostring(math.floor(tonumber(st.user_heat))) end
+        if tonumber(st.total_posts) then bits[#bits + 1] = tostring(st.total_posts) .. " posts" end
+        if tonumber(st.followers) then bits[#bits + 1] = tostring(st.followers) .. " hs-followers" end
+        if p.twitch_is_live or p.kick_is_live or p.youtube_is_live then bits[#bits + 1] = "LIVE" end
+        if tonumber(p.twitch_followers) then bits[#bits + 1] = tostring(p.twitch_followers) .. " twitch-followers" end
+        local line = name .. (p.is_shadow_profile and " (not on heatsync)" or "") ..
+            (#bits > 0 and (" · " .. table.concat(bits, " · ")) or "")
+        pcall(function()
+            ctx.channel:add_message(c2.Message.new({ elements = {
+                { type = "text", text = "[heatsync]", color = "system" },
+                { type = "text", text = line, color = "link",
+                  link = { type = c2.LinkType.Url, value = net.ORIGIN .. "/u/" .. net.percent_encode(name) } },
+            } }))
+        end)
+    end)
+end
+
+-- chat history + archive link for any twitch chatter, optionally scoped to a
+-- channel. shared by /hslogs and the right-click "chat logs" menu action.
+function M.logs(channel, user, chan_hint)
+    local ctx = { channel = channel }
+    if not u.is_valid_name(user) then
+        u.sysmsg(ctx, "usage: /hslogs <user> [channel] — chat history + archive link")
+        return
+    end
+    local chan = chan_hint
+    if chan and not u.is_valid_name(chan) then chan = nil end
+    if not chan then
+        pcall(function()
+            local n = channel:get_name()
+            if u.is_valid_name(n) then chan = n end
+        end)
+    end
+    local luser = string.lower(user)
+    local url = net.ORIGIN .. "/logs/search?username=" .. net.percent_encode(luser) .. "&platform=twitch"
+    if chan then url = url .. "&channel=" .. net.percent_encode(string.lower(chan)) end
+    -- fetch cross-platform chat stats for a summary line; the archive link
+    -- is always shown even if stats are opted-out / unavailable.
+    net.get_json(net.ORIGIN .. "/api/chatter/twitch/" .. net.percent_encode(luser) .. "/stats", 8000, function(payload, err, status, body)
+        if not payload then
+            if status == 404 and type(body) == "table" and body.error_code == "opted_out" then
+                u.sysmsg(ctx, luser .. " opted out of logs")
+            elseif status == 503 then
+                u.sysmsg(ctx, "chat stats are busy — try again later")
+            end
+            u.linkmsg(ctx, "archive: " .. luser .. (chan and (" in #" .. string.lower(chan)) or ""), url)
+            return
+        end
+        local t = payload.totals
+        if t then
+            local bits = {}
+            if tonumber(t.messages) then bits[#bits + 1] = tostring(t.messages) .. " msgs" end
+            if tonumber(t.channels) then bits[#bits + 1] = "across " .. tostring(t.channels) .. " channels" end
+            if tonumber(t.activeDays) then bits[#bits + 1] = tostring(t.activeDays) .. " active days" end
+            if #bits > 0 then u.sysmsg(ctx, luser .. ": " .. table.concat(bits, " · ")) end
+        end
+        -- top-channels breakdown: the stats payload already carries it — surface
+        -- up to 3 inline instead of flattening to a single "most in #x".
+        local tops = payload and payload.topChannels
+        if type(tops) == "table" and #tops > 0 then
+            local parts = {}
+            for i = 1, math.min(3, #tops) do
+                local c = tops[i]
+                if type(c) == "table" and c.channel then
+                    local n = tonumber(c.messages or c.count)
+                    parts[#parts + 1] = "#" .. tostring(c.channel) .. (n and (" (" .. tostring(n) .. ")") or "")
+                end
+            end
+            if #parts > 0 then u.sysmsg(ctx, "top channels: " .. table.concat(parts, " ")) end
+        end
+        u.linkmsg(ctx, "archive: " .. luser .. (chan and (" in #" .. string.lower(chan)) or ""), url)
+    end)
+end
+
 function M.register()
     -- hottest live streams right now (cross-platform, heat-ranked). click a
     -- twitch one to open it in chatterino. `/hshot` top page · `/hshot 2` next
@@ -97,35 +191,7 @@ function M.register()
 
     -- heatsync profile card for any streamer (works for non-hs streamers too)
     c2.register_command("/hswhois", function(ctx)
-        local user = ctx.words[2]
-        if not user or user == "" then
-            u.sysmsg(ctx, "usage: /hswhois <user> — heatsync profile card (heat, followers, live, posts)")
-            return
-        end
-        net.get_json(net.ORIGIN .. "/api/profile/" .. net.percent_encode(string.lower(user)), 8000, function(payload, err)
-            local p = payload and payload.profile
-            if not p then
-                u.sysmsg(ctx, "no profile for '" .. user .. "'" .. (err and (" (" .. tostring(err) .. ")") or ""))
-                return
-            end
-            local name = tostring(p.display_name or p.username or user)
-            local st = p.stats or {}
-            local bits = {}
-            if tonumber(st.user_heat) then bits[#bits + 1] = "heat " .. tostring(math.floor(tonumber(st.user_heat))) end
-            if tonumber(st.total_posts) then bits[#bits + 1] = tostring(st.total_posts) .. " posts" end
-            if tonumber(st.followers) then bits[#bits + 1] = tostring(st.followers) .. " hs-followers" end
-            if p.twitch_is_live or p.kick_is_live or p.youtube_is_live then bits[#bits + 1] = "LIVE" end
-            if tonumber(p.twitch_followers) then bits[#bits + 1] = tostring(p.twitch_followers) .. " twitch-followers" end
-            local line = name .. (p.is_shadow_profile and " (not on heatsync)" or "") ..
-                (#bits > 0 and (" · " .. table.concat(bits, " · ")) or "")
-            pcall(function()
-                ctx.channel:add_message(c2.Message.new({ elements = {
-                    { type = "text", text = "[heatsync]", color = "system" },
-                    { type = "text", text = line, color = "link",
-                      link = { type = c2.LinkType.Url, value = net.ORIGIN .. "/u/" .. net.percent_encode(name) } },
-                } }))
-            end)
-        end)
+        M.whois(ctx.channel, ctx.words[2])
     end)
 
     -- read the archive back: search heatsync's public post corpus from chatterino
@@ -380,58 +446,7 @@ function M.register()
     end)
 
     c2.register_command("/hslogs", function(ctx)
-        local user = ctx.words[2]
-        if not u.is_valid_name(user) then
-            u.sysmsg(ctx, "usage: /hslogs <user> [channel] — chat history + archive link")
-            return
-        end
-        local chan = ctx.words[3]
-        if chan and not u.is_valid_name(chan) then chan = nil end
-        if not chan then
-            pcall(function()
-                local n = ctx.channel:get_name()
-                if u.is_valid_name(n) then chan = n end
-            end)
-        end
-        local luser = string.lower(user)
-        local url = net.ORIGIN .. "/logs/search?username=" .. net.percent_encode(luser) .. "&platform=twitch"
-        if chan then url = url .. "&channel=" .. net.percent_encode(string.lower(chan)) end
-        -- fetch cross-platform chat stats for a summary line; the archive link
-        -- is always shown even if stats are opted-out / unavailable.
-        net.get_json(net.ORIGIN .. "/api/chatter/twitch/" .. net.percent_encode(luser) .. "/stats", 8000, function(payload, err, status, body)
-            if not payload then
-                if status == 404 and type(body) == "table" and body.error_code == "opted_out" then
-                    u.sysmsg(ctx, luser .. " opted out of logs")
-                elseif status == 503 then
-                    u.sysmsg(ctx, "chat stats are busy — try again later")
-                end
-                u.linkmsg(ctx, "archive: " .. luser .. (chan and (" in #" .. string.lower(chan)) or ""), url)
-                return
-            end
-            local t = payload.totals
-            if t then
-                local bits = {}
-                if tonumber(t.messages) then bits[#bits + 1] = tostring(t.messages) .. " msgs" end
-                if tonumber(t.channels) then bits[#bits + 1] = "across " .. tostring(t.channels) .. " channels" end
-                if tonumber(t.activeDays) then bits[#bits + 1] = tostring(t.activeDays) .. " active days" end
-                if #bits > 0 then u.sysmsg(ctx, luser .. ": " .. table.concat(bits, " · ")) end
-            end
-            -- top-channels breakdown: the stats payload already carries it — surface
-            -- up to 3 inline instead of flattening to a single "most in #x".
-            local tops = payload and payload.topChannels
-            if type(tops) == "table" and #tops > 0 then
-                local parts = {}
-                for i = 1, math.min(3, #tops) do
-                    local c = tops[i]
-                    if type(c) == "table" and c.channel then
-                        local n = tonumber(c.messages or c.count)
-                        parts[#parts + 1] = "#" .. tostring(c.channel) .. (n and (" (" .. tostring(n) .. ")") or "")
-                    end
-                end
-                if #parts > 0 then u.sysmsg(ctx, "top channels: " .. table.concat(parts, " ")) end
-            end
-            u.linkmsg(ctx, "archive: " .. luser .. (chan and (" in #" .. string.lower(chan)) or ""), url)
-        end)
+        M.logs(ctx.channel, ctx.words[2], ctx.words[3])
     end)
 end
 

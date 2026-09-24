@@ -11,6 +11,7 @@ local M = {
     websocket = false,
     images = false,
     windows = false,
+    menus = false,
     msg_hooks = nil, -- lazily confirmed on first real channel object
     tier = 0,
 }
@@ -31,6 +32,13 @@ function M.detect()
     end)
     M.windows = probe(function()
         return c2.windows ~= nil
+    end)
+    -- context menus (chatterino PR #6961) — probed independently of `windows`
+    -- above (that only checks the window/split-browsing surface) and never
+    -- folded into the tier ladder: a build with everything else at t2 but no
+    -- context-menu hook just skips menu.lua, same as any other missing api.
+    M.menus = probe(function()
+        return c2.windows ~= nil and type(c2.windows.on_channelview_context_menu_requested) == "function"
     end)
 
     if M.later and M.websocket and M.images and M.windows then

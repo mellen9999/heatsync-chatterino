@@ -64,6 +64,7 @@ local now_ms = 0
 local http_queue = {}   -- pending requests: {url, on_success, on_error}
 local commands = {}
 local completion_cb = nil
+local menu_cb = nil -- registered handler for on_channelview_context_menu_requested
 local log_lines = {}
 
 c2 = {}
@@ -255,6 +256,10 @@ c2.windows = {
             },
         } }
     end,
+    on_channelview_context_menu_requested = function(self, cb)
+        menu_cb = cb
+        return { disconnect = function() menu_cb = nil end }
+    end,
 }
 
 local function fake_text_el(words)
@@ -308,6 +313,8 @@ local ws = require("ws")
 local render = require("render")
 
 check(caps.tier == 2, "caps: full stub detects t2")
+check(caps.menus == true, "caps: menus detected when c2.windows exposes the hook")
+check(menu_cb ~= nil, "menu: registered against c2.windows at boot (t2)")
 
 -- core render tests below isolate emote rendering; the flame marker (on by
 -- default, and correctly shown on own/known-HS messages) is tested in its own
@@ -2233,6 +2240,103 @@ do
     -- emotes fetch never even fires and "ghostA" never enters the map
     http_answer("/api/profile/acctA", { profile = { id = 111 } })
     check(inv.resolve("ghostA") == nil, "account-switch: stale refresh for A does not apply under B")
+end
+
+-- ===== phase 7: right-click context menu =====
+do
+    local function new_fake_menu()
+        local m = { actions = {}, submenus = {} }
+        function m:add_action(text, cb) self.actions[text] = cb end
+        function m:add_menu(title)
+            local sub = new_fake_menu()
+            self.submenus[title] = sub
+            return sub
+        end
+        function m:add_separator() end
+        return m
+    end
+    local function fire(msg, opts)
+        opts = opts or {}
+        local top = new_fake_menu()
+        menu_cb({ message = msg, message_element = opts.message_element, channel = opts.channel, menu = top })
+        return top
+    end
+    local function has_action_matching(actions, frag)
+        for k in pairs(actions) do if k:find(frag, 1, true) then return true end end
+        return false
+    end
+
+    -- plain twitch message → a "heatsync" submenu with the three lookups
+    local top1 = fire(fake_msg("menuuser123", "9001", "hey"))
+    local sub1 = top1.submenus["heatsync"]
+    check(sub1 ~= nil, "menu: heatsync submenu added for a real chat message")
+    check(type(sub1.actions["emotes"]) == "function" and type(sub1.actions["chat logs"]) == "function"
+        and type(sub1.actions["whois"]) == "function", "menu: emotes/chat logs/whois actions present")
+    check(not has_action_matching(sub1.actions, "block"), "menu: no block action without a heatsync emote element")
+
+    -- "emotes" action runs the /hsinv fetch flow for that login
+    sub1.actions["emotes"]()
+    check(http_answer("/api/profile/menuuser123", { profile = { id = 7001 } }) ~= nil,
+        "menu: emotes action fired the profile lookup")
+    http_answer("/api/users/7001/emotes", { emotes = {} })
+
+    -- "chat logs" action runs the /hslogs fetch flow
+    sub1.actions["chat logs"]()
+    check(http_answer("/api/chatter/twitch/menuuser123/stats", { totals = { messages = 1 } }) ~= nil,
+        "menu: chat logs action fired the stats lookup")
+
+    -- "whois" action runs the /hswhois fetch flow
+    sub1.actions["whois"]()
+    check(http_answer("/api/profile/menuuser123", { profile = { display_name = "MenuUser" } }) ~= nil,
+        "menu: whois action fired the profile lookup")
+
+    -- system message → no menu at all (no sender to act on)
+    local sysm2 = fake_msg("menuuser123", "9001", "system-ish")
+    sysm2.flags = c2.MessageFlag.System
+    check(fire(sysm2).submenus["heatsync"] == nil, "menu: system messages get no heatsync submenu")
+
+    -- multichat-injected line (empty channel_name, same signal render.lua
+    -- uses) → no menu
+    local injected = fake_msg("kickperson", "1", "hi from kick")
+    injected.channel_name = ""
+    check(fire(injected).submenus["heatsync"] == nil, "menu: empty channel_name (multichat-injected) gets no submenu")
+
+    -- hostile logins (space, punctuation, over-length) → no submenu
+    check(fire(fake_msg("bad name", "2", "x")).submenus["heatsync"] == nil, "menu: a login with a space is rejected")
+    check(fire(fake_msg("weird$name", "3", "x")).submenus["heatsync"] == nil, "menu: a login with punctuation is rejected")
+    check(fire(fake_msg(string.rep("a", 30), "4", "x")).submenus["heatsync"] == nil, "menu: an over-length login is rejected")
+
+    -- a throwing message field (login_name) doesn't escape the handler
+    local throwmsg = setmetatable({}, { __index = function(_, k)
+        if k == "flags" then return 0 end
+        if k == "channel_name" then return "somechannel" end
+        if k == "login_name" then error("synthetic field-access failure") end
+        return nil
+    end })
+    check(pcall(fire, throwmsg), "menu: a throwing message field doesn't escape the handler")
+
+    -- clicked element is a heatsync emote we rendered → block/unblock toggle
+    local hsElem = { tooltip = "menuTestEmote · heatsync" }
+    local sub2 = fire(fake_msg("menuuser123", "9001", "look menuTestEmote"), { message_element = hsElem }).submenus["heatsync"]
+    check(type(sub2.actions["block menuTestEmote"]) == "function", "menu: block action offered for a heatsync emote element")
+    check(store.is_blocked("menuTestEmote") == false, "menu: precondition — not blocked yet")
+    sub2.actions["block menuTestEmote"]()
+    check(store.is_blocked("menuTestEmote") == true, "menu: block action actually blocks the emote")
+    local sub3 = fire(fake_msg("menuuser123", "9001", "look menuTestEmote"), { message_element = hsElem }).submenus["heatsync"]
+    check(type(sub3.actions["unblock menuTestEmote"]) == "function" and sub3.actions["block menuTestEmote"] == nil,
+        "menu: already-blocked emote offers unblock instead of block")
+    sub3.actions["unblock menuTestEmote"]()
+    check(store.is_blocked("menuTestEmote") == false, "menu: unblock action actually unblocks the emote")
+
+    -- a hostile emote-name tooltip (space in the derived name) never yields a
+    -- block/unblock action
+    local subH1 = fire(fake_msg("menuuser123", "9001", "x"), { message_element = { tooltip = "bad name · heatsync" } }).submenus["heatsync"]
+    check(not has_action_matching(subH1.actions, "block"), "menu: a hostile emote-name tooltip yields no block action")
+
+    -- a tooltip suffix that ISN'T " · heatsync" (kick/youtube emotes, or any
+    -- other element) never yields a block/unblock action either
+    local subH2 = fire(fake_msg("menuuser123", "9001", "x"), { message_element = { tooltip = "shroud · kick" } }).submenus["heatsync"]
+    check(not has_action_matching(subH2.actions, "block"), "menu: a non-heatsync tooltip suffix yields no block action")
 end
 
 -- ws resync (LAST — senders.expire_all() marks EVERY cached sender stale, so

@@ -103,6 +103,10 @@ if MODE == "t1" then
 else
     check(caps.tier == 0, "t0: tier detected as 0 (got " .. caps.tier .. ")")
 end
+-- no c2.windows at all on this stripped api → caps.menus stays false and
+-- menu.register() (called unconditionally from init.lua) is a no-op; reaching
+-- this line at all means boot survived it without erroring.
+check(caps.menus == false, "menus: absent api → caps.menus false on " .. MODE)
 
 check(http_answer("/api/profile/mellen", { profile = { id = 42 } }), "boot: profile fetch fired")
 http_answer("/api/users/42/emotes", { emotes = {

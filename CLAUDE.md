@@ -12,7 +12,7 @@ a single lua plugin (no fork, no patched binary) that brings heatsync into chatt
 
 ## non-negotiables
 
-- **not a fork.** only chat commands, tab-completion, message building are reachable. no context menus, no settings UI, no username paints, no server-synced blocks. don't propose features that need a fork.
+- **not a fork.** only chat commands, tab-completion, message building, and (feature-gated via `caps.menus`) context menus are reachable. no settings UI, no username paints, no server-synced blocks. don't propose features that need a fork.
 - **capability-gated.** everything feature-detects at boot via `caps.lua` and degrades one feature at a time. every hook is `pcall`-guarded. a missing API must degrade, never error.
 - **privacy invariant (crown jewel).** a word inline-renders iff the *sender's own* heatsync inventory has it — the search/catalog cache must NEVER feed the render path (that's the "lost"-is-a-7tv-cat bug, e3fb9f0). the socket + search proxy are anonymous (no auth/cookie/identity). the plugin never broadcasts what you post. see memory `emote-privacy-invariant`.
 - **`render.lua` is the single chokepoint** — if chatterino ever exposes first-class plugin emote providers, that's the only file that changes.
@@ -26,7 +26,7 @@ a single lua plugin (no fork, no patched binary) that brings heatsync into chatt
 
 ## modules
 
-`caps` feature-detect · `net` http/json/timers/datafiles · `inventory` your emotes · `seventv` catalog search + render cache · `senders` other chatters' sets · `recents` learned usage · `picker` clickable grids · `ws` socket lifecycle · `multichat` kick/yt injection · `render` hook→rebuild→replace · `store` persisted toggles · `commands` · `init` wiring.
+`caps` feature-detect · `net` http/json/timers/datafiles · `inventory` your emotes · `seventv` catalog search + render cache · `senders` other chatters' sets · `recents` learned usage · `picker` clickable grids · `ws` socket lifecycle · `multichat` kick/yt injection · `render` hook→rebuild→replace · `store` persisted toggles · `commands` · `menu` right-click context menu · `init` wiring.
 
 ## conventions
 

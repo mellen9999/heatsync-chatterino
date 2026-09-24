@@ -9,6 +9,95 @@ local u = require("cmdutil")
 
 local M = {}
 
+-- browse anyone's heatsync inventory (whois, for emotes): resolve the login
+-- to its heatsync id, fetch that user's emote set, show it as a click-to-
+-- insert grid. uses the same public endpoints the sender-emote path already
+-- reads (see senders.lua) — nothing private, and it never feeds the render
+-- path (privacy invariant: only the SENDER's own inventory renders inline).
+-- shared by /hsinv and the right-click "emotes" menu action.
+local INV_PER_PAGE = 50
+function M.inv(channel, user, page)
+    local ctx = { channel = channel }
+    if not u.is_valid_name(user) then
+        u.sysmsg(ctx, "usage: /hsinv <user> [page] — shows a user's heatsync emotes; click to insert")
+        return
+    end
+    if not (page and page >= 1 and math.floor(page) == page) then page = 1 else page = math.floor(page) end
+    local luser = string.lower(user)
+    net.get_json(net.ORIGIN .. "/api/profile/" .. net.percent_encode(luser), 8000, function(payload, err)
+        local p = type(payload) == "table" and type(payload.profile) == "table" and payload.profile or nil
+        local uid = p and p.id
+        local ok_id = (type(uid) == "number" and uid > 0)
+            or (type(uid) == "string" and string.match(uid, "^%d+$") ~= nil)
+        if not p or not ok_id then
+            u.sysmsg(ctx, "no heatsync profile for '" .. user .. "'" .. (err and (" (" .. tostring(err) .. ")") or ""))
+            return
+        end
+        local who = tostring(p.display_name or p.username or luser)
+        net.get_json(net.ORIGIN .. "/api/users/" .. tostring(uid) .. "/emotes", 10000, function(pl, err2)
+            local rows = pl and (pl.emotes or pl.data or pl.items)
+            if type(rows) ~= "table" then
+                u.sysmsg(ctx, "couldn't load " .. who .. "'s emotes" .. (err2 and (" (" .. tostring(err2) .. ")") or ""))
+                return
+            end
+            local items = {}
+            for _, e in ipairs(rows) do
+                local rec = net.parse_emote_row(e)
+                if rec then
+                    items[#items + 1] = { name = rec.name, url = rec.url, w = rec.w, h = rec.h,
+                        hs = true, label = rec.name .. " · " .. who }
+                end
+            end
+            if #items == 0 then
+                u.sysmsg(ctx, who .. " has no heatsync emotes")
+                return
+            end
+            -- paginate like /hsemotes so a 200-emote inventory doesn't dump
+            -- one oversized message
+            local total = #items
+            local pages, from, to
+            pages, page, from, to = u.paginate(total, page, INV_PER_PAGE)
+            local slice = {}
+            for i = from, to do slice[#slice + 1] = items[i] end
+            local nav = pages > 1 and (" · page " .. page .. "/" .. pages ..
+                " · /hsinv " .. luser .. " " .. (page < pages and page + 1 or 1) .. " for more") or ""
+            local header = "[heatsync] " .. who .. "'s emotes (" .. total .. ")" .. nav .. " — click to insert:"
+            if not picker.render(channel, header, slice) then u.sysmsg(ctx, "inventory render failed") end
+        end)
+    end)
+end
+
+-- local emote block/unblock: hides an emote from rendering + tab-complete.
+-- LOCAL ONLY — the plugin is anonymous so it can't sync a block to your
+-- heatsync account; use the website/extension for an account-wide block.
+-- shared by /hsblock, /hsunblock and the right-click "block/unblock" menu
+-- actions on a heatsync-rendered emote.
+function M.block(channel, name)
+    local ctx = { channel = channel }
+    if not name or name == "" then
+        u.sysmsg(ctx, "usage: /hsblock <emote name> — hides it locally in chatterino")
+        return
+    end
+    if store.block(name) then
+        u.sysmsg(ctx, "blocked '" .. name .. "' locally (won't render or tab-complete) · /hsunblock " .. name .. " to undo")
+    else
+        u.sysmsg(ctx, "'" .. name .. "' already blocked")
+    end
+end
+
+function M.unblock(channel, name)
+    local ctx = { channel = channel }
+    if not name or name == "" then
+        u.sysmsg(ctx, "usage: /hsunblock <emote name> — removes a local block")
+        return
+    end
+    if store.unblock(name) then
+        u.sysmsg(ctx, "unblocked '" .. name .. "'")
+    else
+        u.sysmsg(ctx, "'" .. name .. "' wasn't blocked")
+    end
+end
+
 function M.register()
     -- your emote menu: a clickable grid of YOUR inventory, recents-first then
     -- usage-ordered, paginated. `/hsemotes` page 1 · `/hsemotes 2` next page ·
@@ -121,91 +210,19 @@ function M.register()
         end)
     end)
 
-    -- browse anyone's heatsync inventory (whois, for emotes): resolve the login
-    -- to its heatsync id, fetch that user's emote set, show it as a click-to-
-    -- insert grid. uses the same public endpoints the sender-emote path already
-    -- reads (see senders.lua) — nothing private, and it never feeds the render
-    -- path (privacy invariant: only the SENDER's own inventory renders inline).
-    local INV_PER_PAGE = 50
+    -- browse anyone's heatsync inventory (whois, for emotes) — click-to-insert
+    -- grid; see M.inv above for the privacy note.
     c2.register_command("/hsinv", function(ctx)
-        local user = ctx.words[2]
-        if not u.is_valid_name(user) then
-            u.sysmsg(ctx, "usage: /hsinv <user> [page] — shows a user's heatsync emotes; click to insert")
-            return
-        end
-        local page = tonumber(ctx.words[3])
-        if not (page and page >= 1 and math.floor(page) == page) then page = 1 else page = math.floor(page) end
-        local luser = string.lower(user)
-        net.get_json(net.ORIGIN .. "/api/profile/" .. net.percent_encode(luser), 8000, function(payload, err)
-            local p = type(payload) == "table" and type(payload.profile) == "table" and payload.profile or nil
-            local uid = p and p.id
-            local ok_id = (type(uid) == "number" and uid > 0)
-                or (type(uid) == "string" and string.match(uid, "^%d+$") ~= nil)
-            if not p or not ok_id then
-                u.sysmsg(ctx, "no heatsync profile for '" .. user .. "'" .. (err and (" (" .. tostring(err) .. ")") or ""))
-                return
-            end
-            local who = tostring(p.display_name or p.username or luser)
-            net.get_json(net.ORIGIN .. "/api/users/" .. tostring(uid) .. "/emotes", 10000, function(pl, err2)
-                local rows = pl and (pl.emotes or pl.data or pl.items)
-                if type(rows) ~= "table" then
-                    u.sysmsg(ctx, "couldn't load " .. who .. "'s emotes" .. (err2 and (" (" .. tostring(err2) .. ")") or ""))
-                    return
-                end
-                local items = {}
-                for _, e in ipairs(rows) do
-                    local rec = net.parse_emote_row(e)
-                    if rec then
-                        items[#items + 1] = { name = rec.name, url = rec.url, w = rec.w, h = rec.h,
-                            hs = true, label = rec.name .. " · " .. who }
-                    end
-                end
-                if #items == 0 then
-                    u.sysmsg(ctx, who .. " has no heatsync emotes")
-                    return
-                end
-                -- paginate like /hsemotes so a 200-emote inventory doesn't dump
-                -- one oversized message
-                local total = #items
-                local pages, from, to
-                pages, page, from, to = u.paginate(total, page, INV_PER_PAGE)
-                local slice = {}
-                for i = from, to do slice[#slice + 1] = items[i] end
-                local nav = pages > 1 and (" · page " .. page .. "/" .. pages ..
-                    " · /hsinv " .. luser .. " " .. (page < pages and page + 1 or 1) .. " for more") or ""
-                local header = "[heatsync] " .. who .. "'s emotes (" .. total .. ")" .. nav .. " — click to insert:"
-                if not picker.render(ctx.channel, header, slice) then u.sysmsg(ctx, "inventory render failed") end
-            end)
-        end)
+        M.inv(ctx.channel, ctx.words[2], tonumber(ctx.words[3]))
     end)
 
-    -- local emote block: hides an emote from rendering + tab-complete. LOCAL
-    -- ONLY — the plugin is anonymous so it can't sync a block to your heatsync
-    -- account; use the website/extension for an account-wide block.
+    -- local emote block/unblock — see M.block/M.unblock above.
     c2.register_command("/hsblock", function(ctx)
-        local name = ctx.words[2]
-        if not name or name == "" then
-            u.sysmsg(ctx, "usage: /hsblock <emote name> — hides it locally in chatterino")
-            return
-        end
-        if store.block(name) then
-            u.sysmsg(ctx, "blocked '" .. name .. "' locally (won't render or tab-complete) · /hsunblock " .. name .. " to undo")
-        else
-            u.sysmsg(ctx, "'" .. name .. "' already blocked")
-        end
+        M.block(ctx.channel, ctx.words[2])
     end)
 
     c2.register_command("/hsunblock", function(ctx)
-        local name = ctx.words[2]
-        if not name or name == "" then
-            u.sysmsg(ctx, "usage: /hsunblock <emote name> — removes a local block")
-            return
-        end
-        if store.unblock(name) then
-            u.sysmsg(ctx, "unblocked '" .. name .. "'")
-        else
-            u.sysmsg(ctx, "'" .. name .. "' wasn't blocked")
-        end
+        M.unblock(ctx.channel, ctx.words[2])
     end)
 
     c2.register_command("/hsblocklist", function(ctx)

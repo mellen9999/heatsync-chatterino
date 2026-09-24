@@ -17,6 +17,7 @@ local senders = require("senders")
 local ws = require("ws")
 local render = require("render")
 local commands = require("commands")
+local menu = require("menu")
 local store = require("store")
 local multichat = require("multichat")
 local badges = require("badges")
@@ -233,9 +234,11 @@ net.log_info("boot: " .. caps.name() ..
     " (timers=" .. tostring(caps.later) ..
     " ws=" .. tostring(caps.websocket) ..
     " images=" .. tostring(caps.images) ..
-    " windows=" .. tostring(caps.windows) .. ")")
+    " windows=" .. tostring(caps.windows) ..
+    " menus=" .. tostring(caps.menus) .. ")")
 
 commands.register(current_login_safe)
+menu.register() -- no-op unless caps.menus (context menus, chatterino #6961)
 senders.own_map_fn = function() return inventory.map end
 recents.load() -- restore recently-used emotes for the /hsemotes menu
 
