@@ -526,6 +526,103 @@ local rc = #chan.replaced
 chan.appended_cb(m6, nil)
 check(#chan.replaced == rc, "render: dimension-less emote stays text (no giant images)")
 
+-- ===== ws batch unwrap (`/ws?b=1` coalescing, ws-coalesce.ts) =====
+do
+    local s = sockets[#sockets]
+    check(not senders.is_known_hs("batchuser1"), "ws batch: precondition — batchuser1 unknown before the batch")
+    s.opts.on_text(register_payload({
+        type = "batch",
+        messages = {
+            { type = "emote:broadcast", username = "batchuser1", emoteName = "batchEmote1",
+                emoteData = { url = "https://cdn.heatsync.org/e/b1.webp", width = 32, height = 32 } },
+            { type = "emote:broadcast", username = "batchuser2", emoteName = "batchEmote2",
+                emoteData = { url = "https://cdn.heatsync.org/e/b2.webp", width = 32, height = 32 } },
+        },
+    }))
+    check(senders.is_known_hs("batchuser1"), "ws batch: first message in a batch frame is dispatched")
+    check(senders.is_known_hs("batchuser2"), "ws batch: second message in a batch frame is dispatched")
+
+    -- cap: only the first 256 entries in an oversized batch are dispatched
+    local msgs = {}
+    for i = 1, 300 do
+        msgs[i] = { type = "emote:broadcast", username = "batchcap" .. i, emoteName = "e",
+            emoteData = { url = "https://cdn.heatsync.org/e/cap.webp", width = 32, height = 32 } }
+    end
+    s.opts.on_text(register_payload({ type = "batch", messages = msgs }))
+    check(senders.is_known_hs("batchcap1"), "ws batch cap: an entry within the 256 cap is dispatched")
+    check(not senders.is_known_hs("batchcap300"), "ws batch cap: an entry past the 256 cap is not dispatched")
+
+    -- non-table entries, and a nested "batch" entry, are ignored rather than
+    -- crashing the unwrap (the server never nests batches — this is a
+    -- hostile-frame guard, so a nested one is just passed through inert)
+    local ok = pcall(function()
+        s.opts.on_text(register_payload({
+            type = "batch",
+            messages = { "not a table", 42, true, { type = "batch", messages = { { type = "emote:broadcast" } } } },
+        }))
+    end)
+    check(ok, "ws batch: non-table entries and a nested batch don't crash the unwrap")
+end
+
+-- ===== ws server:shutdown: spread reconnect, no backoff penalty =====
+do
+    local s = sockets[#sockets]
+    local attempts_before = ws.attempts
+    local sock_count = #sockets
+    s.opts.on_text(register_payload({ type = "server:shutdown", reconnectSpreadMs = 5000, signal = "SIGTERM" }))
+    check(not ws.connected, "ws shutdown: the connection closes immediately")
+    check(ws.attempts == attempts_before, "ws shutdown: does not increment the backoff attempt counter")
+    advance(6000) -- past the clamped [1000,60000] spread window (5000 here)
+    check(#sockets == sock_count + 1, "ws shutdown: reconnects on its own schedule within the spread window")
+    check(ws.attempts == attempts_before, "ws shutdown: attempt counter is still unchanged once reconnected")
+end
+
+-- ===== resume: ack:channels replays a kick room's last-seen _seq on reconnect =====
+-- "reconnect" here is simulated the same way the resync test at the end of this
+-- suite does it — on_open firing again on the same socket — rather than a real
+-- close+backoff cycle, whose delay depends on how many attempts have already
+-- accumulated elsewhere in this run. replay_state() runs identically either way.
+do
+    local s = sockets[#sockets]
+    commands["/hsmulti"]({ words = { "/hsmulti", "kick:phase5chan" }, channel = chan })
+
+    local a0 = #chan.added
+    s.opts.on_text(register_payload({
+        type = "kick-chat-message", _ch = "kick/phase5chan", _seq = 77,
+        data = { platform = "kick", channel = "phase5chan", id = "resume1", username = "u", content = "before reconnect" },
+    }))
+    check(#chan.added == a0 + 1, "resume: precondition — the kick message injects once")
+
+    s.sent = {} -- isolate this on_open's sends from everything sent so far
+    s.opts.on_open()
+    local saw_ack = false
+    for _, sent in ipairs(s.sent) do
+        if sent:find("ack:channels", 1, true) and sent:find("kick/phase5chan", 1, true) and sent:find("77", 1, true) then
+            saw_ack = true
+        end
+    end
+    check(saw_ack, "resume: reconnect sends ack:channels with the tracked _ch and lastSeq")
+
+    -- the server "replays" the same message (same id) after reconnect — the
+    -- multichat dedup ring (scoped by source+id) must not show it twice
+    local a1 = #chan.added
+    s.opts.on_text(register_payload({
+        type = "kick-chat-message", _ch = "kick/phase5chan", _seq = 77,
+        data = { platform = "kick", channel = "phase5chan", id = "resume1", username = "u", content = "before reconnect" },
+    }))
+    check(#chan.added == a1, "resume: a replayed kick message (same id) is deduped, not shown twice")
+
+    -- unlinking drops the tracked seq: a later reconnect carries no ack for it
+    commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = chan })
+    s.sent = {}
+    s.opts.on_open()
+    local saw_stale = false
+    for _, sent in ipairs(s.sent) do
+        if sent:find("phase5chan", 1, true) then saw_stale = true end
+    end
+    check(not saw_stale, "resume: unlinking a kick source drops its tracked seq (no stale ack afterward)")
+end
+
 -- commands smoke: /hsstatus, /hsmoments (with fetch), /hslogs
 local cctx = { words = { "/hsstatus" }, channel = chan }
 commands["/hsstatus"](cctx)
@@ -1962,6 +2059,10 @@ do
     check(ws_escapes == 0, "fuzz: 1000 malformed ws frames (4 seeds) — nothing escaped the dispatch guards")
     check(cmd_escapes == 0, "fuzz: 1000 command calls with random args (4 seeds) — no uncaught error" ..
         (first_crash and (" (" .. first_crash .. ")") or ""))
+    -- a fuzzed "server:shutdown" may have genuinely abandoned rsock (gen bump,
+    -- same as the real client) and queued a reconnect up to 60s out — settle
+    -- that before any later test assumes sockets[#sockets] is the live socket.
+    advance(61000)
 end
 
 -- account-switch guard (LAST — mutates global inventory state): a slow refresh

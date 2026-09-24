@@ -37,6 +37,35 @@ local WATCHDOG_IDLE_S = 90
 local HANDSHAKE_TIMEOUT_S = 30
 local STABLE_S = 30 -- a session must stay open this long before its backoff resets
 local RESYNC_GAP_S = 60 -- rx gap past this on a fresh connect means missed pushes
+local BATCH_MAX = 256 -- matches the server's own coalesce cap (ws-coalesce.ts COALESCE_MAX)
+local SHUTDOWN_SPREAD_MIN_MS = 1000
+local SHUTDOWN_SPREAD_MAX_MS = 60000
+
+-- resume: highest `_seq` seen per `_ch`, kick/* rooms only (ws-connections.ts
+-- stamps EVERY channel-routed frame with _seq/_ch, but only kick chat has a
+-- server-side replay ring — see replayMissed/ack:channel in ws-handlers.ts).
+-- bounded the same as `joined` effectively is (one entry per joined kick room);
+-- capped defensively since `_ch`/`_seq` ride on an untrusted frame and a
+-- hostile/MITM server could otherwise claim arbitrary "kick/*" rooms we never
+-- joined to grow this map without limit.
+local MAX_ACK_CHANNELS = 200
+local last_seq_by_ch = {}
+local tracked_ch_count = 0
+
+local function track_seq(msg)
+    local ch = msg._ch
+    if type(ch) ~= "string" or string.sub(ch, 1, 5) ~= "kick/" then return end
+    local seq = msg._seq
+    if type(seq) ~= "number" or seq ~= seq or seq == math.huge or seq == -math.huge or seq < 0 then return end
+    local prev = last_seq_by_ch[ch]
+    if prev == nil then
+        if tracked_ch_count >= MAX_ACK_CHANNELS then return end
+        tracked_ch_count = tracked_ch_count + 1
+        last_seq_by_ch[ch] = seq
+    elseif seq > prev then
+        last_seq_by_ch[ch] = seq
+    end
+end
 
 local function send(tbl)
     if not sock or not M.connected then return false end
@@ -52,6 +81,23 @@ local function replay_state()
     end
     if watch_login then
         send({ type = "emote:watch", login = watch_login })
+    end
+    -- resume: ask the server to replay anything missed on a kick room while we
+    -- were down (up to its ring's horizon). sent AFTER channel:join — the
+    -- server's ack handler doesn't require join first (replayMissed just reads
+    -- the ring by channel name), but joining first means a message that arrives
+    -- between join and this ack still lands through the normal live path rather
+    -- than only via replay. field names verified against handleAckChannels
+    -- (server/services/ws-handlers.ts): `channel` (the exact `_ch` string) and
+    -- camelCase `lastSeq`.
+    if next(last_seq_by_ch) ~= nil then
+        local acks, n = {}, 0
+        for ch, seq in pairs(last_seq_by_ch) do
+            n = n + 1
+            if n > MAX_ACK_CHANNELS then break end
+            acks[#acks + 1] = { channel = ch, lastSeq = seq }
+        end
+        send({ type = "ack:channels", channels = acks })
     end
     -- multichat re-subscribes its YouTube pollers (kick rides channel:join above)
     if M.on_reconnect then pcall(M.on_reconnect) end
@@ -85,10 +131,45 @@ local function schedule_reconnect()
     end, delay_ms)
 end
 
-local function handle_text(data)
-    M.last_rx = net.now()
-    local msg = net.safe_json_parse(data)
+-- server:shutdown {reconnectSpreadMs, signal}: a deploy is draining connections
+-- and asked everyone to spread their reconnects over a window, rather than
+-- every client reconnecting the instant it's kicked (thundering herd on the
+-- fresh instance). NOT a failure, so it must not cost a backoff attempt — this
+-- abandons the socket the same way the watchdog recycles a stale one (bump gen
+-- BEFORE close, so the old socket's on_close sees a stale gen and no-ops), then
+-- reconnects after its own one-shot delay instead of calling schedule_reconnect.
+local function handle_server_shutdown(msg)
+    local spread = tonumber(msg.reconnectSpreadMs)
+    if not spread or spread ~= spread or spread == math.huge or spread == -math.huge then
+        spread = SHUTDOWN_SPREAD_MAX_MS
+    end
+    spread = math.max(SHUTDOWN_SPREAD_MIN_MS, math.min(SHUTDOWN_SPREAD_MAX_MS, spread))
+    local delay_ms = math.floor(math.random() * spread)
+    net.log_info("ws server:shutdown (" .. tostring(msg.signal or "?") ..
+        "), reconnecting in " .. tostring(delay_ms) .. "ms (spread " .. tostring(spread) .. "ms)")
+    local s = sock
+    M.connected = false
+    sock = nil
+    gen = gen + 1
+    if s then pcall(function() s:close() end) end
+    -- suppress the watchdog's own self-heal reconnect while we wait out the
+    -- spread delay — up to 60s, longer than the 30s watchdog tick, so without
+    -- this it could fire its own (backoff-penalized) reconnect first.
+    reconnect_scheduled = true
+    pcall(c2.later, function()
+        reconnect_scheduled = false
+        if enabled then M.connect() end
+    end, delay_ms)
+end
+
+local function handle_one(msg)
     if type(msg) ~= "table" or type(msg.type) ~= "string" then return end
+    track_seq(msg)
+    if msg.type == "server:shutdown" then
+        local ok, err = pcall(handle_server_shutdown, msg)
+        if not ok then net.log_warn("ws shutdown handler failed: " .. tostring(err)) end
+        return
+    end
     if M.on_event then
         local ok, err = pcall(M.on_event, msg)
         if not ok then
@@ -97,13 +178,36 @@ local function handle_text(data)
     end
 end
 
+-- `/ws?b=1` opts into server-side coalescing: a socket under load may get one
+-- {type:"batch", messages:[...]} frame instead of one frame per message
+-- (ws-coalesce.ts). unwrap it here and dispatch each entry through the same
+-- path a bare frame takes — capped, and a nested "batch" entry is passed
+-- through as an ordinary (unhandled) message rather than unwrapped again; the
+-- server never nests these, so this is a hostile-frame guard, not a real shape.
+local function handle_text(data)
+    M.last_rx = net.now()
+    local msg = net.safe_json_parse(data)
+    if type(msg) ~= "table" or type(msg.type) ~= "string" then return end
+    if msg.type == "batch" then
+        if type(msg.messages) == "table" then
+            for i = 1, math.min(#msg.messages, BATCH_MAX) do
+                local item = msg.messages[i]
+                if type(item) == "table" then handle_one(item) end
+            end
+        end
+        return
+    end
+    handle_one(msg)
+end
+
 function M.connect()
     if not enabled or M.connected or sock then return end
     connect_started = net.now()
     gen = gen + 1
     local my_id = gen
     local ok, err = pcall(function()
-        sock = c2.WebSocket.new(net.ORIGIN:gsub("^https", "wss") .. "/ws", {
+        -- ?b=1 opts into server-side coalescing (ws-coalesce.ts) — see handle_text.
+        sock = c2.WebSocket.new(net.ORIGIN:gsub("^https", "wss") .. "/ws?b=1", {
             on_open = function()
                 if my_id ~= gen then return end -- superseded socket: ignore late open
                 M.connected = true
@@ -196,6 +300,13 @@ function M.leave(platform, channel)
     if not joined[key] then return end
     joined[key] = nil
     send({ type = "channel:leave", platform = platform, channel = string.lower(channel) })
+    -- key is already the exact "kick/<slug>" _ch shape (source_key uses the
+    -- same "platform/lower(channel)" format) — drop it so a stale watermark
+    -- for a room we're no longer in never rides a future ack:channels.
+    if last_seq_by_ch[key] ~= nil then
+        last_seq_by_ch[key] = nil
+        tracked_ch_count = tracked_ch_count - 1
+    end
 end
 
 -- live inventory deltas for our own login (server topic emote:watch; on
