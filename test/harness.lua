@@ -2378,5 +2378,20 @@ do
     check(not senders.is_known_hs("resyncuser"), "senders: reconnect after a >60s rx gap resyncs (marks senders stale)")
 end
 
+-- /hstest must post a message render actually processes: render skips any
+-- message without a channel_name (the multichat-injected marker), so a
+-- self-test missing it could never show its emote
+do
+    local tchan = fake_channel("hstestchan")
+    local before = #tchan.added
+    commands["/hstest"]({ words = { "/hstest" }, channel = tchan })
+    local posted = nil
+    for i = before + 1, #tchan.added do
+        local m = tchan.added[i]
+        if type(m) == "table" and m.init and m.init.login_name then posted = m.init end
+    end
+    check(posted ~= nil and posted.channel_name == "hstestchan", "/hstest: self-test message carries the tab's channel_name")
+end
+
 print(failures == 0 and "\nALL PASS" or ("\n" .. failures .. " FAILURES"))
 host_os.exit(failures == 0 and 0 or 1)

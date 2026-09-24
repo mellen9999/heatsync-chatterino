@@ -170,6 +170,10 @@ function M.register(get_login)
         local text = "self-test: " .. first.name .. " >>selftest ok"
         local ok, err = pcall(function()
             ctx.channel:add_message(c2.Message.new({
+                -- render skips messages with no channel_name (that's how it
+                -- tells multichat-injected lines apart), so the self-test must
+                -- carry the tab's name or it never renders
+                channel_name = ctx.channel:get_name(),
                 login_name = login,
                 display_name = login,
                 message_text = text,
