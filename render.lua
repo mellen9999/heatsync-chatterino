@@ -6,8 +6,7 @@
 -- message actually contains a heatsync emote or threadlink is it rebuilt —
 -- untouched elements (twitch emotes, badges, timestamps, reply curves) are
 -- passed through as objects, which chatterino clones. the render DECISION on a
--- miss is two hash lookups per word and allocates nothing (the archive relay's
--- own per-message allocation is separate — see maybe_relay).
+-- miss is two hash lookups per word and allocates nothing.
 local net = require("net")
 local caps = require("caps")
 local inventory = require("inventory")
@@ -21,35 +20,22 @@ local recents = require("recents")
 
 local FLAME = "🔥"
 
--- archive relay throttle (server accepts 60/s per socket, drops the rest)
-local relay_sec = 0
-local relay_count = 0
+-- archive relay: a DEMAND SIGNAL, not a content feed — tells heatsync WHICH
+-- public twitch channel you're watching so its reader pool/EventSub can
+-- archive it server-side. the server keeps only `channel` and rate-limits to
+-- 1 per socket per channel per 5 min (ws-handlers.ts handleTwitchChatRelay),
+-- so message text, username, message id and timestamp never leave the plugin
+-- at all — there's nothing left to throttle per-message, only per-channel.
+local RELAY_RESIGNAL_S = 300
+local relay_sent = {} -- lowercase channel -> net.now() of the last signal sent
 
--- relay a native twitch PRIVMSG into heatsync's archive (default on, opt-out). only
--- native messages (real twitch id) — injected kick/yt messages have no id.
-local function maybe_relay(msg)
+local function signal_relay(channel)
     if not store.archive_enabled() then return end
-    local id = msg.id
-    if type(id) ~= "string" or id == "" then return end -- injected/synthetic
-    local channel = msg.channel_name
-    local login = msg.login_name
-    local text = msg.message_text
-    if type(channel) ~= "string" or channel == "" then return end
-    if type(login) ~= "string" or login == "" then return end
-    if type(text) ~= "string" or text == "" then return end
+    local last = relay_sent[channel]
     local now = net.now()
-    if now ~= relay_sec then relay_sec = now; relay_count = 0 end
-    if relay_count >= 60 then return end
-    relay_count = relay_count + 1
-    ws.send({
-        type = "twitch:chat:relay",
-        channel = string.lower(channel),
-        username = string.lower(login),
-        message = text,
-        message_id = id,
-        display_name = msg.display_name,
-        timestamp = msg.server_received_time,
-    })
+    if last and (now - last) < RELAY_RESIGNAL_S then return end
+    relay_sent[channel] = now
+    ws.send({ type = "twitch:chat:relay", channel = channel })
 end
 
 local M = {
@@ -299,9 +285,6 @@ local function do_process(ch, msg, hint)
     local text = msg.message_text
     if type(text) ~= "string" or text == "" then return end
 
-    -- archive relay (default on, opt-out; before render rebuild, independent of it)
-    maybe_relay(msg)
-
     -- learn recently-used emotes from your OWN outgoing messages — the only
     -- usage signal the plugin can observe (click-to-insert has no callback).
     -- feeds the recents row at the top of the /hsemotes menu.
@@ -383,6 +366,9 @@ local function hook(ch, name)
     if M.on_channel_found then
         pcall(M.on_channel_found, "twitch", name)
     end
+    -- a channel just got hooked → heatsync should archive it. name is already
+    -- twitch's canonical-lowercase login (same fact do_process relies on).
+    signal_relay(name)
 end
 
 -- walk all windows → tabs → splits and hook any twitch channel we haven't
@@ -400,6 +386,7 @@ function M.discover()
             -- for a channel that's no longer open (joined{} would grow forever)
             if M.on_channel_gone then pcall(M.on_channel_gone, "twitch", name) end
             net.log_info("rendering unhooked for #" .. name)
+            relay_sent[name] = nil -- keep the throttle map bounded to open tabs
         end
     end
     local ok, err = pcall(function()
@@ -440,6 +427,12 @@ function M.discover()
     end)
     if not ok then
         net.log_warn("channel discovery failed: " .. tostring(err))
+    end
+    -- re-signal every hooked channel; signal_relay's own 5-min throttle means
+    -- this 5s sweep is a no-op for a channel until its window is actually up —
+    -- piggybacking here avoids a second timer just for the relay.
+    for name in pairs(hooked) do
+        signal_relay(name)
     end
 end
 
@@ -518,6 +511,7 @@ function M.stop()
         pcall(function() h.handle:disconnect() end)
         hooked[name] = nil
     end
+    relay_sent = {}
     M.started = false
 end
 

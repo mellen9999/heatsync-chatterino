@@ -151,26 +151,28 @@ function M.register()
         end)
     end)
 
-    -- archive relay: mirror the public twitch chat you see into heatsync's
-    -- searchable archive (the corpus moat). ON by default, opt-out — it sends
-    -- public PRIVMSGs you already see to heatsync (first-party, no whispers).
+    -- archive channel-signal: tells heatsync which public twitch channels
+    -- you're watching, so it archives them itself (the corpus moat). ON by
+    -- default, opt-out. no message content, username, or timestamp is ever
+    -- sent — only the channel name.
     c2.register_command("/hsarchive", function(ctx)
         local arg = ctx.words[2]
         if arg == "on" then
             store.set_archive(true)
-            u.sysmsg(ctx, "archive relay ON — public twitch chat you view now feeds heatsync's searchable archive (first-party, PRIVMSG only, dedup'd)")
+            u.sysmsg(ctx, "archive signal ON — heatsync now knows which public twitch channels you watch and archives them itself (channel name only, no message content)")
         elseif arg == "off" then
             store.set_archive(false)
-            u.sysmsg(ctx, "archive relay OFF")
+            u.sysmsg(ctx, "archive signal OFF")
         else
-            u.sysmsg(ctx, "archive relay is " .. (store.archive_enabled() and "on (default)" or "off") ..
-                " · /hsarchive on|off · relays only public twitch chat you're already viewing into heatsync's archive")
+            u.sysmsg(ctx, "archive signal is " .. (store.archive_enabled() and "on (default)" or "off") ..
+                " · /hsarchive on|off · tells heatsync which public twitch channels you're watching so it archives them itself")
         end
     end)
 
-    -- search the twitch-chat archive (the relay corpus) from chat — the other
-    -- half of the flywheel: the relay writes chat in, /hschat reads it back.
-    -- filters: @user #channel, everything else is the query text. the server's
+    -- search the twitch-chat archive from chat — the other half of the
+    -- flywheel: the channel signal tells heatsync what to archive server-side,
+    -- /hschat reads the result back. filters: @user #channel, everything else
+    -- is the query text. the server's
     -- /api/archive/search is instant when narrowed to a user or a rare term; a
     -- broad common word across the ~40M-row corpus can hit the 10s ceiling and
     -- 503 — so a bare query defaults to the current channel, and the failure

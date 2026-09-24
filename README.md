@@ -1,6 +1,6 @@
 # heatsync chatterino plugin
 
-heatsync inside chatterino. your emote inventory tab-completes everywhere and — on a render-capable build — heatsync emotes **render as real images** in chat (yours and every other heatsync user's), you get a **click-to-insert emote menu**, you can **browse any chatter's emotes** and **search heatsync's post + chat-log archive** (the relay writes chat in, `/hschat` reads it back) without leaving chat, plus clickable `>>id` threadlinks, a 🔥 marker on heatsync users, and **kick + youtube chat merged into your twitch tabs**.
+heatsync inside chatterino. your emote inventory tab-completes everywhere and — on a render-capable build — heatsync emotes **render as real images** in chat (yours and every other heatsync user's), you get a **click-to-insert emote menu**, you can **browse any chatter's emotes** and **search heatsync's post + chat-log archive** (heatsync archives the channels you watch itself, `/hschat` reads it back) without leaving chat, plus clickable `>>id` threadlinks, a 🔥 marker on heatsync users, and **kick + youtube chat merged into your twitch tabs**.
 
 no fork, no patched binary. one lua plugin that feature-detects the host build and degrades a capability at a time instead of breaking:
 
@@ -65,7 +65,7 @@ heatsync users get a 🔥 before their name in any chat, so they're identifiable
 | `/hsmulti kick:<slug>` \| `yt:<handle>` \| `off` \| `auto on\|off` | merge kick/youtube chat into this tab; `auto` links a stream's platforms automatically |
 | `/hshot [platform] [page]` | hottest live streams right now (cross-platform, heat-ranked); filter by platform, page through; click a twitch one to open it |
 | `/hswhois <user>` | heatsync profile card for any streamer (heat, followers, live, posts) |
-| `/hsarchive on\|off` | relay the public twitch chat you view into heatsync's archive (on by default; `off` to opt out) |
+| `/hsarchive on\|off` | tell heatsync which public twitch channels you watch, so it archives them itself (on by default; `off` to opt out) |
 | `/hsblock <name>` \| `/hsunblock` \| `/hsblocklist` | locally hide an emote (render + tab-complete) |
 | `/hsflame on\|off` | toggle the 🔥 heatsync-user marker |
 | `/hsbadges on\|off` | show chatterino global badges on chatters (opt-in) |
@@ -111,7 +111,7 @@ for the full experience (rendering, the emote menu, multichat), use a build whos
 **what leaves chatterino:**
 
 - your twitch login (of the selected account) — so the server can sync your emote inventory.
-- while `/hsarchive` is **on** (the default, render-capable builds only): the public twitch chat you're viewing — message text, sender login, channel, message id, timestamp — relayed into heatsync's public, searchable archive. `/hsarchive off` stops it. only chat you can already see is ever sent.
+- while `/hsarchive` is **on** (the default, render-capable builds only): which public twitch channel you're watching — just the channel name, at most once per 5 minutes — so heatsync can archive it server-side. `/hsarchive off` stops it. no message text, username, message id, or timestamp is ever sent.
 - nothing else. no auth tokens (the socket is anonymous), no whispers/DMs, no browsing history, no telemetry.
 
 ## architecture

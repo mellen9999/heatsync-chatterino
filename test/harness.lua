@@ -747,18 +747,70 @@ sock.opts.on_text(register_payload({
 check(#chan.added == ba, "multichat: no injection after /hsmulti off")
 
 -- ===== v1.4 features: archive relay, whois, hot, find, auto-multichat =====
--- archive relay: opt-in; native twitch messages (real id) relayed, injected not
-commands["/hsarchive"]({ words = { "/hsarchive", "on" }, channel = chan })
 local function count_sent(needle)
     local n = 0
     for _, s in ipairs(sock.sent) do if s:find(needle, 1, true) then n = n + 1 end end
     return n
 end
-local rb = count_sent("twitch:chat:relay")
-local am = fake_msg("archuser", "111", "archive me")
-chan.msgs[#chan.msgs + 1] = am
-chan.appended_cb(am, nil)
-check(count_sent("twitch:chat:relay") == rb + 1, "archive: native twitch message relayed when on")
+
+-- archive channel-signal (v1.9): on by default, fires once per newly hooked
+-- channel, carries ONLY type+channel, and never fires per-message. counts are
+-- scoped to "relaychan" specifically — #somechannel is ALSO hooked this whole
+-- time and re-signals on its own 5-min cadence in the background, so a bare
+-- "twitch:chat:relay" count would be polluted by its unrelated resignals.
+do
+    local function relay_count_for(name)
+        local n = 0
+        for _, s in ipairs(sock.sent) do
+            if s:find("twitch:chat:relay", 1, true) and s:find(name, 1, true) then n = n + 1 end
+        end
+        return n
+    end
+    local rchan = fake_channel("relaychan")
+    channels[#channels + 1] = rchan
+    local before = #sock.sent
+    advance(6000) -- discovery sweep hooks the new channel + signals it
+    local hit = nil
+    for i = before + 1, #sock.sent do
+        if sock.sent[i]:find("twitch:chat:relay", 1, true) and sock.sent[i]:find("relaychan", 1, true) then
+            hit = sock.sent[i]
+        end
+    end
+    check(hit ~= nil, "archive: channel-found signal sent for a newly hooked channel")
+    check(hit ~= nil and not hit:find("message", 1, true) and not hit:find("username", 1, true)
+        and not hit:find("display_name", 1, true) and not hit:find("timestamp", 1, true),
+        "archive: signal carries no message content, username, or timestamp")
+
+    -- posting chat in that channel does not itself trigger a relay anymore
+    local rb = relay_count_for("relaychan")
+    local am = fake_msg("archuser", "111", "archive me")
+    rchan.msgs[#rchan.msgs + 1] = am
+    rchan.appended_cb(am, nil)
+    check(relay_count_for("relaychan") == rb, "archive: posting a message does not relay it")
+
+    -- throttled to once per channel per 5 min: another sweep inside the window
+    -- re-signals nothing
+    advance(6000)
+    check(relay_count_for("relaychan") == rb, "archive: re-signal throttled inside the 5-min window")
+
+    -- past the window, the next sweep re-signals the still-open channel. feed a
+    -- keepalive frame every 75s of simulated idle so the 90s ws watchdog doesn't
+    -- recycle the socket mid-advance (which would orphan this test's `sock`).
+    for _ = 1, 4 do
+        advance(75000)
+        sock.opts.on_text(register_payload({ type = "presence:heartbeat" }))
+    end
+    check(relay_count_for("relaychan") == rb + 1, "archive: re-signals after 5 minutes while the tab stays open")
+
+    -- off → a fresh channel hook sends no signal at all
+    require("store").set_archive(false)
+    local offchan = fake_channel("archoffchan")
+    channels[#channels + 1] = offchan
+    local rb2 = relay_count_for("archoffchan")
+    advance(6000)
+    check(relay_count_for("archoffchan") == rb2, "archive: off suppresses the channel-found signal")
+    require("store").set_archive(true)
+end
 
 commands["/hsmulti"]({ words = { "/hsmulti", "kick:zzz" }, channel = chan })
 local rb2 = count_sent("twitch:chat:relay")
@@ -766,7 +818,6 @@ sock.opts.on_text(register_payload({
     type = "kick-chat-message", data = { platform = "kick", channel = "zzz", id = "ki", username = "k", content = "kick msg" },
 }))
 check(count_sent("twitch:chat:relay") == rb2, "archive: injected kick message NOT relayed")
-commands["/hsarchive"]({ words = { "/hsarchive", "off" }, channel = chan })
 
 -- /hswhois profile card
 local wa = #chan.added
@@ -1367,28 +1418,6 @@ do
     check(imgs <= 50, "token cap: a 100-emote kick message builds at most 50 image elements (got " .. imgs .. ")")
 end
 
--- archive-relay throttle: at most 60 relays per wall-clock second (the socket
--- accepts 60/s; the 61st in a tick is dropped, not queued). default-on flow, so
--- lock the cap.
-require("store").set_archive(true)
-do
-    local rsock = sockets[#sockets]
-    rsock.opts.on_open() -- ensure connected so ws.send delivers
-    advance(2000)        -- move to a fresh second → counter resets on first message
-    local function relays()
-        local n = 0
-        for _, s in ipairs(rsock.sent) do if s:find("twitch:chat:relay", 1, true) then n = n + 1 end end
-        return n
-    end
-    local before = relays()
-    for i = 1, 61 do
-        local m = fake_msg("relayer" .. i, "88" .. i, "throttle probe " .. i)
-        chan.msgs[#chan.msgs + 1] = m
-        chan.appended_cb(m, nil)
-    end
-    check(relays() - before == 60, "relay throttle: 61 messages in one second relay exactly 60 (got " .. (relays() - before) .. ")")
-end
-require("store").set_archive(false)
 
 -- senders negative-cache: a failed batch lookup briefly caches "no HS emotes" so
 -- a flaky upstream doesn't hot-loop re-querying the same login

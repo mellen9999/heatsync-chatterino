@@ -12,7 +12,7 @@ local M = {}
 
 local BLOCKS_FILE = "blocks.txt"  -- newline-separated emote names
 local FLAME_FILE = "flame.txt"    -- "0" = off, anything else = on
-local ARCHIVE_FILE = "archive.txt" -- "0" = relay off (ON by default, opt-out)
+local ARCHIVE_FILE = "archive.txt" -- "0" = channel-signal off (ON by default, opt-out)
 local AUTOMC_FILE = "automulti.txt" -- "0" = auto-multichat off (ON by default)
 local BADGES_FILE = "badges.txt"   -- "1" = badges on (OFF by default, opt-in)
 local LIVE_FILE = "live.txt"       -- "1" = live-status on (OFF by default, opt-in)
@@ -20,7 +20,9 @@ local LIVE_FILE = "live.txt"       -- "1" = live-status on (OFF by default, opt-
 -- blocked[name] = true
 local blocked = {}
 local flame_on = true
-local archive_on = true -- default ON (opt-out) — archives public twitch chat
+local archive_on = true -- default ON (opt-out) — tells heatsync which public
+                         -- twitch channels you're watching so it archives them
+                         -- itself; no message content ever leaves the plugin
 local automc_on = true -- default ON (opt-out) — auto-merges a stream's kick/yt chat when publicly linked
 local badges_on = false
 local live_on = false -- default OFF (opt-in) — go-live lines for linked kick/yt sources
@@ -102,7 +104,7 @@ function M.set_flame(on)
     net.write_data(FLAME_FILE, flame_on and "1" or "0")
 end
 
--- ----- archive relay toggle (default ON, opt-out) -----
+-- ----- archive channel-signal toggle (default ON, opt-out) -----
 function M.archive_enabled()
     return archive_on
 end
