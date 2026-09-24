@@ -34,11 +34,11 @@ recents are learned from the emotes you actually send (the only usage signal a p
 
 ## multichat — kick + youtube in your twitch tab
 
-`/hsmulti kick:<slug>` or `/hsmulti yt:<handle>` inside a twitch channel tab merges that platform's **live chat** into the tab, tagged `[K]` / `[Y]`. heatsync already ingests kick + youtube chat; the plugin pulls it over the same anonymous websocket and injects it client-side — re-subscribing on reconnect, deduping by message id, and remembering your links across restarts.
+`/hsmulti kick:<slug>` or `/hsmulti yt:<handle>` inside a twitch channel tab merges that platform's **live chat** into the tab, tagged `[K]` / `[Y]`. heatsync already ingests kick + youtube chat; the plugin pulls it over the same anonymous websocket and injects it client-side — re-subscribing on reconnect, replaying what a dropped socket missed, deduping by message id, and remembering your links across restarts. a kick/youtube chatter's own heatsync emotes render inline in their merged lines, same rule as twitch.
 
 `/hsmulti auto` (on by default) merges a stream's kick/youtube chat automatically when you open its twitch tab — but only where that streamer has *publicly linked* their cross-platform accounts on heatsync, so channels that haven't stay quiet. `/hsmulti auto off` to disable, `/hsmulti off` to unlink a tab.
 
-chatterino has no native kick/youtube. this makes heatsync the cross-platform chat layer *inside* it. (youtube chat only exists while the channel is live.)
+chatterino has no native kick/youtube. this makes heatsync the cross-platform chat layer *inside* it. (youtube chat only exists while the channel is live — a source linked while offline says so and retries every couple of minutes.)
 
 ## live status
 
@@ -46,7 +46,11 @@ chatterino has no native kick/youtube. this makes heatsync the cross-platform ch
 
 ## live sync
 
-add an emote on heatsync.org and it's usable in chatterino within a second — a websocket push plus a debounced re-fetch. the socket is anonymous, reconnects with jittered backoff capped at 60s, heartbeats every 25s, and recycles itself if the server goes quiet; a periodic full re-fetch reconciles anything a dropped socket missed.
+add an emote on heatsync.org and it's usable in chatterino within a second — a websocket push plus a debounced re-fetch. the socket is anonymous, reconnects with jittered backoff capped at 60s, spreads its reconnect when heatsync deploys, heartbeats every 25s, and recycles itself if the server goes quiet; a periodic full re-fetch reconciles anything a dropped socket missed. other chatters' sets update the same way — when someone changes their inventory only their cached set is re-fetched, and an emote only renders on messages sent while they actually had it.
+
+## right-click
+
+on a build with plugin context menus, right-clicking a chat message adds a `heatsync` submenu: that chatter's emotes, chat logs, and whois. right-click a heatsync emote to block or unblock it locally. older builds just don't get the menu — the commands below do the same.
 
 ## the 🔥 marker
 
@@ -61,7 +65,7 @@ heatsync users get a 🔥 before their name in any chat, so they're identifiable
 | `/hsfind <query>` | **catalog search** — inventory + 7TV/BTTV/FFZ shown as images; click one to insert |
 | `/hsinv <user> [page]` | **browse anyone's inventory** — a user's heatsync emotes as a click-to-insert grid, paged |
 | `/hssearch <query>` | **search heatsync posts** — click a result to open the thread |
-| `/hschat <query> [@user] [#channel]` | **search the chat archive** — the relayed twitch-chat corpus; click a line to open it at the exact message. narrow with `@user`/`#channel` (a bare query scopes to the current tab) |
+| `/hschat <query> [@user] [#channel]` | **search the chat archive** — heatsync's twitch-chat archive; click a line to open it at the exact message. narrow with `@user`/`#channel` (a bare query scopes to the current tab), or the server's `from:` `in:` `has:` `before:` `after:` operators |
 | `/hsmulti kick:<slug>` \| `yt:<handle>` \| `off` \| `auto on\|off` | merge kick/youtube chat into this tab; `auto` links a stream's platforms automatically |
 | `/hshot [platform] [page]` | hottest live streams right now (cross-platform, heat-ranked); filter by platform, page through; click a twitch one to open it |
 | `/hswhois <user>` | heatsync profile card for any streamer (heat, followers, live, posts) |

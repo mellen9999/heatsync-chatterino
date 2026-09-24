@@ -196,9 +196,8 @@ function M.register()
 
     -- read the archive back: search heatsync's public post corpus from chatterino
     -- and get clickable thread permalinks + an inline preview. this closes the
-    -- flywheel — the archive relay writes chat in, /hssearch reads posts back out.
-    -- (note: this searches heatsync POSTS via /api/search; the relayed twitch-chat
-    -- LOG corpus is a separate corpus — see /hschat below, which searches it via
+    -- (note: this searches heatsync POSTS via /api/search; the twitch-chat LOG
+    -- archive is a separate corpus — see /hschat below, which searches it via
     -- /api/archive/search.)
     local SEARCH_LIMIT = 8
     c2.register_command("/hssearch", function(ctx)
