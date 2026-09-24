@@ -299,8 +299,11 @@ if caps.tier == 2 then
         local who = inventory.login and (" as " .. inventory.login) or ""
         local arch = store.archive_enabled() and " · telling heatsync which channels you watch so it archives them (/hsarchive off to opt out)" or ""
         local am = store.auto_multichat_enabled() and " · auto-merging linked kick/yt chat (/hsmulti auto off)" or ""
-        return "🔥 heatsync active" .. who .. " · " .. tostring(n) ..
-            " emotes · /hsemotes menu · :name tab-complete · /hssearch the archive · /hshelp for all commands" .. arch .. am
+        -- the first tab usually hooks before the inventory fetch lands; a bare
+        -- "0 emotes" there reads as broken, so only show a real count
+        local count = n > 0 and (" · " .. tostring(n) .. " emotes") or ""
+        return "🔥 heatsync active" .. who .. count ..
+            " · /hsemotes menu · :name tab-complete · /hssearch the archive · /hshelp for all commands" .. arch .. am
     end
     render.start()
 end
