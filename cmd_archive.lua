@@ -195,7 +195,7 @@ function M.register()
     end)
 
     -- read the archive back: search heatsync's public post corpus from chatterino
-    -- and get clickable thread permalinks + an inline preview. this closes the
+    -- and get clickable thread permalinks + an inline preview.
     -- (note: this searches heatsync POSTS via /api/search; the twitch-chat LOG
     -- archive is a separate corpus — see /hschat below, which searches it via
     -- /api/archive/search.)
