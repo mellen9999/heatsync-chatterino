@@ -1174,6 +1174,25 @@ do
     require("store").set_archive(true)
 end
 
+-- /whispers + /mentions are twitch-typed virtual channels: hooked for render,
+-- but never joined, relayed, or looked up for auto-multichat
+do
+    local vchan = fake_channel("/mentions")
+    channels[#channels + 1] = vchan
+    local before = #sock.sent
+    advance(6000)
+    local leaked = false
+    for i = before + 1, #sock.sent do
+        if sock.sent[i]:find("/mentions", 1, true) then leaked = true end
+    end
+    check(not leaked, "virtual channel: no ws join/relay frame for /mentions")
+    local looked_up = false
+    for _, r in ipairs(http_queue) do
+        if r.url:find("%2Fmentions", 1, true) then looked_up = true end
+    end
+    check(not looked_up, "virtual channel: no auto-multichat profile lookup for /mentions")
+end
+
 commands["/hsmulti"]({ words = { "/hsmulti", "kick:zzz" }, channel = chan })
 local rb2 = count_sent("twitch:chat:relay")
 sock.opts.on_text(register_payload({

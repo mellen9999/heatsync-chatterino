@@ -29,8 +29,14 @@ local FLAME = "🔥"
 local RELAY_RESIGNAL_S = 300
 local relay_sent = {} -- lowercase channel -> net.now() of the last signal sent
 
+-- chatterino's /whispers and /mentions are twitch-typed virtual channels: worth
+-- hooking (mentions carry emotes) but never a room to join, look up or archive
+local function is_real_channel(name)
+    return string.match(name, "^[a-z0-9_]+$") ~= nil
+end
+
 local function signal_relay(channel)
-    if not store.archive_enabled() then return end
+    if not store.archive_enabled() or not is_real_channel(channel) then return end
     local last = relay_sent[channel]
     local now = net.now()
     if last and (now - last) < RELAY_RESIGNAL_S then return end
@@ -386,7 +392,8 @@ local function hook(ch, name)
     end)
     hooked[name] = { handle = handle, ch = ch }
     net.log_info("rendering hooked for #" .. name)
-    -- one-time presence line in the first hooked channel (discoverability)
+    if not is_real_channel(name) then return end
+    -- one-time presence line in the first real hooked channel (discoverability)
     if M.boot_fn and not M.boot_done then
         M.boot_done = true
         local ok, line = pcall(M.boot_fn)
