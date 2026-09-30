@@ -1641,6 +1641,12 @@ for i = sb + 1, #chan.added do
 end
 check(refreshed_lines == 2, "hsrefresh: both the in-flight and the queued refresh answer (" .. refreshed_lines .. ")")
 
+-- a handler that throws surfaces in the split instead of dying in the log
+sb = #chan.added
+local threw = not pcall(commands["/hsfind"], { channel = chan }) -- no words → nil index
+check(not threw, "commands: a throwing handler does not escape to chatterino")
+check(added_text_has("/hsfind failed:", #chan.added - sb), "commands: a throwing handler reports the error in the split")
+
 -- /hshelp: tier-gated command index
 sb = #chan.added
 commands["/hshelp"]({ words = { "/hshelp" }, channel = chan })
