@@ -70,6 +70,8 @@ function M.logs(channel, user, chan_hint)
                 u.sysmsg(ctx, luser .. " opted out of logs")
             elseif status == 503 then
                 u.sysmsg(ctx, "chat stats are busy — try again later")
+            else
+                u.sysmsg(ctx, "stats failed: " .. tostring(err))
             end
             u.linkmsg(ctx, "archive: " .. luser .. (chan and (" in #" .. string.lower(chan)) or ""), url)
             return

@@ -1594,6 +1594,14 @@ http_error("/api/chatter/twitch/busyuser/stats", 503, { error = "busy" })
 check(added_text_has("busy", #chan.added - sb), "hslogs: 503 busy surfaces a retry line")
 check(added_link_has("/logs/search", #chan.added - sb), "hslogs: archive link still shown when busy")
 
+-- /hslogs: any other failure (500, 429, timeout) says so before the link —
+-- it used to print only the link, so a dead stats route read as "no stats"
+sb = #chan.added
+commands["/hslogs"]({ words = { "/hslogs", "erruser" }, channel = chan })
+http_error("/api/chatter/twitch/erruser/stats", 500, { error = "nope" })
+check(added_text_has("stats failed:", #chan.added - sb), "hslogs: a generic failure gets its own line")
+check(added_link_has("/logs/search", #chan.added - sb), "hslogs: archive link still shown on a generic failure")
+
 -- /hsfind: a catalog request that fails is reported as a failure, not as
 -- "no emotes found" (which is what an empty answer used to collapse into)
 sb = #chan.added
