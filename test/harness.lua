@@ -1594,6 +1594,14 @@ http_error("/api/chatter/twitch/busyuser/stats", 503, { error = "busy" })
 check(added_text_has("busy", #chan.added - sb), "hslogs: 503 busy surfaces a retry line")
 check(added_link_has("/logs/search", #chan.added - sb), "hslogs: archive link still shown when busy")
 
+-- /hsfind: a catalog request that fails is reported as a failure, not as
+-- "no emotes found" (which is what an empty answer used to collapse into)
+sb = #chan.added
+commands["/hsfind"]({ words = { "/hsfind", "failq" }, channel = chan })
+http_fail("/api/emote-search?q=failq")
+check(added_text_has("catalog search failed:", #chan.added - sb), "hsfind: a failed catalog request says it failed")
+check(not added_text_has("no emotes found", #chan.added - sb), "hsfind: a failed request is not reported as an empty catalog")
+
 -- /hsrefresh: the outcome lands in the split — success with the count,
 -- failure with the reason. before, both looked like "refreshing…" forever.
 sb = #chan.added

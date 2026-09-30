@@ -185,7 +185,10 @@ function M.register()
         -- search with the lowercased query — search_all's sanity gate requires
         -- lowercase, and the server matches case-insensitively (returns proper-
         -- case names). passing raw `q` silently returned 0 for any capital.
-        seventv.search_all(ql, function(list)
+        seventv.search_all(ql, function(list, _, err)
+            -- a catalog request that failed is not an empty catalog: say so,
+            -- then still show whatever the local inventory matched
+            if err then u.sysmsg(ctx, "catalog search failed: " .. tostring(err)) end
             for _, e in ipairs(list) do
                 if #results >= FIND_CAP then break end
                 if not seen[e.name] then
@@ -195,7 +198,7 @@ function M.register()
                 end
             end
             if #results == 0 then
-                pcall(function() ch:add_system_message("[heatsync] no emotes found for '" .. q .. "'") end)
+                if not err then u.sysmsg(ctx, "no emotes found for '" .. q .. "'") end
                 return
             end
             local items = {}

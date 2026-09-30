@@ -108,7 +108,8 @@ function M.search_all(q, cb)
     net.get_json(url, 8000, function(payload, err)
         if not payload or (type(payload.merged) ~= "table" and type(payload.results) ~= "table") then
             net.log_warn("emote search failed for '" .. q .. "': " .. tostring(err))
-            cb({}); return
+            -- third arg: the request itself failed, which is not "no results"
+            cb({}, false, err or "bad response"); return
         end
         local out = {}
         local seen = {}
