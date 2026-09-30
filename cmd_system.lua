@@ -19,10 +19,24 @@ function M.register(get_login)
             u.sysmsg(ctx, "no signed-in twitch account; can't refresh")
             return
         end
-        local ok, err = pcall(inventory.refresh, login)
+        -- the answer comes back on the same line the command was typed in:
+        -- a refresh that failed and one that is still running used to look
+        -- identical from the split (both said "refreshing…", the failure
+        -- went to the log).
+        local ok, started = pcall(inventory.refresh, login, nil, function(count, reason)
+            if count then
+                u.sysmsg(ctx, "inventory refreshed: " .. tostring(count) .. " emotes")
+            else
+                u.sysmsg(ctx, "refresh failed: " .. tostring(reason))
+            end
+        end)
         if not ok then
-            net.log_warn("manual refresh failed: " .. tostring(err))
-            u.sysmsg(ctx, "refresh failed, see log")
+            net.log_warn("manual refresh failed: " .. tostring(started))
+            u.sysmsg(ctx, "refresh failed: " .. tostring(started))
+            return
+        end
+        if started == false then
+            u.sysmsg(ctx, "a refresh is already running; another is queued behind it")
             return
         end
         u.sysmsg(ctx, "refreshing inventory for " .. login .. "…")

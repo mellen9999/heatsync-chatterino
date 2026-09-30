@@ -17,6 +17,7 @@ local M = {
 local refreshing = false
 local refresh_queued = false
 local refresh_queued_v = nil -- cache-bust carried by a queued ws-triggered refresh
+local refresh_queued_cb = nil -- a /hsrefresh caller waiting behind an in-flight refresh
 local last_refresh_ts = 0
 local REFRESH_MIN_GAP_S = 1
 
@@ -101,10 +102,16 @@ end
 -- ?v=<n> so the edge-cached GET below (60s s-maxage) can't serve a response
 -- from before the change. plain calls (boot, account switch, /hsrefresh,
 -- periodic reconcile) pass nothing and hit the cache as before.
-function M.refresh(login, v)
+-- cb (optional): cb(count) once this refresh has applied, cb(nil, reason)
+-- when it could not. only /hsrefresh passes one — a person typed the
+-- command and is waiting on a line, so a failure that is only logged is
+-- indistinguishable from a slow refresh to them. returns false when another
+-- refresh is in flight and this one was queued behind it.
+function M.refresh(login, v, cb)
     if not login or login == "" then
         net.log_warn("no account login; skipping refresh")
-        return
+        if cb then cb(nil, "no account login") end
+        return false
     end
     -- set M.login FIRST: on an account switch while a previous refresh is
     -- still in flight, the early return below must not leave M.login pointing
@@ -115,20 +122,29 @@ function M.refresh(login, v)
     if refreshing then
         refresh_queued = true
         if v then refresh_queued_v = v end
-        return
+        if cb then refresh_queued_cb = cb end
+        return false
     end
     refreshing = true
     last_refresh_ts = net.now()
     net.log_info("refreshing inventory for " .. login)
 
+    -- one answer per refresh, never a throw out of a net callback
+    local function report(count, reason)
+        if not cb then return end
+        local f = cb
+        cb = nil
+        pcall(f, count, reason)
+    end
+
     local function done()
         refreshing = false
         if refresh_queued then
             refresh_queued = false
-            local qv = refresh_queued_v
-            refresh_queued_v = nil
+            local qv, qcb = refresh_queued_v, refresh_queued_cb
+            refresh_queued_v, refresh_queued_cb = nil, nil
             -- coalesced ws deltas that arrived mid-flight: go again
-            M.refresh(M.login, qv)
+            M.refresh(M.login, qv, qcb)
         end
     end
 
@@ -136,10 +152,11 @@ function M.refresh(login, v)
     net.get_json(profile_url, 10000, function(data, err)
         -- account switched while this was in flight: abandon A's response so it
         -- can't apply A's inventory under B's identity. done() runs B's queued refresh.
-        if login ~= M.login then done(); return end
+        if login ~= M.login then report(nil, "account switched"); done(); return end
         if not data then
             net.log_warn("profile fetch failed: " .. tostring(err))
             note_possible_boot_failure()
+            report(nil, "profile fetch failed: " .. tostring(err))
             done()
             return
         end
@@ -150,29 +167,34 @@ function M.refresh(login, v)
         if not is_real_numeric_id(uid) then
             net.log_warn("no heatsync inventory yet for " .. login ..
                 " (profile id missing or shadow). sign in at heatsync.org once.")
+            report(nil, "no heatsync inventory yet for " .. login .. " — sign in at heatsync.org once")
             done()
             return
         end
         local emotes_url = net.ORIGIN .. "/api/users/" .. tostring(uid) .. "/emotes"
         if v then emotes_url = emotes_url .. "?v=" .. tostring(v) end
         net.get_json(emotes_url, 10000, function(payload, err2)
-            if login ~= M.login then done(); return end -- account switched mid-flight
+            if login ~= M.login then report(nil, "account switched"); done(); return end -- account switched mid-flight
             if not payload then
                 net.log_warn("emote fetch failed: " .. tostring(err2))
                 note_possible_boot_failure()
+                report(nil, "emote fetch failed: " .. tostring(err2))
                 done()
                 return
             end
             local rows = payload.emotes or payload.data or payload.items
             if type(rows) ~= "table" then
                 net.log_warn("emote response has no recognizable list field")
+                report(nil, "emote response has no recognizable list field")
                 done()
                 return
             end
             apply_rows(rows, login)
+            report(M.count())
             done()
         end)
     end)
+    return true
 end
 
 -- ws delta events (emote:added / emote:removed / emotes:refresh) all funnel

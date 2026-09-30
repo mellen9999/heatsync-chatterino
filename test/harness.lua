@@ -1594,6 +1594,37 @@ http_error("/api/chatter/twitch/busyuser/stats", 503, { error = "busy" })
 check(added_text_has("busy", #chan.added - sb), "hslogs: 503 busy surfaces a retry line")
 check(added_link_has("/logs/search", #chan.added - sb), "hslogs: archive link still shown when busy")
 
+-- /hsrefresh: the outcome lands in the split — success with the count,
+-- failure with the reason. before, both looked like "refreshing…" forever.
+sb = #chan.added
+commands["/hsrefresh"]({ words = { "/hsrefresh" }, channel = chan })
+check(added_text_has("refreshing inventory for " .. account.name, #chan.added - sb), "hsrefresh: optimistic line still shown")
+http_answer("/api/profile/" .. account.name, { profile = { id = 42 } })
+http_answer("/api/users/42/emotes", { emotes = {
+    { custom_name = "refA", url = "https://cdn.7tv.app/emote/A/1x.webp", width = 28, height = 28 },
+    { custom_name = "refB", url = "https://cdn.7tv.app/emote/B/1x.webp", width = 28, height = 28 },
+} })
+check(added_text_has("inventory refreshed: 2 emotes", #chan.added - sb), "hsrefresh: success reports the emote count")
+sb = #chan.added
+commands["/hsrefresh"]({ words = { "/hsrefresh" }, channel = chan })
+http_fail("/api/profile/" .. account.name)
+check(added_text_has("refresh failed: profile fetch failed", #chan.added - sb), "hsrefresh: a failed fetch reports the reason")
+-- a refresh typed while one is in flight is queued, and still answers
+sb = #chan.added
+commands["/hsrefresh"]({ words = { "/hsrefresh" }, channel = chan })
+commands["/hsrefresh"]({ words = { "/hsrefresh" }, channel = chan })
+check(added_text_has("already running", #chan.added - sb), "hsrefresh: a second refresh mid-flight says it is queued")
+http_answer("/api/profile/" .. account.name, { profile = { id = 42 } })
+http_answer("/api/users/42/emotes", { emotes = { { custom_name = "refA", url = "https://cdn.7tv.app/emote/A/1x.webp", width = 28, height = 28 } } })
+-- the queued one now runs and answers too
+http_answer("/api/profile/" .. account.name, { profile = { id = 42 } })
+http_answer("/api/users/42/emotes", { emotes = { { custom_name = "refA", url = "https://cdn.7tv.app/emote/A/1x.webp", width = 28, height = 28 } } })
+local refreshed_lines = 0
+for i = sb + 1, #chan.added do
+    if type(chan.added[i]) == "string" and chan.added[i]:find("inventory refreshed: 1 emotes", 1, true) then refreshed_lines = refreshed_lines + 1 end
+end
+check(refreshed_lines == 2, "hsrefresh: both the in-flight and the queued refresh answer (" .. refreshed_lines .. ")")
+
 -- /hshelp: tier-gated command index
 sb = #chan.added
 commands["/hshelp"]({ words = { "/hshelp" }, channel = chan })
