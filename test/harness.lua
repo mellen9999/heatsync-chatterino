@@ -2615,5 +2615,115 @@ do -- fetch: stubbed GET shows a pin, later pin:set of the same id dedupes
     pin_frame({ type = "pin:clear", platform = "twitch", channel = "somechannel" })
 end
 
+-- ===== emote modifier tokens: consumed next to a heatsync emote, shown in its tooltip =====
+do
+    local modifiers = require("modifiers")
+    senders.feed_broadcast("moduser", "modMote", { url = "https://cdn.7tv.app/emote/MOD/1x.webp", width = 32, height = 32 })
+    -- build a message the way twitch does: one text element per word; a table spec is passed through as-is
+    local function mod_msg(...)
+        local m = fake_msg("moduser", "9090", "x")
+        local els = { { type = "timestamp", flags = 0 },
+            { type = "text", words = { "moduser:" }, color = "#ff0000", flags = c2.MessageElementFlag.Username, trailing_space = true } }
+        local all = {}
+        for _, spec in ipairs({ ... }) do
+            if type(spec) == "string" then
+                for w in spec:gmatch("%S+") do els[#els + 1] = fake_text_el({ w }); all[#all + 1] = w end
+            else
+                els[#els + 1] = spec
+            end
+        end
+        m.elements = function() return els end
+        m.message_text = table.concat(all, " ")
+        return m
+    end
+    -- run it through the hook; returns (rebuilt?, summary string) — summary lists every body element
+    local function run(...)
+        local before = #chan.replaced
+        local m = mod_msg(...)
+        chan.msgs[#chan.msgs + 1] = m
+        chan.appended_cb(m, nil)
+        if #chan.replaced == before then return false, nil end
+        local out = {}
+        for _, e in ipairs(chan.replaced[#chan.replaced].new.init.elements) do
+            if e.type == "scaling-image" then out[#out + 1] = "[" .. e.tooltip .. "]"
+            elseif e.type == "text" and e.text then out[#out + 1] = e.text
+            elseif e.type == "text" and e.words then out[#out + 1] = table.concat(e.words, " ")
+            elseif e.native then out[#out + 1] = "<native>" end
+        end
+        return true, table.concat(out, "|")
+    end
+    local native = { type = "emote", native = true, flags = c2.MessageElementFlag.EmoteImage }
+
+    local ok, sm = run("modMote w!")
+    check(ok and sm:find("[modMote · heatsync · wide]", 1, true) and not sm:find("w!", 1, true),
+        "modifiers: postfix token consumed, named in the tooltip")
+    ok, sm = run("modMote w!h!ffzX")
+    check(ok and sm:find("· wide · flipH · flipH]", 1, true) and not sm:find("ffzX", 1, true),
+        "modifiers: chain w!h!ffzX -> three names, one word consumed")
+    ok, sm = run("modMote c!#ff8700")
+    check(ok and sm:find("· tint #ff8700]", 1, true), "modifiers: c!#hex shows the tint, original hex kept")
+    ok, sm = run("modMote w! h!")
+    check(ok and sm:find("· wide · flipH]", 1, true) and not sm:find("h!", 1, true), "modifiers: several postfix words stack on the same emote")
+    ok, sm = run("modMote z!")
+    check(ok and sm:find("· zero-width (drawn inline here)]", 1, true), "modifiers: z! stays drawn inline, tooltip says so")
+    ok, sm = run("hey w! modMote")
+    check(ok and sm:find("[modMote · heatsync · wide]", 1, true) and sm:find("hey", 1, true) and not sm:find("w!", 1, true),
+        "modifiers: prefix form attaches to the next heatsync emote")
+    ok, sm = run("modMote one w! modMote")
+    check(ok and sm:find("[modMote · heatsync]", 1, true) and sm:find("[modMote · heatsync · wide]", 1, true),
+        "modifiers: postfix wins only directly after an emote; later prefix hits the next one")
+    ok, sm = run("modMote hi w! there")
+    check(ok and sm:find("w!", 1, true) and sm:find("[modMote · heatsync]", 1, true), "modifiers: prefix with no following heatsync emote stays as text")
+    ok, sm = run("modMote hello w!")
+    check(ok and sm:find("hello", 1, true) and sm:find("w!", 1, true) and sm:find("[modMote · heatsync]", 1, true),
+        "modifiers: a modifier after a non-heatsync word stays as text")
+    ok, sm = run("modMote", native, "w!")
+    check(ok and sm:find("<native>", 1, true) and sm:find("w!", 1, true) and sm:find("[modMote · heatsync]", 1, true),
+        "modifiers: a modifier after a natively drawn emote stays as text")
+    ok, sm = run("w!", native, "modMote")
+    check(ok and sm:find("w!", 1, true) and sm:find("[modMote · heatsync]", 1, true), "modifiers: a prefix held across a native element is released as text")
+    local before = #chan.replaced
+    run("just w! text")
+    check(#chan.replaced == before, "modifiers: a modifier word alone never triggers a rebuild")
+    require("store").block("modMote")
+    ok, sm = run("modMote w! >>abc")
+    check(ok == true and sm:find("w!", 1, true) and not sm:find("[modMote", 1, true), "modifiers: blocked emote draws nothing, so its modifier stays text")
+    require("store").unblock("modMote")
+    do -- the 50-emote cap still bounds a flood; consumed tokens don't spend it
+        local parts = {}
+        for _ = 1, 60 do parts[#parts + 1] = "modMote w!" end
+        ok, sm = run(table.concat(parts, " "))
+        local imgs = select(2, sm:gsub("%[modMote", ""))
+        check(ok and imgs == 50, "modifiers: 50-emote cap holds with tokens in the mix (got " .. tostring(imgs) .. ")")
+    end
+    check(modifiers.classify("hello") == nil and modifiers.classify("w!x") == nil and modifiers.classify("") == nil
+        and modifiers.classify(string.rep("w!", 500)) == nil, "modifiers: classify rejects plain words, half-tokens, empty and oversized")
+
+    -- cross-repo twin: the token table must equal the site's HS_MOD_TOKENS
+    local function site_file()
+        local dirs = { host_os.getenv("HS_SITE_DIR"), PLUGIN .. "/../../../heatsync", PLUGIN .. "/../../heatsync", PLUGIN .. "/../heatsync" }
+        for _, d in pairs(dirs) do
+            local f = io.open(d .. "/client/utils/hs-modifiers.js", "r")
+            if f then local src = f:read("a"); f:close(); return src end
+        end
+    end
+    local src = site_file()
+    if not src then
+        print("SKIP modifiers: site hs-modifiers.js not found (set HS_SITE_DIR) - token twin guard NOT run")
+    else
+        local body = src:match("HS_MOD_TOKENS = Object%.freeze%(%{(.-)%}%)")
+        local js, n = {}, 0
+        for line in (body or ""):gmatch("[^\n]+") do
+            line = line:gsub("//.*", "")
+            local k, v = line:match("^%s*'?([%w!]+)'?%s*:%s*'(%w+)'")
+            if k then js[k] = v; n = n + 1 end
+        end
+        local same = n > 0
+        for k, v in pairs(js) do if modifiers.TOKENS[k] ~= v then same = false; print("  twin drift: site has " .. k .. "=" .. v) end end
+        for k, v in pairs(modifiers.TOKENS) do if js[k] ~= v then same = false; print("  twin drift: plugin has " .. k .. "=" .. v) end end
+        check(same, "modifiers: token table identical to the site's HS_MOD_TOKENS (" .. n .. " tokens)")
+    end
+end
+
 print(failures == 0 and "\nALL PASS" or ("\n" .. failures .. " FAILURES"))
 host_os.exit(failures == 0 and 0 or 1)

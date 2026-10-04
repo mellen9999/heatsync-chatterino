@@ -20,7 +20,7 @@ no fork, no patched binary. one lua plugin that feature-detects the host build a
 
 twitch emotes, badges, timestamps, and replies pass through untouched. a message with no heatsync content is never rebuilt — the render decision is two hash lookups per word, nothing allocated on a miss.
 
-known limits: zero-width overlay emotes render as normal inline images; username paints don't render (there's no plugin API for them, and they're not faked with colored text).
+known limits: zero-width overlay emotes render as normal inline images; modifier tokens (`w!`, `h!`, `ffzX`, `c!#ff8700`, chains like `w!h!ffzX`) are recognised next to a heatsync emote and named in its tooltip (`· wide · flipH`), but the image itself isn't transformed — a plugin can't — and the token word is hidden rather than printed as stray text; username paints don't render (there's no plugin API for them, and they're not faked with colored text).
 
 ## the emote menu
 

@@ -8,6 +8,7 @@
 -- passed through as objects, which chatterino clones. the render DECISION on a
 -- miss is two hash lookups per word and allocates nothing.
 local net = require("net")
+local modifiers = require("modifiers")
 local caps = require("caps")
 local inventory = require("inventory")
 local senders = require("senders")
@@ -133,6 +134,37 @@ end
 -- multichat's MAX_EMOTE_TOKENS. over budget → the word stays plain text.
 local MAX_RENDER_TOKENS = 50
 
+-- modifier tokens ("w!", "ffzX", "c!#ff8700") fold into the tooltip of the heatsync
+-- emote THIS PASS drew; the image itself can't be transformed. state rides on
+-- `budget` for the whole message because chatterino splits twitch text per word:
+--   budget.last    the emote we just drew (postfix: "KEKW w!"); cleared by any other word/element
+--   budget.pending a prefix token held for the next emote ("w! KEKW"); if that next
+--                  word isn't an emote we draw it is emitted back as ordinary text
+-- a token next to anything we did not draw is never touched.
+local MAX_MOD_NAMES = 12 -- per emote; further tokens are still consumed, just not listed
+
+local function attach_mods(entry, cls, word_tokens)
+    for _, m in ipairs(cls.mods) do
+        if #entry.mods < MAX_MOD_NAMES then entry.mods[#entry.mods + 1] = m end
+    end
+    if cls.hue ~= nil then
+        for _, w in ipairs(word_tokens) do
+            if w:sub(1, 2) == "c!" and #w > 2 then entry.tint = modifiers.tint_text(w) end
+        end
+    end
+    entry.el.tooltip = entry.base .. modifiers.describe(entry.mods, entry.tint)
+end
+
+-- emit a held prefix token back as the plain text it was (nothing is lost)
+local function release_pending(elems, budget)
+    local pend = budget.pending
+    if not pend then return end
+    budget.pending = nil
+    local init = { type = "text", text = pend.word, color = pend.src.color, style = pend.src.style }
+    if pend.src.flags then init.flags = pend.src.flags end
+    table.insert(elems, init)
+end
+
 local function rebuild_text_element(elems, el, sender_map, budget, t)
     local run = {}
     local src = {}
@@ -161,14 +193,31 @@ local function rebuild_text_element(elems, el, sender_map, budget, t)
         -- the 1x line height would mis-scale it — a 128-tall record rendered a 32px
         -- image at ~7px, i.e. invisible. renderable() guarantees emote.h > 0.
         local over_budget = budget.n >= MAX_RENDER_TOKENS
+        if over_budget and budget.pending then flush_run(elems, run, src); release_pending(elems, budget) end
         -- is_blocked only when the word is actually a renderable emote — a plain
         -- word (the majority) skips the lookup via short-circuit.
         local set = not over_budget and renderable(emote, t) and not store.is_blocked(word)
             and hs_imageset(emote.url, emote.h) or nil
-        if set then
+        local cls = nil
+        if not set and (budget.last or not over_budget) then cls = modifiers.classify(word) end
+        if cls and budget.last then
+            -- postfix: attaches to the emote we just drew, the word itself is dropped
+            attach_mods(budget.last, cls, cls.words)
+        elseif cls and not over_budget then
+            -- prefix: hold for the next word; consecutive tokens merge into one hold
+            if budget.pending then
+                budget.pending.word = budget.pending.word .. " " .. word
+                for _, m in ipairs(cls.mods) do table.insert(budget.pending.cls.mods, m) end
+                if cls.hue ~= nil then budget.pending.cls.hue = cls.hue end
+                for _, w in ipairs(cls.words) do table.insert(budget.pending.cls.words, w) end
+            else
+                flush_run(elems, run, src)
+                budget.pending = { word = word, cls = cls, src = src }
+            end
+        elseif set then
             budget.n = budget.n + 1
             flush_run(elems, run, src)
-            table.insert(elems, {
+            local img = {
                 type = "scaling-image",
                 images = set,
                 flags = c2.MessageElementFlag.EmoteImage,
@@ -178,9 +227,21 @@ local function rebuild_text_element(elems, el, sender_map, budget, t)
                 -- the plugin draws get this; chatterino owns clicks on emotes it
                 -- renders natively (the plugin API can't override those).
                 link = { type = c2.LinkType.InsertText, value = word .. " " },
-            })
+            }
+            table.insert(elems, img)
+            local entry = { el = img, base = img.tooltip, mods = {} }
+            if budget.pending then
+                attach_mods(entry, budget.pending.cls, budget.pending.cls.words)
+                budget.pending = nil
+            end
+            budget.last = entry
         else
             local tid = not over_budget and thread_id(word)
+            budget.last = nil
+            if budget.pending then
+                flush_run(elems, run, src)
+                release_pending(elems, budget)
+            end
             if tid then
                 budget.n = budget.n + 1
                 flush_run(elems, run, src)
@@ -260,12 +321,16 @@ local function build_replacement(msg, sender_map, want_flame, t)
         if ty == "text" then
             rebuild_text_element(elems, el, sender_map, budget, t)
         else
+            -- a non-text element ends any modifier adjacency (and returns a held prefix token)
+            budget.last = nil
+            release_pending(elems, budget)
             -- pass the object through; chatterino clones it (twitch emotes,
             -- badges, timestamps, mentions, reply curves stay verbatim)
             table.insert(elems, el)
         end
         ::continue::
     end
+    release_pending(elems, budget)
     -- fallback: no username element detected → markers at the very start
     if not markers_done then
         local pre = {}
