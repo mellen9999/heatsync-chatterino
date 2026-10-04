@@ -332,6 +332,8 @@ function M.link(cc_name, platform, channel, auto)
     add_route(key, cc_name)
     if not auto then persist() end
     subscribe(platform, string.lower(channel))
+    -- a freshly linked kick source may already have a pin (pin.lua fetches it)
+    if platform == "kick" and M.on_kick_linked then pcall(M.on_kick_linked, string.lower(channel)) end
     return true
 end
 

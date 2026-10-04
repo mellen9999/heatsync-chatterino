@@ -23,6 +23,7 @@ local multichat = require("multichat")
 local badges = require("badges")
 local recents = require("recents")
 local live = require("live")
+local pin = require("pin")
 
 -- tab-complete popup size (shared ceiling: own inventory fills first, then the
 -- 7tv/bttv/ffz catalog appends into whatever room is left). raised 25→40 so a
@@ -203,6 +204,8 @@ local function on_ws_event(msg)
     if multichat.dispatch(msg) then return end
     -- opt-in go-live / went-offline lines for linked kick/yt sources
     if live.handle(msg) then return end
+    -- the channel's heatsync pinned message (view-only)
+    if pin.handle(msg) then return end
     local t = msg.type
     if t == "emote:added" or t == "emote:removed" or t == "emotes:refresh" then
         if is_own_inventory_ch(msg._ch) then
@@ -247,13 +250,27 @@ if caps.tier >= 1 then
     -- multichat needs only stable APIs (add_message + by_name), so it rides
     -- tier>=1 alongside ws. re-subscribe its sources whenever the ws (re)connects.
     multichat.load()
-    ws.on_reconnect = multichat.on_ws_up
+    -- the first connect also fetches pins for persisted kick links (twitch tabs
+    -- fetch on open); later reconnects only re-subscribe
+    local pins_booted = false
+    ws.on_reconnect = function()
+        multichat.on_ws_up()
+        if not pins_booted then
+            pins_booted = true
+            pin.refetch(true)
+        end
+    end
+    multichat.on_kick_linked = function(slug) pin.fetch("kick", slug) end
     -- youtube has no stream:online/offline of its own — feed live.lua's
     -- go-live/offline line off youtube:status changes instead (see live.lua).
     multichat.on_youtube_status = live.youtube_status
     -- a reconnect after a long rx gap may have missed invalidations — mark
     -- every cached sender stale so the next message from them refetches.
-    ws.on_resync = senders.expire_all
+    -- ...and may have missed a pin:set, so re-fetch every joined room's pin too.
+    ws.on_resync = function()
+        senders.expire_all()
+        pin.refetch(false)
+    end
     ws.start()
 end
 
@@ -286,7 +303,10 @@ end
 if caps.tier == 2 then
     render.on_channel_found = function(platform, channel)
         ws.join(platform, channel)
-        if platform == "twitch" then try_auto_multichat(channel) end
+        if platform == "twitch" then
+            try_auto_multichat(channel)
+            pin.fetch("twitch", channel)
+        end
     end
     render.on_channel_gone = function(platform, channel)
         ws.leave(platform, channel)

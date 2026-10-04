@@ -329,6 +329,13 @@ function M.start()
     M.connect()
 end
 
+-- snapshot of the joined rooms as {platform, channel} pairs
+function M.joined_rooms()
+    local out = {}
+    for _, j in pairs(joined) do out[#out + 1] = { platform = j.platform, channel = j.channel } end
+    return out
+end
+
 function M.joined_count()
     local n = 0
     for _ in pairs(joined) do n = n + 1 end

@@ -62,6 +62,22 @@ function M.register(get_login)
         end
     end)
 
+    -- pinned message toggle: heatsync's pinned message for the channel, view-only
+    -- (pinning needs a heatsync login; the plugin socket is anonymous)
+    c2.register_command("/hspin", function(ctx)
+        local arg = ctx.words[2]
+        if arg == "on" then
+            store.set_pin(true)
+            u.sysmsg(ctx, "pinned message ON — 📌 line when a channel's heatsync pin is set or cleared")
+        elseif arg == "off" then
+            store.set_pin(false)
+            u.sysmsg(ctx, "pinned message OFF")
+        else
+            u.sysmsg(ctx, "pinned message is " .. (store.pin_enabled() and "on" or "off") ..
+                " · /hspin on|off · view-only, pin from heatsync.org or the extension")
+        end
+    end)
+
     -- live-status toggle: go-live / went-offline lines for your linked kick/yt
     -- sources (chatterino shows twitch natively, so those are skipped)
     c2.register_command("/hslive", function(ctx)
@@ -114,6 +130,7 @@ function M.register(get_login)
             u.sysmsg(ctx, "rendering: unavailable on this build (needs nightly)")
         end
         u.sysmsg(ctx, "multichat: " .. multichat.summary())
+        u.sysmsg(ctx, "pinned message: " .. (store.pin_enabled() and "on" or "off") .. " (/hspin on|off)")
         -- per-tab link breakdown so a merge is legible, not just a count
         local links = multichat.detail()
         for _, l in ipairs(links) do u.sysmsg(ctx, "  #" .. l.tab .. " ← " .. l.sources) end
@@ -125,7 +142,7 @@ function M.register(get_login)
         u.sysmsg(ctx, "heatsync commands · build " .. caps.name())
         u.sysmsg(ctx, "emotes: :name tab-complete · /hsemotes menu · /hsfind <q> search · /hsinv <user> [page]")
         u.sysmsg(ctx, "archive: /hssearch <q> posts · /hschat <q> [@user] [#chan] chat-logs · /hslogs <user> [chan] · /hsmoments [<n>h] [plat] [pg] · /hshot [plat] [pg] · /hswhois <user>")
-        u.sysmsg(ctx, "chat: /hsmulti kick:<slug>|yt:<handle>|off|auto on|off · /hslive · /hsflame · /hsbadges · /hsblock <name> · /hsunblock <name> · /hsblocklist")
+        u.sysmsg(ctx, "chat: /hsmulti kick:<slug>|yt:<handle>|off|auto on|off · /hslive · /hspin · /hsflame · /hsbadges · /hsblock <name> · /hsunblock <name> · /hsblocklist")
         u.sysmsg(ctx, "system: /hsstatus · /hsrefresh · /hsarchive on|off · /hsclear")
         u.sysmsg(ctx, "syntax: @user #channel narrow a search · plat:value links a multichat source · <n>h = hours")
         if caps.tier < 2 then

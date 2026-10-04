@@ -71,7 +71,7 @@ c2 = {}
 c2.LogLevel = { Debug = 1, Info = 2, Warning = 3, Critical = 4 }
 c2.EventType = { CompletionRequested = "completion" }
 c2.ChannelType = { None = 0, Twitch = 8, Misc = 9 }
-c2.LinkType = { Url = "url", InsertText = "insert", JumpToChannel = "jump", UserInfo = "userinfo", CopyToClipboard = "copy" }
+c2.LinkType = { Url = "url", InsertText = "insert", JumpToChannel = "jump", JumpToMessage = "jumpmsg", UserInfo = "userinfo", CopyToClipboard = "copy" }
 c2.FontStyle = { ChatMedium = "chat-medium" }
 c2.MessageElementFlag = { None = 0, Text = 1, EmoteImage = 2, Username = 4 }
 c2.MessageFlag = { None = 0, System = 1, Highlighted = 2 }
@@ -2493,6 +2493,126 @@ do
     } })
     c2.Message.new = saved
     check(applied[2] == "kek · heatsync" and applied[1] == nil, "net.new_message: tooltip re-applied only on linked elements")
+end
+
+-- ===== pinned message (view-only): pin:set / pin:clear + GET /api/pin =====
+require("store").set_pin(true)
+local psock = sockets[#sockets]
+if psock.closed then psock.opts.on_open() end -- latest socket, brought up like a fresh connect
+local function pin_frame(t) psock.opts.on_text(register_payload(t)) end
+local function pin_line(i) -- the i-th last added entry as a message table (or nil)
+    local m = chan.added[#chan.added - (i or 0)]
+    return type(m) == "table" and m.init or nil
+end
+local function pin_body(init)
+    local last = init and init.elements[#init.elements]
+    return last
+end
+do
+    local a0 = #chan.added
+    pin_frame({ type = "pin:set", platform = "twitch", channel = "SomeChannel",
+        pin = { id = "p1", message_id = "abc-123", username = "mod1", display_name = "Mod1", color = "#ff0000",
+                content = "be nice " .. string.rep("x", 1000000) } })
+    check(#chan.added == a0 + 1, "pin: pin:set shows one line in the twitch tab")
+    local init = pin_line()
+    local body = pin_body(init)
+    check(init and init.elements[1].text == "📌 pinned" and init.elements[2].type == "mention", "pin: line is label + mention + content")
+    check(body and #body.text <= 500 and body.text:sub(1, 8) == "be nice ", "pin: content clamped to 500")
+    check(body and body.link and body.link.type == c2.LinkType.JumpToMessage and body.link.value == "abc-123",
+        "pin: twitch content jumps to the original message")
+    check(init.flags == c2.MessageFlag.System, "pin: line is flagged system")
+    a0 = #chan.added
+    pin_frame({ type = "pin:set", platform = "twitch", channel = "somechannel",
+        pin = { id = "p1", username = "mod1", content = "be nice" } })
+    check(#chan.added == a0, "pin: same id twice shows once")
+    pin_frame({ type = "pin:set", platform = "twitch", channel = "somechannel",
+        pin = { id = "p2", username = "mod1", content = "new pin" } })
+    check(#chan.added == a0 + 1, "pin: a new id replaces")
+    a0 = #chan.added
+    pin_frame({ type = "pin:clear", platform = "twitch", channel = "somechannel" })
+    check(#chan.added == a0 + 1 and added_text_has("pin cleared", 1), "pin: clear after a shown pin shows the cleared line")
+    a0 = #chan.added
+    pin_frame({ type = "pin:clear", platform = "twitch", channel = "somechannel" })
+    check(#chan.added == a0, "pin: clear with nothing shown is silent")
+end
+do -- hostile payloads never throw and never show junk
+    local a0 = #chan.added
+    local bad = {
+        { type = "pin:set", platform = "twitch", channel = "somechannel", pin = "nope" },
+        { type = "pin:set", platform = "twitch", channel = "somechannel", pin = {} },
+        { type = "pin:set", platform = "twitch", channel = "somechannel", pin = { content = 5 } },
+        { type = "pin:set", platform = "myspace", channel = "somechannel", pin = { id = "h1", username = "u", content = "x" } },
+        { type = "pin:set", platform = "twitch", channel = "bad name/../x", pin = { id = "h2", username = "u", content = "x" } },
+        { type = "pin:set", platform = "twitch", channel = 42, pin = { id = "h3", username = "u", content = "x" } },
+        { type = "pin:set", pin = { id = "h4", username = "u", content = "x" } },
+        { type = "pin:clear", platform = {}, channel = {} },
+    }
+    local ok = true
+    for _, f in ipairs(bad) do ok = pcall(pin_frame, f) and ok end
+    check(ok and #chan.added == a0, "pin: hostile payloads never throw and show nothing")
+    pin_frame({ type = "pin:set", platform = "twitch", channel = "somechannel",
+        pin = { id = "h5", message_id = "bad id\n/x", username = "u\nv", display_name = string.rep("n", 500),
+                color = "red", content = "line1\nline2\0x" } })
+    local init = pin_line()
+    local body = pin_body(init)
+    check(#chan.added == a0 + 1 and not body.text:find("%c") and not init.display_name:find("%c")
+        and #init.display_name <= 64 and body.link == nil and init.elements[2].fallback_color == "#ffffff",
+        "pin: control bytes stripped, bad message_id/color dropped, name clamped")
+    pin_frame({ type = "pin:clear", platform = "twitch", channel = "somechannel" })
+end
+do -- toggle off: swallowed, nothing shown, nothing remembered
+    require("store").set_pin(false)
+    local a0 = #chan.added
+    pin_frame({ type = "pin:set", platform = "twitch", channel = "somechannel", pin = { id = "t1", username = "u", content = "hidden" } })
+    pin_frame({ type = "pin:clear", platform = "twitch", channel = "somechannel" })
+    check(#chan.added == a0, "pin: /hspin off suppresses set + clear")
+    require("store").set_pin(true)
+    pin_frame({ type = "pin:set", platform = "twitch", channel = "somechannel", pin = { id = "t1", username = "u", content = "hidden" } })
+    check(#chan.added == a0 + 1, "pin: off remembered nothing, same id shows once back on")
+    pin_frame({ type = "pin:clear", platform = "twitch", channel = "somechannel" })
+end
+do -- a build that rejects the mention element degrades to a plain username element, then a system line
+    local saved = c2.Message.new
+    local a0 = #chan.added
+    c2.Message.new = function(init)
+        for _, e in ipairs(init.elements) do if e.type == "mention" then error("no mention element") end end
+        return saved(init)
+    end
+    pin_frame({ type = "pin:set", platform = "twitch", channel = "somechannel", pin = { id = "d1", username = "u", content = "degrade" } })
+    check(#chan.added == a0 + 1 and pin_line().elements[2].type == "text", "pin: no mention element -> plain username element")
+    c2.Message.new = function() error("no messages at all") end
+    pin_frame({ type = "pin:set", platform = "twitch", channel = "somechannel", pin = { id = "d2", username = "u", content = "degrade2" } })
+    c2.Message.new = saved
+    check(#chan.added == a0 + 2 and added_text_has("degrade2", 1), "pin: Message.new unavailable -> system line")
+    pin_frame({ type = "pin:clear", platform = "twitch", channel = "somechannel" })
+end
+do -- kick room lands in every merged twitch tab, tagged [K]
+    commands["/hsmulti"]({ words = { "/hsmulti", "kick:pinkick" }, channel = chan })
+    local a0 = #chan.added
+    pin_frame({ type = "pin:set", platform = "kick", channel = "PinKick",
+        pin = { id = "k1", message_id = "kmsg", username = "kmod", content = "kick pin" } })
+    local init = pin_line()
+    check(#chan.added == a0 + 1 and init and init.elements[1].text == "[K]" and pin_body(init).link == nil,
+        "pin: kick-room pin lands in the merged twitch tab, tagged [K], no jump link")
+    a0 = #chan.added
+    pin_frame({ type = "pin:set", platform = "kick", channel = "unlinkedkick", pin = { id = "k9", username = "kmod", content = "x" } })
+    check(#chan.added == a0, "pin: a kick room nobody merged shows nothing")
+    pin_frame({ type = "pin:clear", platform = "kick", channel = "pinkick" })
+end
+do -- fetch: stubbed GET shows a pin, later pin:set of the same id dedupes
+    local pinmod = require("pin")
+    local a0 = #chan.added
+    pinmod.fetch("twitch", "somechannel")
+    local url = http_answer("/api/pin?platform=twitch&channel=somechannel", { pin = { id = "f1", username = "u", content = "fetched" } })
+    check(url ~= nil and #chan.added == a0 + 1 and pin_body(pin_line()).text == "fetched", "pin: fetch shows the room's pin")
+    pin_frame({ type = "pin:set", platform = "twitch", channel = "somechannel", pin = { id = "f1", username = "u", content = "fetched" } })
+    check(#chan.added == a0 + 1, "pin: fetch then pin:set with the same id shows once")
+    pinmod.fetch("twitch", "somechannel")
+    http_answer("/api/pin?platform=twitch", { pin = nil })
+    check(#chan.added == a0 + 1, "pin: fetch with no pin shows nothing")
+    pinmod.fetch("twitch", "bad/chan")
+    check(http_answer("bad/chan", {}) == nil, "pin: fetch refuses an unsafe channel name")
+    pin_frame({ type = "pin:clear", platform = "twitch", channel = "somechannel" })
 end
 
 print(failures == 0 and "\nALL PASS" or ("\n" .. failures .. " FAILURES"))
