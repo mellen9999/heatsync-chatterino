@@ -17,6 +17,7 @@ local AUTOMC_FILE = "automulti.txt" -- "0" = auto-multichat off (ON by default)
 local BADGES_FILE = "badges.txt"   -- "1" = badges on (OFF by default, opt-in)
 local LIVE_FILE = "live.txt"       -- "1" = live-status on (OFF by default, opt-in)
 
+local SPIKES_FILE = "spikes.txt"   -- "1" = moment spikes on (OFF by default, opt-in)
 local PIN_FILE = "pin.txt"         -- "0" = pinned message off (ON by default, opt-out)
 
 -- blocked[name] = true
@@ -28,6 +29,7 @@ local archive_on = true -- default ON (opt-out) — tells heatsync which public
 local automc_on = true -- default ON (opt-out) — auto-merges a stream's kick/yt chat when publicly linked
 local badges_on = false
 local pin_on = true -- default ON (opt-out) — heatsync's own pinned message, shown to every heatsync viewer
+local spikes_on = false -- default OFF (opt-in) — 🔥 lines when a chat you have open spikes
 local live_on = false -- default OFF (opt-in) — go-live lines for linked kick/yt sources
 
 -- exact toggle read: the whole file must BE the value (whitespace-tolerant),
@@ -55,6 +57,7 @@ local function load()
     -- default OFF (opt-in): only an explicit "1" turns these on
     if file_is(BADGES_FILE, "1") then badges_on = true end
     if file_is(LIVE_FILE, "1") then live_on = true end
+    if file_is(SPIKES_FILE, "1") then spikes_on = true end
 end
 
 local function persist_blocks()
@@ -156,6 +159,16 @@ end
 function M.set_pin(on)
     pin_on = on and true or false
     net.write_data(PIN_FILE, pin_on and "1" or "0")
+end
+
+-- ----- moment-spike toggle (default off, opt-in) -----
+function M.spikes_enabled()
+    return spikes_on
+end
+
+function M.set_spikes(on)
+    spikes_on = on and true or false
+    net.write_data(SPIKES_FILE, spikes_on and "1" or "0")
 end
 
 load()

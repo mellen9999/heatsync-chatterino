@@ -2500,6 +2500,13 @@ require("store").set_pin(true)
 local psock = sockets[#sockets]
 if psock.closed then psock.opts.on_open() end -- latest socket, brought up like a fresh connect
 local function pin_frame(t) psock.opts.on_text(register_payload(t)) end
+-- a long clock advance lets the ws watchdog swap the socket; re-grab the live one
+local function advance_clock(ms)
+    advance(ms)
+    advance(20000) -- let a watchdog-triggered reconnect backoff fire
+    psock = sockets[#sockets]
+    if not ws.connected then psock.opts.on_open() end
+end
 local function pin_line(i) -- the i-th last added entry as a message table (or nil)
     local m = chan.added[#chan.added - (i or 0)]
     return type(m) == "table" and m.init or nil
@@ -2723,6 +2730,110 @@ do
         for k, v in pairs(modifiers.TOKENS) do if js[k] ~= v then same = false; print("  twin drift: plugin has " .. k .. "=" .. v) end end
         check(same, "modifiers: token table identical to the site's HS_MOD_TOKENS (" .. n .. " tokens)")
     end
+end
+
+-- ===== stream:update (game/title switch) + moment:spike =====
+do
+    require("store").set_live(true)
+    commands["/hsmulti"]({ words = { "/hsmulti", "kick:swkick" }, channel = chan })
+    local function upd(t) t.type = "stream:update"; t.platform = t.platform or "kick"; t.channel = t.channel or "swkick"; pin_frame(t) end
+    local a0 = #chan.added
+    upd({ isLive = true, game = "Slots", title = "t1", prevGame = "Chatting", prevTitle = "t1" })
+    check(#chan.added == a0 + 1 and added_text_has("swkick switched to Slots", 1) and not added_text_has("· t1", 1),
+        "update: a game change shows the 🎮 line")
+    a0 = #chan.added
+    upd({ isLive = true, game = "Slots", title = "t1", prevGame = "Chatting", prevTitle = "t1" })
+    check(#chan.added == a0, "update: an identical re-emit is deduped")
+    upd({ isLive = true, game = "Poker", title = "new title", prevGame = "Slots", prevTitle = "t1" })
+    check(#chan.added == a0 + 1 and added_text_has("switched to Poker · new title", 1), "update: game + title change carries the title")
+    a0 = #chan.added
+    upd({ isLive = true, game = "Poker", title = "third", prevGame = "Poker", prevTitle = "new title" })
+    check(#chan.added == a0 + 1 and added_text_has("📝 swkick · third", 1), "update: a title-only change shows the 📝 line")
+    a0 = #chan.added
+    upd({ isLive = true, game = "Same", title = "Same", prevGame = "Same", prevTitle = "Same" })
+    check(#chan.added == a0, "update: nothing changed -> no line")
+    upd({ platform = "twitch", channel = "somechannel", game = "X", title = "Y", prevGame = "A", prevTitle = "B" })
+    upd({ channel = "unlinkedkick", game = "X", title = "Y", prevGame = "A", prevTitle = "B" })
+    check(#chan.added == a0, "update: twitch skipped, unlinked source ignored")
+    upd({ game = string.rep("g", 100000), title = string.rep("t", 100000), prevGame = "a", prevTitle = "b" })
+    check(#chan.added == a0 + 1 and #chan.added[#chan.added] < 500, "update: hostile huge strings are clamped")
+    local ok = pcall(upd, { game = 5, title = {}, prevGame = true })
+    ok = pcall(upd, { channel = 7 }) and ok
+    check(ok, "update: wrong-typed fields never throw")
+    require("store").set_live(false)
+    a0 = #chan.added
+    upd({ game = "Off", title = "x", prevGame = "a", prevTitle = "b" })
+    check(#chan.added == a0, "update: /hslive off suppresses")
+    require("store").set_live(true)
+end
+do
+    local store = require("store")
+    local function spike(t) t.type = "moment:spike"; pin_frame(t) end
+    local function line_text()
+        local m = chan.added[#chan.added]
+        if type(m) == "string" then return m, nil end
+        return m.init.elements[1].text, m.init.elements[1].link
+    end
+    store.set_spikes(false)
+    local a0 = #chan.added
+    spike({ platform = "twitch", channel = "somechannel", id = "m1", rate = 90, baseline = 30 })
+    check(#chan.added == a0, "spike: off by default -> silent")
+    commands["/hsmoments"]({ words = { "/hsmoments", "on" }, channel = chan })
+    check(store.spikes_enabled(), "spike: /hsmoments on enables")
+    a0 = #chan.added
+    spike({ platform = "twitch", channel = "SomeChannel", id = "m1", rate = 90, baseline = 30, game = "Slots", title = "big" })
+    local txt, link = line_text()
+    check(#chan.added == a0 + 1 and txt:find("🔥 moment · 90 msgs/30s, 3.0× the usual · Slots · big", 1, true), "spike: open twitch tab shows the line")
+    check(link and link.type == c2.LinkType.Url and link.value == "https://heatsync.org/moment/m1", "spike: line links to the moment")
+    a0 = #chan.added
+    spike({ platform = "twitch", channel = "somechannel", id = "m2", rate = 200, baseline = 30 })
+    check(#chan.added == a0, "spike: second spike inside 5 minutes is throttled")
+    advance_clock(301000)
+    spike({ platform = "twitch", channel = "somechannel", id = "m3", rate = 40, baseline = 0 })
+    txt = line_text()
+    check(#chan.added == a0 + 1 and txt:find("40 msgs/30s", 1, true) and not txt:find("usual", 1, true), "spike: after 5 minutes it shows again; baseline 0 drops the multiplier")
+    commands["/hsmulti"]({ words = { "/hsmulti", "kick:spikekick" }, channel = chan })
+    a0 = #chan.added
+    spike({ platform = "kick", channel = "SpikeKick", id = "k1", rate = 60, baseline = 20 })
+    txt = line_text()
+    check(#chan.added == a0 + 1 and txt:find("[K] 🔥 moment", 1, true), "spike: merged kick source lands in the twitch tab, tagged [K]")
+    a0 = #chan.added
+    spike({ platform = "twitch", channel = "closedchan", id = "c1", rate = 60, baseline = 20 })
+    spike({ platform = "kick", channel = "unmergedkick", id = "c2", rate = 60, baseline = 20 })
+    check(#chan.added == a0, "spike: channels not open here are silent")
+    advance_clock(301000)
+    local bad = {
+        { platform = "twitch", channel = "somechannel", id = "../x", rate = 50, baseline = 5, game = string.rep("g", 1e6), title = string.rep("t", 1e6) },
+        { platform = "twitch", channel = "somechannel", id = 1, rate = 0 / 0, baseline = 1 },
+        { platform = "twitch", channel = "somechannel", id = "ok", rate = -5, baseline = 1 },
+        { platform = "twitch", channel = "somechannel", rate = math.huge },
+        { platform = {}, channel = {}, rate = "x" },
+        { channel = "somechannel", rate = 5 },
+    }
+    local function moments() -- spike lines only; a long clock advance can add unrelated status lines
+        local n = 0
+        for _, m in ipairs(chan.added) do
+            local t = type(m) == "string" and m or (m.init and m.init.elements[1].text) or ""
+            if t:find("🔥 moment", 1, true) then n = n + 1 end
+        end
+        return n
+    end
+    local m0, all_ok = moments(), true
+    for i, t in ipairs(bad) do
+        advance_clock(301000) -- clear the throttle so each case is judged on its own payload
+        local before = moments()
+        all_ok = pcall(spike, t) and all_ok
+        if i == 1 then
+            txt, link = line_text()
+            check(moments() == before + 1 and #txt < 500 and link == nil, "spike: hostile text clamped, unsafe id -> no link")
+        end
+    end
+    check(all_ok and moments() == m0 + 1, "spike: NaN / negative / infinite / wrong-typed frames never throw and show nothing")
+    commands["/hsmoments"]({ words = { "/hsmoments", "off" }, channel = chan })
+    advance_clock(301000)
+    a0 = #chan.added
+    spike({ platform = "twitch", channel = "somechannel", id = "z", rate = 90, baseline = 30 })
+    check(not store.spikes_enabled() and #chan.added == a0, "spike: /hsmoments off silences")
 end
 
 print(failures == 0 and "\nALL PASS" or ("\n" .. failures .. " FAILURES"))

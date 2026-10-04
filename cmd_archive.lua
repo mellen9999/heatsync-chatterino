@@ -378,6 +378,15 @@ function M.register()
     -- collision with the window). over-fetch once, filter+page client-side.
     local MOM_PER_PAGE = 5
     c2.register_command("/hsmoments", function(ctx)
+        -- a bare on/off first token toggles the live 🔥 spike lines instead of querying
+        local first = ctx.words[2] and string.lower(ctx.words[2])
+        if first == "on" or first == "off" then
+            store.set_spikes(first == "on")
+            u.sysmsg(ctx, first == "on"
+                and "moment spikes ON — 🔥 line when a chat you have open spikes (max one per channel per 5 min)"
+                or "moment spikes OFF")
+            return
+        end
         local hours, page, plat_filter, bad = 24, 1, nil, nil
         for i = 2, #ctx.words do
             local w = ctx.words[i]

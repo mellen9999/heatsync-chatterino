@@ -24,6 +24,7 @@ local badges = require("badges")
 local recents = require("recents")
 local live = require("live")
 local pin = require("pin")
+local spike = require("spike")
 
 -- tab-complete popup size (shared ceiling: own inventory fills first, then the
 -- 7tv/bttv/ffz catalog appends into whatever room is left). raised 25→40 so a
@@ -206,6 +207,8 @@ local function on_ws_event(msg)
     if live.handle(msg) then return end
     -- the channel's heatsync pinned message (view-only)
     if pin.handle(msg) then return end
+    -- opt-in moment spikes for channels open here
+    if spike.handle(msg) then return end
     local t = msg.type
     if t == "emote:added" or t == "emote:removed" or t == "emotes:refresh" then
         if is_own_inventory_ch(msg._ch) then

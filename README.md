@@ -44,6 +44,12 @@ chatterino has no native kick/youtube. this makes heatsync the cross-platform ch
 
 `/hslive on` surfaces a 🔴 line when a kick or youtube source you've merged goes live, and a ⚫ line when it goes offline — in the twitch tab it's linked to. off by default. twitch live status is left to chatterino, which shows it natively; the value here is kick/youtube, which it doesn't. the go-live signal rides the same anonymous websocket, scoped to the channels you've actually linked, so it costs nothing when off.
 
+with `/hslive on` a linked kick/youtube source also gets a `🎮 <channel> switched to <game>` line when its game changes (the new title is appended if it changed too) and a `📝 <channel> · <title>` line on a title-only change. an identical repeat update is shown once.
+
+## moments
+
+`/hsmoments on` shows a `🔥 moment · <n> msgs/30s, <x>× the usual · <game> · <title>` line when a chat you have open spikes far above its own baseline, linked to the moment on heatsync.org. it shows only for channels open here — a twitch tab, or the twitch tab a kick/youtube source is merged into (tagged `[K]` / `[Y]`) — and at most once per channel every 5 minutes. off by default.
+
 ## pinned message
 
 heatsync keeps one pinned message per channel (twitch and kick), shown to every heatsync viewer. here it shows up as a system-style line in the tab: `📌 pinned` · the pinner's name · the message. on twitch, clicking the text jumps to the original message if it's still in scrollback. a kick pin lands in the twitch tab the kick chat is merged into, tagged `[K]`. when the pin is removed you get a `📌 pin cleared` line. on by default; `/hspin off` hides it.
@@ -81,6 +87,7 @@ heatsync users get a 🔥 before their name in any chat, so they're identifiable
 | `/hsbadges on\|off` | show chatterino global badges on chatters (opt-in) |
 | `/hspin on\|off` | the channel's heatsync pinned message as a 📌 line, view-only (on by default) |
 | `/hslive on\|off` | 🔴/⚫ go-live + offline lines for your linked kick/youtube sources (opt-in) |
+| `/hsmoments on\|off` | 🔥 line when a chat you have open spikes (opt-in) |
 | `/hsmoments [<n>h] [platform] [page]` | top live chat moments, clickable permalinks; `48h` sets the window, a bare number pages, filter by platform |
 | `/hslogs <user> [channel]` | chatter stats (messages, channels, active days, top channels) + archive link |
 | `/hshelp` | one-screen index of every command, with a note on what this build supports |

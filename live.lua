@@ -1,4 +1,5 @@
--- opt-in live-status. the ws already broadcasts stream:online / stream:offline
+-- opt-in live-status. the ws already broadcasts stream:online / stream:offline /
+-- stream:update (game or title switch)
 -- (kick's are room-scoped to channels you've joined, i.e. multichat-linked), so
 -- surface a go-live / went-offline system line in the twitch tab a kick/youtube
 -- source is merged into. OFF by default (opt-in — it's a new surfaced signal).
@@ -49,15 +50,60 @@ local function emit(platform, channel, live, game, title)
     end
 end
 
--- handle a stream:online / stream:offline broadcast. returns true if it was a
+-- last game/title shown per source, so a re-emit of the same update (the server
+-- reconciles) doesn't repeat the line. bounded; a reset costs one repeat.
+local last_update = {}
+local last_update_n = 0
+local MAX_TRACKED = 256
+
+-- stream:update for a linked source: 🎮 on a game change (title appended when it
+-- changed too), 📝 on a title-only change. same opt-in + linked-tab gating as emit().
+local function emit_update(platform, msg)
+    if not store.live_enabled() then return end
+    local channel = msg.channel
+    if type(channel) ~= "string" or channel == "" or #channel > 100 then return end
+    local game, title = net.safe_text(msg.game, 100), net.safe_text(msg.title, 140)
+    local game_changed = game ~= nil and msg.game ~= msg.prevGame
+    local title_changed = title ~= nil and msg.title ~= msg.prevTitle
+    if not game_changed and not title_changed then return end
+    local tabs = multichat.tabs_for(platform, string.lower(channel))
+    if #tabs == 0 then return end
+    local key = platform .. "/" .. string.lower(channel)
+    local sig = tostring(game) .. "\1" .. tostring(title)
+    if last_update[key] == sig then return end
+    if last_update[key] == nil then
+        if last_update_n >= MAX_TRACKED then last_update = {}; last_update_n = 0 end
+        last_update_n = last_update_n + 1
+    end
+    last_update[key] = sig
+    local chan_disp = net.safe_text(channel, 100) or channel
+    local line
+    if game_changed then
+        line = "🎮 " .. chan_disp .. " switched to " .. game .. (title_changed and (" · " .. title) or "")
+    else
+        line = "📝 " .. chan_disp .. " · " .. title
+    end
+    for _, cc in ipairs(tabs) do
+        pcall(function()
+            local ch = c2.Channel.by_name(cc)
+            if ch and ch:is_valid() then ch:add_system_message("[heatsync] " .. line) end
+        end)
+    end
+end
+
+-- handle a stream:online / stream:offline / stream:update broadcast. returns true if it was a
 -- stream event (so init can stop dispatching), regardless of whether a line was
 -- shown — an event for an unlinked channel is still "handled" (ignored).
 function M.handle(msg)
     local t = msg.type
-    if t ~= "stream:online" and t ~= "stream:offline" then return false end
+    if t ~= "stream:online" and t ~= "stream:offline" and t ~= "stream:update" then return false end
 
     local platform = norm_platform(tostring(msg.platform or ""))
     if platform ~= "kick" and platform ~= "yt" then return true end -- twitch = native
+    if t == "stream:update" then
+        pcall(emit_update, platform, msg)
+        return true
+    end
     emit(platform, msg.channel, t == "stream:online", msg.game, msg.title)
     return true
 end
