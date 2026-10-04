@@ -260,10 +260,10 @@ if caps.tier >= 1 then
         multichat.on_ws_up()
         if not pins_booted then
             pins_booted = true
-            pin.refetch(true)
+            pcall(pin.refetch, true)
         end
     end
-    multichat.on_kick_linked = function(slug) pin.fetch("kick", slug) end
+    multichat.on_kick_linked = function(slug) pcall(pin.fetch, "kick", slug) end
     -- youtube has no stream:online/offline of its own — feed live.lua's
     -- go-live/offline line off youtube:status changes instead (see live.lua).
     multichat.on_youtube_status = live.youtube_status
@@ -272,7 +272,7 @@ if caps.tier >= 1 then
     -- ...and may have missed a pin:set, so re-fetch every joined room's pin too.
     ws.on_resync = function()
         senders.expire_all()
-        pin.refetch(false)
+        pcall(pin.refetch, false)
     end
     ws.start()
 end
@@ -308,7 +308,7 @@ if caps.tier == 2 then
         ws.join(platform, channel)
         if platform == "twitch" then
             try_auto_multichat(channel)
-            pin.fetch("twitch", channel)
+            pcall(pin.fetch, "twitch", channel)
         end
     end
     render.on_channel_gone = function(platform, channel)
