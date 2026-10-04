@@ -44,6 +44,12 @@ chatterino has no native kick/youtube. this makes heatsync the cross-platform ch
 
 `/hslive on` surfaces a 🔴 line when a kick or youtube source you've merged goes live, and a ⚫ line when it goes offline — in the twitch tab it's linked to. off by default. twitch live status is left to chatterino, which shows it natively; the value here is kick/youtube, which it doesn't. the go-live signal rides the same anonymous websocket, scoped to the channels you've actually linked, so it costs nothing when off.
 
+## pinned message
+
+heatsync keeps one pinned message per channel (twitch and kick), shown to every heatsync viewer. here it shows up as a system-style line in the tab: `📌 pinned` · the pinner's name · the message. on twitch, clicking the text jumps to the original message if it's still in scrollback. a kick pin lands in the twitch tab the kick chat is merged into, tagged `[K]`. when the pin is removed you get a `📌 pin cleared` line. on by default; `/hspin off` hides it.
+
+pins are view-only here; pin from heatsync.org or the extension (pinning needs a heatsync login and the plugin's socket is anonymous). it costs nothing extra: the pin rides the room the plugin already joins, plus one public `GET /api/pin` when a tab opens.
+
 ## live sync
 
 add an emote on heatsync.org and it's usable in chatterino within a second — a websocket push plus a debounced re-fetch. the socket is anonymous, reconnects with jittered backoff capped at 60s, spreads its reconnect when heatsync deploys, heartbeats every 25s, and recycles itself if the server goes quiet; a periodic full re-fetch reconciles anything a dropped socket missed. other chatters' sets update the same way — when someone changes their inventory only their cached set is re-fetched, and an emote only renders on messages sent while they actually had it.
@@ -73,6 +79,7 @@ heatsync users get a 🔥 before their name in any chat, so they're identifiable
 | `/hsblock <name>` \| `/hsunblock` \| `/hsblocklist` | locally hide an emote (render + tab-complete) |
 | `/hsflame on\|off` | toggle the 🔥 heatsync-user marker |
 | `/hsbadges on\|off` | show chatterino global badges on chatters (opt-in) |
+| `/hspin on\|off` | the channel's heatsync pinned message as a 📌 line, view-only (on by default) |
 | `/hslive on\|off` | 🔴/⚫ go-live + offline lines for your linked kick/youtube sources (opt-in) |
 | `/hsmoments [<n>h] [platform] [page]` | top live chat moments, clickable permalinks; `48h` sets the window, a bare number pages, filter by platform |
 | `/hslogs <user> [channel]` | chatter stats (messages, channels, active days, top channels) + archive link |
@@ -85,7 +92,7 @@ a leading `:` is optional — `:pog` and `pog` both match. `/hsstatus` also show
 
 ## what a plugin can't do (vs the browser extension)
 
-the extension rewrites twitch.tv's page, so it can add right-click menus, username paints, settings panels, overlays. a chatterino plugin only has chat commands, tab-completion, and message building — **no context menus, no settings UI, no username paints, no injecting into chatterino's own emote picker, no server-synced blocks**. those need a fork, and this is deliberately not a fork. everything above is what's reachable *without* one, built to the edge of that line.
+the extension rewrites twitch.tv's page, so it can add right-click menus, username paints, settings panels, overlays. a chatterino plugin only has chat commands, tab-completion, message building, and (on builds that expose it) a right-click menu — **no settings UI, no username paints, no injecting into chatterino's own emote picker, no server-synced blocks, no pinning or moderation (the plugin's socket is anonymous)**. those need a fork, and this is deliberately not a fork. everything above is what's reachable *without* one, built to the edge of that line.
 
 ## install
 
@@ -109,7 +116,7 @@ for the full experience (rendering, the emote menu, multichat), use a build whos
 
 | permission | why |
 |---|---|
-| `Network` | public heatsync.org endpoints (`/api/profile`, `/api/users/<id>/emotes`, `/api/users/emotes/batch`, `/api/emote-search`, `/api/search`, `/api/archive/search`, `/api/moments`, `/api/live/top`, `/api/chatter/<...>/stats`, `/api/chatterino-badges`) plus one anonymous websocket for live sync and multichat. |
+| `Network` | public heatsync.org endpoints (`/api/profile`, `/api/users/<id>/emotes`, `/api/users/emotes/batch`, `/api/emote-search`, `/api/search`, `/api/archive/search`, `/api/moments`, `/api/live/top`, `/api/pin`, `/api/chatter/<...>/stats`, `/api/chatterino-badges`) plus one anonymous websocket for live sync and multichat. |
 | `FilesystemRead` / `FilesystemWrite` | remembers your settings, block list, multichat links, and recently-used emotes in the plugin's own data folder. local only. |
 
 **what leaves chatterino:**
@@ -120,7 +127,7 @@ for the full experience (rendering, the emote menu, multichat), use a build whos
 
 ## architecture
 
-small single-purpose modules: `caps` (feature detection), `net` (http / json / timers / data files), `inventory` (your emotes), `seventv` (catalog search + render cache), `senders` (other chatters' sets), `recents` (learned usage), `img` (image-set builder + CDN allowlist), `picker` (clickable emote grids), `ws` (socket lifecycle), `multichat` (kick/youtube injection), `live` (opt-in go-live status), `badges` (chatterino badges), `render` (hook → rebuild → replace), `store` (persisted toggles), and the command layer — `cmdutil` (shared helpers) plus `cmd_emotes` / `cmd_archive` / `cmd_multichat` / `cmd_system`, all wired by `init`. every hook is pcall-guarded and every capability is feature-detected, so a missing API degrades one feature instead of erroring. if chatterino ever exposes first-class plugin emote providers, `render.lua` is the only file that needs to change.
+small single-purpose modules: `caps` (feature detection), `net` (http / json / timers / data files), `inventory` (your emotes), `seventv` (catalog search + render cache), `senders` (other chatters' sets), `recents` (learned usage), `img` (image-set builder + CDN allowlist), `picker` (clickable emote grids), `ws` (socket lifecycle), `multichat` (kick/youtube injection), `live` (opt-in go-live status), `pin` (view-only pinned message), `badges` (chatterino badges), `render` (hook → rebuild → replace), `store` (persisted toggles), and the command layer — `cmdutil` (shared helpers) plus `cmd_emotes` / `cmd_archive` / `cmd_multichat` / `cmd_system`, all wired by `init`. every hook is pcall-guarded and every capability is feature-detected, so a missing API degrades one feature instead of erroring. if chatterino ever exposes first-class plugin emote providers, `render.lua` is the only file that needs to change.
 
 ## tests
 
