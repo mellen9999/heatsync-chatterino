@@ -2836,5 +2836,21 @@ do
     check(not store.spikes_enabled() and #chan.added == a0, "spike: /hsmoments off silences")
 end
 
+-- ===== youtube path: server says "youtube", multichat keys it "yt", lines are tagged [Y] =====
+do
+    local store = require("store")
+    store.set_live(true); store.set_spikes(true)
+    commands["/hsmulti"]({ words = { "/hsmulti", "yt:@ytsw" }, channel = chan })
+    local a0 = #chan.added
+    pin_frame({ type = "stream:update", platform = "youtube", channel = "@YtSw", game = "Poker", title = "t", prevGame = "Chat", prevTitle = "t" })
+    check(#chan.added == a0 + 1 and added_text_has("@YtSw switched to Poker", 1), "update: a linked youtube source's game switch shows (platform 'youtube')")
+    a0 = #chan.added
+    pin_frame({ type = "moment:spike", platform = "youtube", channel = "@YtSw", id = "y1", rate = 60, baseline = 20 })
+    local m = chan.added[#chan.added]
+    local t = type(m) == "string" and m or m.init.elements[1].text
+    check(#chan.added == a0 + 1 and t:find("[Y] 🔥 moment", 1, true), "spike: a merged youtube source lands in the twitch tab, tagged [Y]")
+    store.set_spikes(false)
+end
+
 print(failures == 0 and "\nALL PASS" or ("\n" .. failures .. " FAILURES"))
 host_os.exit(failures == 0 and 0 or 1)
