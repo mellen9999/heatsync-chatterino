@@ -162,7 +162,7 @@ function M.flush()
     local url = net.ORIGIN .. "/api/users/emotes/batch?ids=" .. table.concat(ids, ",")
     net.get_json(url, 10000, function(payload, err)
         inflight = false
-        if not payload or type(payload.sets) ~= "table" then
+        if type(payload) ~= "table" or type(payload.sets) ~= "table" then
             net.log_warn("sender batch lookup failed: " .. tostring(err))
             -- negative-cache the whole batch briefly so a flaky upstream
             -- doesn't hot-loop; ttl on false entries is the shorter one
@@ -230,7 +230,7 @@ function M.invalidate(keys, ver)
     local url = net.ORIGIN .. "/api/users/emotes/batch?ids=" .. table.concat(ids, ",")
     if ver_ok then url = url .. "&v=" .. tostring(ver_ok) end
     net.get_json(url, 10000, function(payload, err)
-        if not payload or type(payload.sets) ~= "table" then
+        if type(payload) ~= "table" or type(payload.sets) ~= "table" then
             net.log_warn("sender invalidate refetch failed: " .. tostring(err))
             return
         end

@@ -2089,6 +2089,20 @@ do
     check(not senders.is_known_hs("ghostuser"), "senders: a failed lookup negative-caches (not known-HS)")
 end
 
+-- senders: a bare-number body (valid json, not an object) must negative-cache
+-- like a failure, not throw mid-callback — and the next batch still fires
+do
+    senders.clear()
+    senders.resolve("numuser", "990100")
+    advance(2500)
+    local ok = pcall(http_answer, "/api/users/emotes/batch", 42)
+    check(ok, "senders: a bare-number batch body doesn't throw")
+    check(not senders.is_known_hs("numuser"), "senders: a bare-number body negative-caches")
+    senders.resolve("nextuser", "990101")
+    advance(2500)
+    check(http_fail("/api/users/emotes/batch"), "senders: the next batch still fires after a bare-number body")
+end
+
 -- multichat: unlink a SINGLE platform leaves other sources on the tab linked
 -- (only the unlink-ALL path was covered before)
 do
