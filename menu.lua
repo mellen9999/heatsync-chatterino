@@ -9,6 +9,7 @@ local caps = require("caps")
 local store = require("store")
 local cmd_emotes = require("cmd_emotes")
 local cmd_archive = require("cmd_archive")
+local cmd_card = require("cmd_card")
 
 local M = {}
 
@@ -104,6 +105,7 @@ local function on_context_menu(args)
     sub:add_action("emotes", function() cmd_emotes.inv(channel, login, 1) end)
     sub:add_action("chat logs", function() cmd_archive.logs(channel, login, nil) end)
     sub:add_action("whois", function() cmd_archive.whois(channel, login) end)
+    sub:add_action("card", function() cmd_card.show(channel, login) end)
 
     -- only when the click landed on a heatsync emote the plugin itself drew.
     local name = hs_emote_name(args.message_element)

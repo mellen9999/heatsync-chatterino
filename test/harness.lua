@@ -2855,7 +2855,7 @@ do
     store.set_spikes(false)
 end
 
--- ===== v1.11 parity: heat bars, sub flair, name colors =====
+-- ===== v1.11 parity: heat bars, sub flair, name colors, user card =====
 do
     local store = require("store")
     store.set_flame(false)
@@ -3232,6 +3232,147 @@ do
     commands["/hscolors"]({ words = { "/hscolors", "on" }, channel = chan })
     check(yt_line("nc8", UC1, "on") == "#ff8700", "namecolor: /hscolors on restores it")
     commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = chan })
+
+    -- ---------------- user card ----------------
+    local function added_text()
+        local out = {}
+        for _, m in ipairs(chan.added) do
+            if type(m) == "string" then out[#out + 1] = m
+            elseif type(m) == "table" and m.init then out[#out + 1] = table.concat(el_texts(m), " ") end
+        end
+        return table.concat(out, "\n")
+    end
+    local CARD = {
+        profile = { display_name = "FooBar", username = "foobar", stats = { user_heat = 88, op_count = 3, re_count = 4 },
+            twitch_followers = 1200, twitch_is_live = true, is_shadow = false },
+        followage = { followedAt = "2024-03-01T10:00:00.000Z", followerCount = 5, channelFollowedAt = nil },
+        corpus = { messages = 52, firstDay = "2025-01-02", firstChannel = "x", also = { "a", "b" } },
+        recent = { { channel = "x", message = "hi there" }, { channel = "y", message = "second" } },
+    }
+    local a0 = #chan.added
+    commands["/hscard"]({ words = { "/hscard" }, channel = chan })
+    check(#chan.added == a0 + 1 and pending("/api/card") == 0, "card: no user → usage line, no request")
+    commands["/hscard"]({ words = { "/hscard", "bad name!" }, channel = chan })
+    check(pending("/api/card") == 0, "card: invalid login never leaves the plugin")
+    a0 = #chan.added
+    commands["/hscard"]({ words = { "/hscard", "FooBar" }, channel = chan })
+    local creq = http_queue[#http_queue]
+    check(creq.url:find("/api/card", 1, true) and creq.method == "POST", "card: one POST /api/card")
+    check(creq.payload:find('"twitch"', 1, true) and creq.payload:find('"foobar"', 1, true) and creq.payload:find('"somechannel"', 1, true),
+        "card: body carries platform, lowercase login and the current tab as channel")
+    answer_all("/api/card", function() return CARD end)
+    do
+        local first = chan.added[a0 + 1]
+        local name_el = first and first.init and first.init.elements[2]
+        check(name_el and name_el.text == "FooBar" and name_el.link and name_el.link.type == c2.LinkType.UserInfo and name_el.link.value == "foobar",
+            "card: the name is a UserInfo link (opens chatterino's usercard)")
+        local all = added_text()
+        check(all:find("heat 88", 1, true) and all:find("7 posts", 1, true) and all:find("1200 followers", 1, true) and all:find("live", 1, true), "card: heat, posts, followers, live")
+        check(all:find("following #somechannel since 2024-03-01", 1, true), "card: follow age for this channel")
+        check(all:find("52 msgs archived · first seen 2025-01-02 in #x · also in #a #b", 1, true), "card: archive corpus line")
+        check(all:find("#x · hi there", 1, true) and all:find("#y · second", 1, true), "card: recent lines")
+        local seg0 = {}
+        for i = a0 + 1, #chan.added do
+            local m = chan.added[i]
+            seg0[#seg0 + 1] = type(m) == "string" and m or table.concat(el_texts(m), " ")
+        end
+        check(not table.concat(seg0, "\n"):find("🔥", 1, true), "card: no fire emoji beside the heat score")
+        check(all:find("/u/FooBar", 1, true) ~= nil or (chan.added[#chan.added].init.elements[2].link.value:find("/u/FooBar", 1, true) ~= nil), "card: profile link")
+    end
+    -- no cookie needed, none sent
+    check(creq.headers["Cookie"] == nil and creq.headers["Authorization"] == nil, "card: anonymous request (no cookie, no token)")
+    -- degraded followage: no follow line; not-following; shadow flag
+    a0 = #chan.added
+    commands["/hscard"]({ words = { "/hscard", "ghost" }, channel = chan })
+    answer_all("/api/card", function()
+        return { profile = { display_name = "Ghost", is_shadow = true, stats = {} }, followage = { followedAt = nil, degraded = true }, corpus = { messages = 0 }, recent = {} }
+    end)
+    do
+        local all = added_text():sub(#table.concat({}, ""))
+        local seg = {}
+        for i = a0 + 1, #chan.added do
+            local m = chan.added[i]
+            seg[#seg + 1] = type(m) == "string" and m or table.concat(el_texts(m), " ")
+        end
+        local s = table.concat(seg, "\n")
+        check(s:find("(not on heatsync)", 1, true) and not s:find("following", 1, true) and not s:find("archived", 1, true), "card: shadow flag shown, degraded followage + empty corpus omitted")
+    end
+    commands["/hscard"]({ words = { "/hscard", "newbie" }, channel = chan })
+    answer_all("/api/card", function() return { profile = { display_name = "Newbie", stats = {} }, followage = { followedAt = nil } } end)
+    check(added_text():find("not following #somechannel", 1, true) ~= nil, "card: not-following line")
+    -- fallback to the plain public endpoints
+    a0 = #chan.added
+    commands["/hscard"]({ words = { "/hscard", "viafallback" }, channel = chan })
+    answer_all("/api/card", function() return { error = "rate limit exceeded" } end)
+    local preq2
+    for _, r in ipairs(http_queue) do if r.url:find("/api/profile/viafallback", 1, true) then preq2 = r end end
+    check(preq2 ~= nil and preq2.method == "GET", "card: unusable /api/card → falls back to GET /api/profile/<u>")
+    answer_all("/api/profile/viafallback", function() return { profile = { display_name = "ViaFallback", stats = { user_heat = 9 } } } end)
+    check(pending("/api/twitch/followage?user=viafallback&channel=somechannel") == 1, "card: fallback also asks followage for this channel")
+    answer_all("/api/twitch/followage", function() return { followedAt = "2023-05-06T00:00:00Z" } end)
+    do
+        local seg = {}
+        for i = a0 + 1, #chan.added do
+            local m = chan.added[i]
+            seg[#seg + 1] = type(m) == "string" and m or table.concat(el_texts(m), " ")
+        end
+        local s = table.concat(seg, "\n")
+        check(s:find("ViaFallback", 1, true) and s:find("heat 9", 1, true) and s:find("since 2023-05-06", 1, true), "card: fallback renders the same card")
+    end
+    -- nothing anywhere → says so
+    a0 = #chan.added
+    commands["/hscard"]({ words = { "/hscard", "nobodyhome" }, channel = chan })
+    http_fail("/api/card"); http_fail("/api/profile/nobodyhome")
+    check(added_text():find("no card for 'nobodyhome'", 1, true) ~= nil, "card: unknown everywhere → one clear line")
+    -- hostile shapes
+    do
+        local bad = {
+            { profile = 5 }, { profile = { stats = 5 } }, { profile = { display_name = 7, stats = { user_heat = {}, followers = "x" } } },
+            { profile = { display_name = "Z", stats = {}, followage = 5 }, followage = "x", corpus = 5, recent = 5 },
+            { profile = { display_name = "Z", stats = {} }, corpus = { messages = "x", also = 5 }, recent = { 5, { message = {} }, { message = string.rep("a", 9000) } } },
+            { profile = { display_name = "Z", stats = { user_heat = 1e999, followers = -4 } }, corpus = { messages = 1e999, also = { 5, {}, string.rep("b", 500) } } },
+        }
+        local ok_all = true
+        for i, payload in ipairs(bad) do
+            commands["/hscard"]({ words = { "/hscard", "fuzz" .. i }, channel = chan })
+            ok_all = pcall(answer_all, "/api/card", function() return payload end) and ok_all
+            for _, r in ipairs({ "/api/profile/fuzz" .. i }) do http_fail(r) end
+        end
+        check(ok_all, "card: malformed card responses degrade without error")
+    end
+    -- older builds without the UserInfo link type: plain name, no throw
+    do
+        local saved = c2.LinkType.UserInfo
+        c2.LinkType.UserInfo = nil
+        a0 = #chan.added
+        commands["/hscard"]({ words = { "/hscard", "oldbuild" }, channel = chan })
+        answer_all("/api/card", function() return { profile = { display_name = "OldBuild", stats = {} } } end)
+        local n = chan.added[a0 + 1]
+        check(n and n.init.elements[2].text == "OldBuild" and n.init.elements[2].link == nil, "card: no UserInfo link type → plain name")
+        c2.LinkType.UserInfo = saved
+    end
+    -- right-click entry
+    do
+        local top = (function()
+            local function new_fake_menu()
+                local m = { actions = {}, submenus = {} }
+                function m:add_action(title, cb) self.actions[title] = cb end
+                function m:add_menu(title) local sub = new_fake_menu(); self.submenus[title] = sub; return sub end
+                function m:add_separator() end
+                return m
+            end
+            local t = new_fake_menu()
+            menu_cb({ message = fake_msg("cardmenuuser", "65001", "hey"), menu = t })
+            return t
+        end)()
+        local sub = top.submenus["heatsync"]
+        check(sub and sub.actions["card"] ~= nil, "menu: right-click has a card entry")
+        if sub and sub.actions["card"] then
+            sub.actions["card"]()
+            check(pending("/api/card") == 1, "menu: card entry fires the card request")
+            answer_all("/api/card", function() return { profile = { display_name = "CardMenuUser", stats = {} } } end)
+        end
+    end
 
 end
 
