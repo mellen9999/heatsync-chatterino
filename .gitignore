@@ -3,3 +3,4 @@
 test/*.txt
 # plugin data files if the plugin/harness is ever run from the repo root
 /*.txt
+/dist/

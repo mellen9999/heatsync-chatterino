@@ -8,6 +8,7 @@ a single lua plugin (no fork, no patched binary) that brings heatsync into chatt
 - `lua5.4 test/harness.lua` — full headless suite (stubs the c2 API, drives real modules)
 - `TIER=t1 lua5.4 test/harness-degrade.lua` — stable-build degradation
 - `TIER=t0 lua5.4 test/harness-degrade.lua` — old-build degradation
+- `./release.sh` — build `dist/heatsync.zip` (suites gate it) · `./release.sh publish` — tag + upload as the latest github release (bump `info.json` first)
 - the harness sandbox strips `os.*` (chatterino exposes none) — **never call `os.*`**, it aborts load on the real client. tests catch it.
 
 ## non-negotiables

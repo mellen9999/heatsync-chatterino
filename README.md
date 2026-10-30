@@ -159,21 +159,20 @@ the extension rewrites twitch.tv's page, so it can add right-click menus, userna
 
 ## install
 
-1. open the chatterino plugins folder:
+1. **download** [heatsync.zip](https://github.com/mellen9999/heatsync-chatterino/releases/latest/download/heatsync.zip)
+2. **unzip it into chatterino's plugins folder** — you should end up with a `heatsync` folder inside `Plugins`:
+   - windows — press `win+r`, paste `%APPDATA%\Chatterino2\Plugins`, enter
    - linux — `~/.local/share/chatterino/Plugins/`
-   - windows — `%APPDATA%\Chatterino2\Plugins\`
    - macos — `~/Library/Application Support/chatterino/Plugins/`
-2. clone or unzip this repo into a subfolder named `heatsync`:
-   ```
-   Plugins/
-     heatsync/
-       info.json
-       init.lua
-       *.lua
-   ```
-3. restart chatterino → settings → plugins → enable plugin support → enable **heatsync**, and grant its permissions.
+
+   (no `Plugins` folder yet? make one with exactly that name)
+3. **turn it on** — restart chatterino → settings (⚙) → plugins → tick "enable plugins" → find **heatsync** → enable. type `/hshelp` in any chat to see everything it does
+
+to update, repeat steps 1–2 (replace the old `heatsync` folder) and restart chatterino.
 
 for the full experience (rendering, the emote menu, multichat), use a build whose plugin API exposes message rendering and image loading — currently the upstream nightlies. on a build without those, the plugin still runs and gives you live-synced tab-complete and commands; `/hsstatus` tells you what's active.
+
+from source: clone this repo into `Plugins/heatsync` instead. `./release.sh` builds the zip (runs the test suites first); `./release.sh publish` tags and uploads it as the latest release.
 
 ## permissions & privacy
 
