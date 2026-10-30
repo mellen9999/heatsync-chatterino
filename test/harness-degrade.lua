@@ -38,6 +38,7 @@ function c2.HTTPRequest.create(_, url)
 end
 function HTTPRequest:set_timeout() end
 function HTTPRequest:set_header() end
+-- no set_payload on the stripped api: a POST must degrade through its callback, not throw
 function HTTPRequest:on_success(cb) self.success = cb end
 function HTTPRequest:on_error(cb) self.err = cb end
 function HTTPRequest:finally(cb) self.fin = cb end
@@ -161,6 +162,29 @@ http_answer("/api/moments", { moments = { { id = "m1", platform = "twitch", chan
 commands["/hsmulti"]({ words = { "/hsmulti", "kick:x" }, channel = ctx.channel })
 commands["/hslive"]({ words = { "/hslive", "on" }, channel = ctx.channel })
 commands["/hslive"]({ words = { "/hslive", "off" }, channel = ctx.channel })
+-- v1.11 additions must degrade too: the card's POST has no set_payload/Post on
+-- this api (falls back to the public GETs through its callback, never throws),
+-- the toggles are plain sysmsg, and a freshly linked kick source's history
+-- request goes through get_json like any other
+commands["/hscard"]({ words = { "/hscard", "grace" }, channel = ctx.channel })
+http_answer("/api/profile/grace?platform=twitch", { profile = { id = 555, display_name = "Grace", stats = { user_heat = 3 } } })
+http_answer("/api/twitch/followage", { followedAt = "2024-01-01T00:00:00Z" })
+local carded = false
+for _, m in ipairs(added) do
+    if type(m) == "table" and m.init then
+        for _, e in ipairs(m.init.elements) do if e.text == "Grace" then carded = true end end
+    end
+end
+check(carded, "card: POST unavailable on " .. MODE .. " → public-endpoint fallback still renders the card")
+commands["/hscard"]({ words = { "/hscard" }, channel = ctx.channel })
+for _, c in ipairs({ "/hsheat", "/hsflair", "/hscolors", "/hsbackfill" }) do
+    commands[c]({ words = { c, "off" }, channel = ctx.channel })
+    commands[c]({ words = { c, "on" }, channel = ctx.channel })
+    commands[c]({ words = { c }, channel = ctx.channel })
+end
+commands["/hsmulti"]({ words = { "/hsmulti", "kick:histsrc" }, channel = ctx.channel })
+http_answer("/api/recent/kick/histsrc", { messages = { { id = "h1", ts = "2026-10-30T20:00:01.000Z", sender = "a", text = "hello" } } })
+commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = ctx.channel })
 commands["/hsemotes"]({ words = { "/hsemotes" }, channel = ctx.channel })
 commands["/hsblocklist"]({ words = { "/hsblocklist" }, channel = ctx.channel })
 check(#added > hb, "network + picker commands survive the stripped API on " .. MODE)

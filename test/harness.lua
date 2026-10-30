@@ -3496,6 +3496,71 @@ do
         for i = #channels, 1, -1 do if channels[i] == other then table.remove(channels, i) end end
     end
 
+    -- ---------------- wiring ----------------
+    do
+        local seen = {}
+        local sys_ctx = { words = { "/hshelp" }, channel = { add_system_message = function(_, m) seen[#seen + 1] = m end, add_message = function() end, get_name = function() return "somechannel" end } }
+        commands["/hshelp"](sys_ctx)
+        local help = table.concat(seen, "\n")
+        for _, cmd in ipairs({ "/hscard", "/hsheat", "/hsflair", "/hscolors", "/hsbackfill" }) do
+            check(help:find(cmd, 1, true) ~= nil, "wiring: /hshelp lists " .. cmd)
+        end
+        seen = {}
+        commands["/hsstatus"](sys_ctx)
+        local st = table.concat(seen, "\n")
+        check(st:find("heat bars:", 1, true) and st:find("sub flair:", 1, true) and st:find("name colors:", 1, true) and st:find("history backfill:", 1, true), "wiring: /hsstatus reports the four toggles")
+        commands["/hsclear"](sys_ctx)
+        check(require("heat").stats() == 0, "wiring: /hsclear empties the heat cache")
+    end
+    -- defaults: all four on without any file
+    check(store.heat_enabled() and store.flair_enabled() and store.colors_enabled() and store.backfill_enabled(), "defaults: heat, flair, colors, backfill all on (opt-out)")
+
+    -- ---------------- real production responses, end to end ----------------
+    do
+        local RL = dofile(PLUGIN .. "/test/fixtures/real-lookups.lua")
+        -- real heat response: every score is under the bar threshold today → no rebuild
+        pump("/api/users/heat", HEAT_ANSWER({}))
+        send("chatter_a", "66001", "gm"); send("chatter_b", "66002", "gm")
+        advance(4000)
+        answer_all("/api/users/heat", function() return RL.heat end)
+        advance(300)
+        rc = #chan.replaced
+        send("chatter_a", "66001", "gm again")
+        check(#chan.replaced == rc, "e2e/real: real heat response (all under threshold) → no bar, no rebuild")
+        -- real card response renders
+        a0 = #chan.added
+        commands["/hscard"]({ words = { "/hscard", "xqc" }, channel = chan })
+        answer_all("/api/card", function() return RL.card end)
+        local seg = {}
+        for i = a0 + 1, #chan.added do
+            local m = chan.added[i]
+            seg[#seg + 1] = type(m) == "string" and m or table.concat(el_texts(m), " ")
+        end
+        local s = table.concat(seg, "\n")
+        check(s:find("xQc", 1, true) and s:find("339 msgs archived", 1, true) and s:find("first seen 2026-06-09 in #xqc", 1, true),
+            "e2e/real: the real /api/card response renders name + archive line (degraded followage omitted)")
+        -- real history rows backfill a real-shaped kick source
+        commands["/hsmulti"]({ words = { "/hsmulti", "kick:somekickchan" }, channel = chan })
+        ba = #chan.added
+        answer_all("/api/recent/kick/somekickchan", function() return RL.recent_kick end)
+        check(#lines_since(ba) == #RL.recent_kick.messages, "e2e/real: " .. #RL.recent_kick.messages .. " real archived rows all injected")
+        commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = chan })
+        -- real empty paints / flairs → nothing drawn
+        FLAIRS = {}
+        send("realflair", "66003", "hi"); advance(4000)
+        answer_all("/api/users/flair", function() return RL.flairs end)
+        advance(300)
+        rc = #chan.replaced
+        send("realflair", "66003", "again")
+        check(#chan.replaced == rc, "e2e/real: real empty flairs response → nothing drawn")
+        local UCR = "UC" .. string.rep("r", 22)
+        commands["/hsmulti"]({ words = { "/hsmulti", "yt:@realyt" }, channel = chan })
+        -- (response shape is what matters: all three maps empty)
+        yt_line("realpaint1", UCR, "x", "@realyt"); advance(4000)
+        answer_all("/api/paints", function() return RL.paints end)
+        check(yt_line("realpaint2", UCR, "y", "@realyt") == "#123456", "e2e/real: real empty paints response → default color")
+        commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = chan })
+    end
 end
 
 print(failures == 0 and "\nALL PASS" or ("\n" .. failures .. " FAILURES"))
