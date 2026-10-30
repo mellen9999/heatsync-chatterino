@@ -1890,6 +1890,9 @@ do
     check(n.is_safe_name("Ｐｅｅｐｏ３"), "name-safety: a legit multibyte unicode name is allowed (char count, not bytes)")
     check(n.parse_emote_row({ name = "bad\nname", url = "https://cdn.7tv.app/e/1.webp" }) == nil,
         "name-safety: parse_emote_row drops a control-char name")
+    local nh = n.parse_emote_row({ name = "ayayaHug", url = "https://cdn.7tv.app/emote/01G9GTB7D00005CFW1EB5PF8DG/1x.webp" })
+    check(nh and nh.h == 32 and require("img").for_hs_emote(nh.url, nh.h) ~= nil,
+        "emote rows: a row with no stored height still renders at the 1x line height")
     -- a name is inserted VERBATIM into chat on click (picker/tab-complete): a
     -- space-bearing or command-prefixed name would become a runnable command
     check(not n.is_safe_name("/ban victim reason"), "name-safety: a leading-/ command name is rejected")

@@ -220,7 +220,10 @@ function M.parse_emote_row(e)
         name = name,
         url = url,
         w = M.pick_first_num(e, "width"),
-        h = M.pick_first_num(e, "height"),
+        -- a row with no stored height (a sizable slice of real inventories) still
+        -- renders: every heatsync url is the cdn's 1x tier, served 28-32px tall,
+        -- and img.for_hs_emote clamps to that anyway — so 32 is the honest basis
+        h = M.pick_first_num(e, "height") or 32,
         zw = e.zero_width == true,
         -- render.lua's time gate: `a` (added_at) is a lower bound, `u` (until/
         -- last_seen) an upper bound on when a message may show this emote for
