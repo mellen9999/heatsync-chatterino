@@ -8,9 +8,27 @@ local ws = require("ws")
 local render = require("render")
 local store = require("store")
 local multichat = require("multichat")
+local heat = require("heat")
 local u = require("cmdutil")
 
 local M = {}
+
+-- on/off command for an on-by-default feature: `/name on|off`, bare = status.
+-- `what` is the one-line description shown when switched on and in the status.
+local function flag_command(name, label, get, set, what)
+    c2.register_command(name, function(ctx)
+        local arg = ctx.words[2]
+        if arg == "on" then
+            set(true)
+            u.sysmsg(ctx, label .. " ON — " .. what)
+        elseif arg == "off" then
+            set(false)
+            u.sysmsg(ctx, label .. " OFF")
+        else
+            u.sysmsg(ctx, label .. " is " .. (get() and "on" or "off") .. " · " .. name .. " on|off · " .. what)
+        end
+    end)
+end
 
 function M.register(get_login)
     c2.register_command("/hsrefresh", function(ctx)
@@ -45,7 +63,8 @@ function M.register(get_login)
     c2.register_command("/hsclear", function(ctx)
         seventv.clear()
         senders.clear()
-        u.sysmsg(ctx, "search + sender caches cleared")
+        heat.clear()
+        u.sysmsg(ctx, "search, sender and heat caches cleared")
     end)
 
     -- chatterino badges toggle (shows chatterino global badges on chatters)
@@ -77,6 +96,9 @@ function M.register(get_login)
                 " · /hspin on|off · view-only, pin from heatsync.org or the extension")
         end
     end)
+
+    flag_command("/hsheat", "heat bars", store.heat_enabled, store.set_heat,
+        "a colored bar before the name of chatters with heat on heatsync (hover for the score)")
 
     -- live-status toggle: go-live / went-offline lines for your linked kick/yt
     -- sources (chatterino shows twitch natively, so those are skipped)
@@ -132,6 +154,9 @@ function M.register(get_login)
         u.sysmsg(ctx, "multichat: " .. multichat.summary())
         u.sysmsg(ctx, "moment spikes: " .. (store.spikes_enabled() and "on" or "off") .. " (/hsmoments on|off)")
         u.sysmsg(ctx, "pinned message: " .. (store.pin_enabled() and "on" or "off") .. " (/hspin on|off)")
+        local hc, hp = heat.stats()
+        u.sysmsg(ctx, "heat bars: " .. (store.heat_enabled() and "on" or "off") .. " (/hsheat on|off) · " ..
+            tostring(hc) .. " cached, " .. tostring(hp) .. " pending")
         -- per-tab link breakdown so a merge is legible, not just a count
         local links = multichat.detail()
         for _, l in ipairs(links) do u.sysmsg(ctx, "  #" .. l.tab .. " ← " .. l.sources) end
@@ -143,7 +168,7 @@ function M.register(get_login)
         u.sysmsg(ctx, "heatsync commands · build " .. caps.name())
         u.sysmsg(ctx, "emotes: :name tab-complete · /hsemotes menu · /hsfind <q> search · /hsinv <user> [page]")
         u.sysmsg(ctx, "archive: /hssearch <q> posts · /hschat <q> [@user] [#chan] chat-logs · /hslogs <user> [chan] · /hsmoments [<n>h] [plat] [pg] · /hsmoments on|off live spikes · /hshot [plat] [pg] · /hswhois <user>")
-        u.sysmsg(ctx, "chat: /hsmulti kick:<slug>|yt:<handle>|off|auto on|off · /hslive · /hspin · /hsflame · /hsbadges · /hsblock <name> · /hsunblock <name> · /hsblocklist")
+        u.sysmsg(ctx, "chat: /hsmulti kick:<slug>|yt:<handle>|off|auto on|off · /hslive · /hspin · /hsflame · /hsbadges · /hsheat · /hsblock <name> · /hsunblock <name> · /hsblocklist")
         u.sysmsg(ctx, "system: /hsstatus · /hsrefresh · /hsarchive on|off · /hsclear")
         u.sysmsg(ctx, "syntax: @user #channel narrow a search · plat:value links a multichat source · <n>h = hours")
         if caps.tier < 2 then

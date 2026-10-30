@@ -107,9 +107,10 @@ local HTTPRequest = {}
 HTTPRequest.__index = HTTPRequest
 c2.HTTPRequest = {}
 function c2.HTTPRequest.create(method, url)
-    local r = setmetatable({ url = url, headers = {} }, HTTPRequest)
+    local r = setmetatable({ url = url, headers = {}, method = method }, HTTPRequest)
     return r
 end
+function HTTPRequest:set_payload(p) self.payload = p end
 function HTTPRequest:set_timeout(t) self.timeout = t end
 function HTTPRequest:set_header(k, v) self.headers[k] = v end
 function HTTPRequest:on_success(cb) self.success = cb end
@@ -118,10 +119,12 @@ function HTTPRequest:finally(cb) self.fin = cb end
 function HTTPRequest:execute() http_queue[#http_queue + 1] = self end
 
 -- answer the oldest pending request matching pattern with a payload table
+local LAST_REQ = nil -- the request http_answer last answered (method/payload checks)
 local function http_answer(pattern, payload_table)
     for i, r in ipairs(http_queue) do
         if string.find(r.url, pattern, 1, true) then
             table.remove(http_queue, i)
+            LAST_REQ = r
             local key = register_payload(payload_table)
             r.success({ data = function() return key end, status = function() return 200 end })
             if r.fin then r.fin() end
@@ -2219,11 +2222,11 @@ do
         local types = { "kick-chat-message", "kick-chat-backfill", "youtube:chat", "youtube:status",
             "emote:added", "emote:removed", "emotes:refresh", "emote:broadcast", "emotes:batch-broadcast",
             "stream:online", "heat:update", "presence:count", "", "unknown-type-xyz",
-            "batch", "server:shutdown", "ack:channels" }
+            "batch", "server:shutdown", "ack:channels", "user:heat_batch_update" }
         local msg = { type = types[math.random(#types)] }
         for _, k in ipairs({ "data", "messages", "channelId", "username", "emoteName", "emoteData",
             "channel", "id", "content", "videoId", "status", "color", "timestamp", "emotes", "displayName",
-            "_ch", "_seq", "ver", "senderKeys", "reconnectSpreadMs", "signal", "channels" }) do
+            "_ch", "_seq", "ver", "senderKeys", "reconnectSpreadMs", "signal", "channels", "updates", "authorChannelId" }) do
             if math.random() < 0.5 then msg[k] = garb() end
         end
         -- senderKeys is specifically an ARRAY of strings on the wire; fuzz that
@@ -2850,6 +2853,236 @@ do
     local t = type(m) == "string" and m or m.init.elements[1].text
     check(#chan.added == a0 + 1 and t:find("[Y] 🔥 moment", 1, true), "spike: a merged youtube source lands in the twitch tab, tagged [Y]")
     store.set_spikes(false)
+end
+
+-- ===== v1.11 parity: heat bars =====
+do
+    local store = require("store")
+    store.set_flame(false)
+    store.set_badges(false)
+
+    -- answer every pending request whose url matches; fn(req) builds the payload
+    local function answer_all(pattern, fn)
+        local n, i = 0, 1
+        while i <= #http_queue do
+            local r = http_queue[i]
+            if r.url:find(pattern, 1, true) then
+                table.remove(http_queue, i)
+                LAST_REQ = r
+                local key = register_payload(fn(r))
+                r.success({ data = function() return key end, status = function() return 200 end })
+                if r.fin then r.fin() end
+                n = n + 1
+            else
+                i = i + 1
+            end
+        end
+        return n
+    end
+    -- run the lookup timer, answering until the queue is quiet (the heat/flair
+    -- beat is single-flight, so a backlog drains one batch per tick)
+    local function pump(pattern, fn)
+        for _ = 1, 40 do
+            advance(4000)
+            answer_all(pattern, fn)
+        end
+        advance(300) -- coalesced back-pass
+    end
+    local function pending(pattern)
+        local n = 0
+        for _, r in ipairs(http_queue) do if r.url:find(pattern, 1, true) then n = n + 1 end end
+        return n
+    end
+    local function names_in(payload)
+        local out = {}
+        for n in payload:gmatch('"([%w_]+)"') do if n ~= "usernames" then out[#out + 1] = n end end
+        return out
+    end
+    local function ids_in(url)
+        local out = {}
+        for id in (url:match("ids=(.*)$") or ""):gmatch("[^,]+") do out[#out + 1] = id end
+        return out
+    end
+    -- hand-built message: own element list so we can seed pre-existing markers
+    local function el_texts(m)
+        local out = {}
+        for _, e in ipairs(m.init.elements) do if type(e) == "table" and e.text then out[#out + 1] = e.text end end
+        return out
+    end
+    local function last_repl() return chan.replaced[#chan.replaced].new end
+    local function marker_count(m, glyph)
+        local n = 0
+        for _, e in ipairs(m.init.elements) do if type(e) == "table" and e.text == glyph then n = n + 1 end end
+        return n
+    end
+    local function send(login, uid, text)
+        local m = fake_msg(login, uid, text)
+        chan.msgs[#chan.msgs + 1] = m
+        chan.appended_cb(m, nil)
+        return m
+    end
+    local HEAT_ANSWER = function(table_by_login)
+        return function(r)
+            local users = {}
+            for _, n in ipairs(names_in(r.payload)) do users[n] = table_by_login[n] or { heat = 0, op = 0, re = 0 } end
+            return { users = users }
+        end
+    end
+
+    -- the live socket: reconnect timers may have replaced the one earlier sections hold
+    local function wsock()
+        for _ = 1, 200 do
+            if ws.connected then break end
+            advance(1000) -- let the reconnect timer build a fresh socket
+            local s = sockets[#sockets]
+            if not s.closed then s.opts.on_open() end
+        end
+        return sockets[#sockets]
+    end
+
+    -- drain whatever earlier sections left queued so counts below are exact
+    pump("/api/users/heat", HEAT_ANSWER({}))
+
+    -- ---------------- heat ----------------
+    local rc = #chan.replaced
+    send("heatuser1", "61001", "gm chat")
+    check(#chan.replaced == rc, "heat: a chatter with unknown heat is not rebuilt (lookup queued)")
+    advance(4000)
+    local heat_req
+    for _, r in ipairs(http_queue) do if r.url:find("/api/users/heat", 1, true) then heat_req = r end end
+    check(heat_req ~= nil and heat_req.method == "POST", "heat: lookup is a POST to /api/users/heat")
+    check(heat_req and heat_req.payload:find("heatuser1", 1, true) ~= nil, "heat: body carries the chatter's login")
+    check(heat_req and heat_req.headers["Content-Type"] == "application/json", "heat: json content-type set")
+    answer_all("/api/users/heat", HEAT_ANSWER({ heatuser1 = { heat = 340, op = 12, re = 30 } }))
+    advance(300)
+    check(#chan.replaced == rc + 1, "heat: back-pass rebuilt the chatter's earlier line once the score landed")
+    do
+        local m = last_repl()
+        local bar, bar_i, name_i
+        for i, e in ipairs(m.init.elements) do
+            if type(e) == "table" and e.text == "▌" then bar, bar_i = e, i end
+            if type(e) == "table" and e.flags == c2.MessageElementFlag.Username then name_i = i end
+        end
+        check(bar ~= nil and bar.color == "#ffff00", "heat: 340 → yellow ▌ bar (extension ladder)")
+        check(bar and bar.tooltip:find("heat 340", 1, true) and bar.tooltip:find("12 posts", 1, true), "heat: tooltip carries the score + counts")
+        check(bar_i ~= nil and name_i ~= nil and bar_i < name_i, "heat: bar sits before the username")
+        local joined = table.concat(el_texts(m), "|") .. (bar and bar.tooltip or "")
+        check(not joined:find("🔥", 1, true), "heat: no fire emoji on or next to a heat score")
+    end
+    rc = #chan.replaced
+    send("heatuser1", "61001", "second line")
+    check(#chan.replaced == rc + 1, "heat: next line from a hot chatter rebuilt immediately from cache")
+
+    -- idempotent: a message that already carries our bar + badge keeps exactly one
+    do
+        local m = fake_msg("heatuser1", "61001", "again")
+        local base = m.elements()
+        table.insert(base, 2, { type = "text", words = { "▌" }, flags = 0, trailing_space = false })
+        table.insert(base, 2, { type = "scaling-image", flags = 0 })
+        rc = #chan.replaced
+        chan.msgs[#chan.msgs + 1] = m
+        chan.appended_cb(m, nil)
+        check(#chan.replaced == rc + 1 and marker_count(last_repl(), "▌") == 1, "heat: re-processing never stacks bars")
+    end
+
+    -- tiers: thin white under 20, thick red at 1000
+    pump("/api/users/heat", HEAT_ANSWER({ heatlow = { heat = 5, op = 1, re = 0 }, heatmax = { heat = 6000, op = 9, re = 9 } }))
+    send("heatlow", "61002", "hi"); send("heatmax", "61003", "hi")
+    advance(4000); answer_all("/api/users/heat", HEAT_ANSWER({ heatlow = { heat = 5, op = 1, re = 0 }, heatmax = { heat = 6000, op = 9, re = 9 } }))
+    advance(300)
+    send("heatlow", "61002", "again"); local lowm = last_repl()
+    send("heatmax", "61003", "again"); local maxm = last_repl()
+    check(marker_count(lowm, "▎") == 1 and marker_count(maxm, "▊") == 1, "heat: glyph thickens with the tier (5 → ▎, 6000 → ▊)")
+    do
+        local col
+        for _, e in ipairs(maxm.init.elements) do if type(e) == "table" and e.text == "▊" then col = e.color end end
+        check(col == "#ff0000", "heat: 6000 → red")
+    end
+
+    -- zero / sub-threshold heat is never displayed
+    pump("/api/users/heat", HEAT_ANSWER({ heatzero = { heat = 0, op = 0, re = 0 }, heat4 = { heat = 4, op = 1, re = 0 } }))
+    send("heatzero", "61004", "x"); send("heat4", "61005", "x")
+    advance(4000); answer_all("/api/users/heat", HEAT_ANSWER({ heat4 = { heat = 4, op = 1, re = 0 } }))
+    advance(300)
+    rc = #chan.replaced
+    send("heatzero", "61004", "plain"); send("heat4", "61005", "plain")
+    check(#chan.replaced == rc, "heat: 0 and sub-threshold heat never rebuild a message (no heatsync content)")
+
+    -- batching: 60 new chatters → bounded batches, never a request per message
+    pump("/api/users/heat", HEAT_ANSWER({}))
+    for i = 1, 60 do send("batchuser" .. i, tostring(62000 + i), "hello") end
+    check(pending("/api/users/heat") == 0, "heat: no request fired from the message path itself")
+    advance(4000)
+    local first_batch
+    for _, r in ipairs(http_queue) do if r.url:find("/api/users/heat", 1, true) then first_batch = r end end
+    check(first_batch ~= nil and #names_in(first_batch.payload) <= 25, "heat: one request carries at most a handful of logins")
+    check(pending("/api/users/heat") == 1, "heat: single-flight until the batch answers")
+    pump("/api/users/heat", HEAT_ANSWER({}))
+
+    -- ttl: cached chatters aren't refetched inside ~2 minutes, are after
+    -- (the pump above ran for minutes, so freshen heatuser1 first)
+    send("heatuser1", "61001", "refresh"); advance(4000)
+    answer_all("/api/users/heat", HEAT_ANSWER({ heatuser1 = { heat = 340, op = 12, re = 30 } }))
+    advance(300)
+    send("heatuser1", "61001", "within ttl"); advance(4000)
+    check(pending("/api/users/heat") == 0, "heat: cached score not refetched inside the ttl")
+    advance(125000)
+    send("heatuser1", "61001", "after ttl")
+    advance(4000)
+    check(pending("/api/users/heat") == 1, "heat: stale score refreshed after ~2min")
+    answer_all("/api/users/heat", HEAT_ANSWER({ heatuser1 = { heat = 340, op = 12, re = 30 } }))
+    advance(300)
+
+    -- ws push refreshes a held chatter, never adds an unseen one
+    do
+        local count_before = require("heat").stats()
+        wsock().opts.on_text(register_payload({ type = "user:heat_batch_update", updates = {
+            { userId = "61001", username = "HeatUser1", userHeat = 5200, op = 1, re = 1 },
+            { userId = "99999", username = "neverseen", userHeat = 900, op = 1, re = 1 },
+        } }))
+        check(require("heat").stats() == count_before, "heat: ws push does not grow the cache with unseen chatters")
+        send("heatuser1", "61001", "after push")
+        check(marker_count(last_repl(), "▊") == 1, "heat: ws heat batch update re-tiers a held chatter")
+        wsock().opts.on_text(register_payload({ type = "user:heat_batch_update", updates = "garbage" }))
+        wsock().opts.on_text(register_payload({ type = "user:heat_batch_update", updates = { 5, "x", { username = 7 }, { username = string.rep("a", 99) } } }))
+        check(true, "heat: malformed push frames are ignored")
+    end
+
+    -- toggle
+    commands["/hsheat"]({ words = { "/hsheat", "off" }, channel = chan })
+    rc = #chan.replaced
+    send("heatuser1", "61001", "heat off")
+    check(not store.heat_enabled() and #chan.replaced == rc, "heat: /hsheat off → no bar, no rebuild")
+    commands["/hsheat"]({ words = { "/hsheat", "on" }, channel = chan })
+    check(store.heat_enabled(), "heat: /hsheat on restores it")
+    commands["/hsheat"]({ words = { "/hsheat" }, channel = chan })
+    check(tostring(chan.added[#chan.added]):find("heat bars is on", 1, true) ~= nil, "heat: bare /hsheat reports state")
+
+    -- malformed responses degrade silently (no bar, no throw)
+    do
+        local bad = {
+            { error = "Rate limited" }, { users = 5 }, { users = "x" }, {},
+            { users = { fz1 = "x" } }, { users = { fz1 = { heat = -50 } } }, { users = { fz1 = { heat = 1e999 } } },
+            { users = { fz1 = { heat = {} } } }, { users = { fz1 = { heat = "NaN" } } }, { users = { fz1 = { heat = 1e300 } } },
+        }
+        local ok_all = true
+        for i, payload in ipairs(bad) do
+            local login = "fz" .. i
+            send(login, tostring(63000 + i), "hi")
+            advance(4000)
+            local ok = pcall(answer_all, "/api/users/heat", function() return payload end)
+            ok_all = ok_all and ok
+            advance(300)
+            rc = #chan.replaced
+            send(login, tostring(63000 + i), "again")
+            if #chan.replaced ~= rc then ok_all = false end
+        end
+        check(ok_all, "heat: malformed/hostile responses degrade to no bar, no error")
+        http_fail("/api/users/heat")
+        send("fzhttp", "63500", "hi"); advance(4000); http_fail("/api/users/heat")
+        check(true, "heat: transport failure survives")
+    end
+
 end
 
 print(failures == 0 and "\nALL PASS" or ("\n" .. failures .. " FAILURES"))

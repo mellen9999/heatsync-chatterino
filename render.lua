@@ -15,6 +15,7 @@ local senders = require("senders")
 local store = require("store")
 local ws = require("ws")
 local badges = require("badges")
+local heat = require("heat")
 local recents = require("recents")
 -- NOTE: render no longer requires `seventv` — it renders only the sender's
 -- heatsync inventory; native chatterino handles 7tv/bttv/ffz. see has_hits.
@@ -283,22 +284,34 @@ local function is_username_el(el)
 end
 
 -- the marker row prepended before the username: chatterino badge (if opted in
--- and the user has one) then the 🔥 heatsync marker.
-local function insert_markers(elems, msg, want_flame)
+-- and the user has one), the 🔥 heatsync marker, then the heat bar (the bar is
+-- its own glyph — never an emoji beside a score).
+local function insert_markers(elems, msg, want_flame, heat_info)
     local badge = badges.element_for(msg.user_id)
     if badge then table.insert(elems, badge) end
     if want_flame then
         table.insert(elems, { type = "text", text = FLAME, trailing_space = true })
     end
+    if heat_info then
+        table.insert(elems, {
+            type = "text",
+            text = heat_info.glyph,
+            color = heat_info.color,
+            tooltip = heat_info.tip,
+            trailing_space = false,
+        })
+    end
 end
 
--- is this element our own previously-inserted 🔥 flame text? (single word)
-local function is_flame_el(el)
+-- is this element a text marker we inserted on a prior render — the 🔥 flame or
+-- a heat bar glyph? (single word)
+local function is_marker_el(el)
     local ok, w = pcall(read_words, el)
-    return ok and type(w) == "table" and #w == 1 and w[1] == FLAME
+    if not ok or type(w) ~= "table" or #w ~= 1 then return false end
+    return w[1] == FLAME or heat.GLYPHS[w[1]] == true
 end
 
-local function build_replacement(msg, sender_map, want_flame, t)
+local function build_replacement(msg, sender_map, want_flame, t, heat_info)
     local elems = {}
     local markers_done = false
     local budget = { n = 0 } -- emote/thread elements injected across THIS message
@@ -306,15 +319,16 @@ local function build_replacement(msg, sender_map, want_flame, t)
         local ok, ty = pcall(read_type, el)
         -- BEFORE the username, strip our own markers from a prior render so
         -- re-processing (backpass) is idempotent — no stacked flames/badges.
-        -- our badge is the only scaling-image that can precede the username
-        -- (sender emotes live in the body); our flame is a lone-🔥 text run.
+        -- our badges are the only scaling-images that can precede the username
+        -- (sender emotes live in the body); our flame/heat bar are lone-glyph
+        -- text runs.
         -- native twitch badges are badge-type elements, so they pass through.
         if not markers_done then
-            if ty == "scaling-image" or (ty == "text" and is_flame_el(el)) then
+            if ty == "scaling-image" or (ty == "text" and is_marker_el(el)) then
                 goto continue
             end
             if is_username_el(el) then
-                insert_markers(elems, msg, want_flame)
+                insert_markers(elems, msg, want_flame, heat_info)
                 markers_done = true
             end
         end
@@ -334,7 +348,7 @@ local function build_replacement(msg, sender_map, want_flame, t)
     -- fallback: no username element detected → markers at the very start
     if not markers_done then
         local pre = {}
-        insert_markers(pre, msg, want_flame)
+        insert_markers(pre, msg, want_flame, heat_info)
         for i = #pre, 1, -1 do table.insert(elems, 1, pre[i]) end
     end
     local highlight = msg.highlight_color
@@ -396,18 +410,23 @@ local function do_process(ch, msg, hint)
     if sender_map == false then sender_map = nil end
 
     -- rebuild if the message has renderable HS content, OR the sender is a
-    -- known HS user with the flame on, OR the sender has a chatterino badge.
+    -- known HS user with the flame on, OR the sender has a chatterino badge,
+    -- or a heat bar (resolved from a batched, cached lookup — an unseen chatter
+    -- queues one and renders plain until it lands).
     -- the flame tags OTHER heatsync users so you can spot them — it's pointless
     -- on your own messages, and skipping them avoids a needless rebuild that
     -- would drop your native channel badges (e.g. your sub badge).
     local want_flame = store.flame_enabled() and login ~= senders.own_login
         and senders.is_known_hs(login)
     local t = msg_time(msg)
+    local heat_info = heat.info(login)
     -- O(1) checks first; only pay the O(words) has_hits scan when neither the
-    -- flame nor a badge already forces the rebuild (Lua `or` short-circuits).
-    if not (want_flame or badges.has(msg.user_id) or has_hits(text, sender_map, t)) then return end
+    -- flame, a badge nor a heat bar already forces the rebuild (Lua `or`
+    -- short-circuits).
+    if not (want_flame or heat_info or badges.has(msg.user_id)
+        or has_hits(text, sender_map, t)) then return end
 
-    local repl = build_replacement(msg, sender_map, want_flame, t)
+    local repl = build_replacement(msg, sender_map, want_flame, t, heat_info)
     if hint then
         ch:replace_message(msg, repl, hint)
     else
@@ -602,6 +621,7 @@ function M.start()
     if M.started then return end
     M.started = true
     senders.on_loaded = function(login) M.backpass(login) end
+    heat.set_on_loaded(function(login) M.backpass(login) end)
     inventory.on_change = function()
         if inventory.login then M.backpass(inventory.login) end
     end

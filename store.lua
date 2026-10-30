@@ -173,4 +173,17 @@ end
 
 load()
 
+-- ----- on-by-default flags (opt-out) -----
+-- same on-disk contract as the toggles above (only an explicit "0" turns one
+-- off), as a factory because these four are identical: heat bars, sub-flair
+-- badges, heatsync name colors, and kick/youtube history backfill.
+local function flag(file)
+    local on = not file_is(file, "0")
+    return function() return on end, function(v)
+        on = v and true or false
+        net.write_data(file, on and "1" or "0")
+    end
+end
+M.heat_enabled, M.set_heat = flag("heat.txt")
+
 return M

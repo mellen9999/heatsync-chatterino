@@ -25,6 +25,7 @@ local recents = require("recents")
 local live = require("live")
 local pin = require("pin")
 local spike = require("spike")
+local heat = require("heat")
 
 -- tab-complete popup size (shared ceiling: own inventory fills first, then the
 -- 7tv/bttv/ffz catalog appends into whatever room is left). raised 25→40 so a
@@ -209,6 +210,8 @@ local function on_ws_event(msg)
     if pin.handle(msg) then return end
     -- opt-in moment spikes for channels open here
     if spike.handle(msg) then return end
+    -- global heat refresh for chatters we already hold (heat bars)
+    if heat.handle(msg) then return end
     local t = msg.type
     if t == "emote:added" or t == "emote:removed" or t == "emotes:refresh" then
         if is_own_inventory_ch(msg._ch) then
@@ -231,7 +234,7 @@ local function on_ws_event(msg)
     elseif t == "emote:broadcast" then
         senders.feed_broadcast(msg.username, msg.emoteName, msg.emoteData)
     end
-    -- everything else on joined rooms (heat updates, typing) is ignored
+    -- everything else on joined rooms (typing, per-post heat) is ignored
 end
 
 -- ----- boot -----
@@ -353,6 +356,15 @@ if caps.later then
         if inventory.boot_failed_at then login_and_refresh_tick() end
     end)
     net.every(2 * 1000, senders.flush)
+    -- cosmetic lookup batches (heat bars, sub flair, name colors): one request
+    -- per handful of new chatters on a slower beat than senders (never urgent).
+    -- each flush is isolated so one failing can't starve the others.
+    net.every(4 * 1000, function()
+        for _, flush in ipairs({ heat.flush }) do
+            local ok, err = pcall(flush)
+            if not ok then net.log_warn("lookup flush failed: " .. tostring(err)) end
+        end
+    end)
     if caps.tier >= 1 then
         net.every(25 * 1000, ws.heartbeat)
         net.every(30 * 1000, ws.watchdog)
