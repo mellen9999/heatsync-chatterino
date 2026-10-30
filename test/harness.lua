@@ -2855,7 +2855,7 @@ do
     store.set_spikes(false)
 end
 
--- ===== v1.11 parity: heat bars, sub flair, name colors, user card =====
+-- ===== v1.11 parity: heat bars, sub flair, name colors, user card, history backfill =====
 do
     local store = require("store")
     store.set_flame(false)
@@ -3372,6 +3372,128 @@ do
             check(pending("/api/card") == 1, "menu: card entry fires the card request")
             answer_all("/api/card", function() return { profile = { display_name = "CardMenuUser", stats = {} } } end)
         end
+    end
+
+    -- ---------------- history backfill ----------------
+    local multichat = require("multichat")
+    local function lines_since(n) -- injected multichat lines after index n
+        local out = {}
+        for i = n + 1, #chan.added do
+            local m = chan.added[i]
+            if type(m) == "table" and m.init then out[#out + 1] = m end
+        end
+        return out
+    end
+    local function text_of(m) return m.init.message_text end
+    local ROWS = {
+        { id = "bf3", ts = "2026-10-30T20:00:03.000Z", channel = "bfkick", sender = "cc", display_name = "CC", text = "third", color = "#00CCB3" },
+        { id = "bf1", ts = "2026-10-30T20:00:01.000Z", channel = "bfkick", sender = "aa", display_name = "AA", text = "first" },
+        { id = "bf2", ts = "2026-10-30T20:00:02.000Z", channel = "bfkick", sender = "bb", display_name = "BB", text = "second" },
+        { id = 5, ts = "x", sender = "dd", text = "no string id" },
+        { id = "bfx", ts = "x", sender = "dd", text = "" },
+        { id = "bfy", ts = "x", text = "no sender" },
+        "junk",
+    }
+    local ba = #chan.added
+    commands["/hsmulti"]({ words = { "/hsmulti", "kick:bfkick" }, channel = chan })
+    local rreq
+    for _, r in ipairs(http_queue) do if r.url:find("/api/recent/kick/bfkick", 1, true) then rreq = r end end
+    check(rreq ~= nil and rreq.method == "GET" and rreq.url:find("limit=50", 1, true), "backfill: linking kick fetches GET /api/recent/kick/<slug>?limit=50")
+    -- the socket delivers bf2 live before the history answer lands
+    wsock().opts.on_text(register_payload({ type = "kick-chat-message", data = { platform = "kick", channel = "bfkick", id = "bf2", username = "bb", displayName = "BB", content = "second", timestamp = 1761825602000 } }))
+    local live_n = #lines_since(ba)
+    answer_all("/api/recent/kick/bfkick", function() return { messages = ROWS } end)
+    local got = lines_since(ba)
+    check(#got == live_n + 2, "backfill: history adds only the lines the socket didn't deliver (deduped by id; junk rows skipped)")
+    check(got[2] and text_of(got[2]) == "first" and got[3] and text_of(got[3]) == "third", "backfill: injected oldest-first")
+    do
+        local els = got[2].init.elements
+        check(els[1].type == "timestamp" and els[1].time == require("net").iso_to_ms("2026-10-30T20:00:01.000Z"), "backfill: line carries its real archived time")
+        check(els[2].text == "[K]", "backfill: tagged [K]")
+    end
+    -- once per link per session: ws reconnects don't refetch
+    wsock().opts.on_open()
+    check(pending("/api/recent/kick/bfkick") == 0, "backfill: ws reconnect does not refetch")
+    commands["/hsmulti"]({ words = { "/hsmulti", "kick:bfkick" }, channel = chan })
+    check(pending("/api/recent/kick/bfkick") == 0, "backfill: re-linking an already-linked source does not refetch")
+    -- unlink before the answer lands → nothing injected
+    commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = chan })
+    commands["/hsmulti"]({ words = { "/hsmulti", "kick:bfgone" }, channel = chan })
+    commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = chan })
+    ba = #chan.added
+    answer_all("/api/recent/kick/bfgone", function() return { messages = { { id = "g1", ts = "2026-10-30T20:00:01.000Z", sender = "z", text = "late" } } } end)
+    check(#lines_since(ba) == 0, "backfill: a source unlinked mid-fetch injects nothing")
+    -- relink after unlink fetches again (flag cleared)
+    commands["/hsmulti"]({ words = { "/hsmulti", "kick:bfkick" }, channel = chan })
+    check(pending("/api/recent/kick/bfkick") == 1, "backfill: relink after unlink fetches again")
+    ba = #chan.added
+    answer_all("/api/recent/kick/bfkick", function() return { messages = ROWS } end)
+    check(#lines_since(ba) == 0, "backfill: ids already seen are never doubled across a relink")
+    commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = chan })
+    -- youtube: only a UC id has an archive key
+    commands["/hsmulti"]({ words = { "/hsmulti", "yt:@somehandle" }, channel = chan })
+    check(pending("/api/recent/youtube") == 0, "backfill: a youtube handle has no archive key → no request")
+    commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = chan })
+    local UCY = "UC" .. string.rep("q", 22)
+    commands["/hsmulti"]({ words = { "/hsmulti", "yt:" .. UCY }, channel = chan })
+    check(pending("/api/recent/youtube/" .. string.lower(UCY)) == 1, "backfill: a youtube UC id fetches /api/recent/youtube/<uc id>")
+    ba = #chan.added
+    answer_all("/api/recent/youtube", function() return { messages = { { id = "yh1", ts = "2026-10-30T20:00:01.000Z", sender = "@ytfan", display_name = "ytfan", text = "yt history" } } } end)
+    do
+        local got2 = lines_since(ba)
+        check(#got2 == 1 and got2[1].init.elements[2].text == "[Y]", "backfill: youtube history lands tagged [Y]")
+    end
+    commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = chan })
+    -- auto-link hands the profile's channel id through
+    do
+        local UCA = "UC" .. string.rep("w", 22)
+        multichat.link("somechannel", "yt", "@autohandle", true, UCA)
+        check(pending("/api/recent/youtube/" .. string.lower(UCA)) == 1, "backfill: auto-link uses the profile's youtube channel id")
+        answer_all("/api/recent/youtube", function() return { messages = {} } end)
+        multichat.unlink_auto("somechannel")
+    end
+    -- toggle
+    commands["/hsbackfill"]({ words = { "/hsbackfill", "off" }, channel = chan })
+    commands["/hsmulti"]({ words = { "/hsmulti", "kick:bfoff" }, channel = chan })
+    check(not store.backfill_enabled() and pending("/api/recent/kick/bfoff") == 0, "backfill: /hsbackfill off → no history request")
+    commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = chan })
+    commands["/hsbackfill"]({ words = { "/hsbackfill", "on" }, channel = chan })
+    check(store.backfill_enabled(), "backfill: /hsbackfill on restores it")
+    -- hostile answers
+    do
+        local bad = { { messages = 5 }, { messages = "x" }, {}, { error = "rate_limit" }, { messages = { 5, {}, { id = {} , text = {} } } } }
+        local many = {}
+        for i = 1, 400 do many[i] = { id = "many" .. i, ts = "2026-10-30T20:00:00.000Z", sender = "m", text = "line " .. i } end
+        local ok_all = true
+        for i, payload in ipairs(bad) do
+            commands["/hsmulti"]({ words = { "/hsmulti", "kick:bfz" .. i }, channel = chan })
+            ok_all = pcall(answer_all, "/api/recent/kick/bfz" .. i, function() return payload end) and ok_all
+            commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = chan })
+        end
+        commands["/hsmulti"]({ words = { "/hsmulti", "kick:bfmany" }, channel = chan })
+        ba = #chan.added
+        answer_all("/api/recent/kick/bfmany", function() return { messages = many } end)
+        check(ok_all and #lines_since(ba) == 50, "backfill: malformed answers degrade silently; an oversized one injects only the last 50")
+        check(text_of(chan.added[#chan.added]) == "line 400", "backfill: the newest of an oversized answer is kept")
+        http_fail("/api/recent")
+        commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = chan })
+    end
+    -- a source shared by two tabs: the new tab still gets its history
+    do
+        local other = fake_channel("othertab")
+        channels[#channels + 1] = other
+        commands["/hsmulti"]({ words = { "/hsmulti", "kick:bfshared" }, channel = chan })
+        answer_all("/api/recent/kick/bfshared", function() return { messages = {} } end)
+        wsock().opts.on_text(register_payload({ type = "kick-chat-message", data = { platform = "kick", channel = "bfshared", id = "sh1", username = "s", content = "shared line", timestamp = 1761825602000 } }))
+        local o0, c0 = #other.added, #chan.added
+        commands["/hsmulti"]({ words = { "/hsmulti", "kick:bfshared" }, channel = other })
+        answer_all("/api/recent/kick/bfshared", function() return { messages = { { id = "sh1", ts = "2026-10-30T20:00:01.000Z", sender = "s", text = "shared line" } } } end)
+        local to_other = 0
+        for i = o0 + 1, #other.added do if type(other.added[i]) == "table" and other.added[i].init and other.added[i].init.message_text == "shared line" then to_other = to_other + 1 end end
+        check(to_other == 1 and #chan.added == c0, "backfill: second tab gets the history; the first tab isn't doubled")
+        commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = chan })
+        commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = other })
+        for i = #channels, 1, -1 do if channels[i] == other then table.remove(channels, i) end end
     end
 
 end

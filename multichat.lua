@@ -20,6 +20,9 @@
 --   yt live+hist → youtube:chat { channelId, messages:[{id,user,text,emotes,
 --                timestamp,color,amount,systemMsg,hsEmotes:{word->ref},...}],
 --                replay? }
+--   history    → GET /api/recent/<kick|youtube>/<channel>?limit=50 (public) — the
+--                last lines from heatsync's own archive, injected once when a
+--                source is linked (see M.backfill)
 --   yt status  → youtube:status { videoId, status, error?, channelId,
 --                channelName?, title? } — status is one of connected|ended|
 --                not-live|chat-off|no-slot|error (server/services/ws-protocol.ts
@@ -314,11 +317,90 @@ local function is_dup(id)
     return false
 end
 
+-- ----- history backfill -----
+-- the last BACKFILL_LIMIT archived lines of a freshly linked source, injected
+-- once per link per session (kick's own socket backfill and youtube's skipped
+-- replay leave a new tab empty; twitch history is chatterino's native job).
+-- rows share inject()'s id dedup with the live feed, so a line the socket
+-- already delivered is never doubled, and they go in oldest-first so the tab
+-- reads in order. every failure is silent: backfill is a bonus, never required.
+local BACKFILL_LIMIT = 50
+local inject -- forward: defined in the injection section below
+local backfilled = {} -- cc_name \1 source_key -> true (set when the fetch is sent)
+
+-- a youtube UC channel id (24 chars) from a bare id or a /channel/ url, lowercase
+-- (chat_archive keys youtube by the lowercased id); nil for a handle, which the
+-- archive can't be queried by
+local function yt_uc_id(s)
+    if type(s) ~= "string" or #s > 200 then return nil end
+    s = string.lower(s)
+    local id = string.match(s, "^(uc[%w_%-]+)$") or string.match(s, "/channel/(uc[%w_%-]+)")
+    if id and #id == 24 then return id end
+    return nil
+end
+
+local function archive_key(s)
+    if s.platform == "kick" then return "kick", s.channel end
+    if s.platform == "yt" then return "youtube", s.archive or yt_uc_id(s.channel) end
+    return nil
+end
+
+-- one /api/recent row → an inject() line, or nil. rows are untrusted: every
+-- field is type-checked here and inject() bounds the rest.
+local function row_to_line(platform, channel, row)
+    if type(row) ~= "table" then return nil end
+    if type(row.id) ~= "string" or row.id == "" or #row.id > 200 then return nil end
+    if type(row.text) ~= "string" or row.text == "" then return nil end
+    local who = row.sender
+    if type(who) ~= "string" or who == "" then return nil end
+    return {
+        platform = platform,
+        channel = channel,
+        id = row.id,
+        username = who,
+        display = row.display_name,
+        text = row.text,
+        color = row.color,
+        time_ms = net.iso_to_ms(row.ts),
+    }
+end
+
+function M.backfill(cc_name, s)
+    if not store.backfill_enabled() then return end
+    local plat, chan = archive_key(s)
+    if not plat or type(chan) ~= "string" or #chan > 50 or not string.match(chan, "^[a-z0-9_%-]+$") then return end
+    local flag = cc_name .. "\1" .. source_key(s.platform, s.channel)
+    if backfilled[flag] then return end
+    backfilled[flag] = true
+    local key_platform, key_channel = s.platform, s.channel
+    net.get_json(net.ORIGIN .. "/api/recent/" .. plat .. "/" .. chan .. "?limit=" .. BACKFILL_LIMIT, 8000, function(payload)
+        local rows = type(payload) == "table" and payload.messages
+        if type(rows) ~= "table" then return end
+        local lines = {}
+        for i = math.max(1, #rows - BACKFILL_LIMIT + 1), #rows do
+            local line = row_to_line(key_platform, key_channel, rows[i])
+            if line then lines[#lines + 1] = line end
+        end
+        -- the server answers oldest-first already; sort anyway (stable on the
+        -- arrival index) so a reordered answer can't scramble the tab
+        for i, l in ipairs(lines) do l.n = i end
+        table.sort(lines, function(a, b)
+            local ta, tb = a.time_ms or 0, b.time_ms or 0
+            if ta ~= tb then return ta < tb end
+            return a.n < b.n
+        end)
+        for _, l in ipairs(lines) do pcall(inject, l, cc_name) end
+    end)
+end
+
 -- ----- linking -----
 -- auto=true marks an ephemeral auto-multichat link (re-derived when the twitch
 -- tab opens, reaped when it closes); it is never written to disk. a manual
 -- /hsmulti link (auto nil) is persistent.
-function M.link(cc_name, platform, channel, auto)
+-- archive_id (optional): the youtube channel's UC id when the caller knows it
+-- (auto-link reads it off the profile) — history is archived by that id, which
+-- a typed handle can't be turned into.
+function M.link(cc_name, platform, channel, auto, archive_id)
     if type(cc_name) ~= "string" or cc_name == "" then return false end
     if type(channel) ~= "string" or channel == "" then return false end
     local key = source_key(platform, channel)
@@ -329,10 +411,12 @@ function M.link(cc_name, platform, channel, auto)
         if existing.auto and not auto then existing.auto = nil; persist() end
         return false
     end
-    links[cc_name][key] = { platform = platform, channel = string.lower(channel), auto = auto or nil }
+    links[cc_name][key] = { platform = platform, channel = string.lower(channel), auto = auto or nil,
+        archive = yt_uc_id(archive_id) }
     add_route(key, cc_name)
     if not auto then persist() end
     subscribe(platform, string.lower(channel))
+    M.backfill(cc_name, links[cc_name][key])
     -- a freshly linked kick source may already have a pin (pin.lua fetches it)
     if platform == "kick" and M.on_kick_linked then pcall(M.on_kick_linked, string.lower(channel)) end
     return true
@@ -348,6 +432,7 @@ function M.unlink_auto(cc_name)
     for key, s in pairs(srcs) do
         if s.auto then
             srcs[key] = nil
+            backfilled[cc_name .. "\1" .. key] = nil
             drop_route(key, cc_name)
             if not routes[key] then unsubscribe(s.platform, s.channel) end
         end
@@ -360,6 +445,7 @@ function M.unlink(cc_name, platform, channel)
     if not links[cc_name] then return 0 end
     local removed = 0
     local function drop(key, s)
+        backfilled[cc_name .. "\1" .. key] = nil
         drop_route(key, cc_name)
         if not routes[key] then unsubscribe(s.platform, s.channel) end
         removed = removed + 1
@@ -403,8 +489,11 @@ end
 -- are idempotent (ws.join no-ops if already in the replayed set); yt always
 -- needs an explicit re-subscribe (pollers are per-video, not replayed).
 function M.on_ws_up()
-    for _, srcs in pairs(links) do
-        for _, s in pairs(srcs) do subscribe(s.platform, s.channel) end
+    for cc_name, srcs in pairs(links) do
+        for _, s in pairs(srcs) do
+            subscribe(s.platform, s.channel)
+            M.backfill(cc_name, s) -- persisted links: once per session, no-op if already done
+        end
     end
 end
 
@@ -457,7 +546,7 @@ local function warn_inject_fail(err)
     end
 end
 
-local function inject(line)
+function inject(line, only)
     -- a partial server message (missing channel/routing tag) must drop quietly,
     -- not throw in source_key's string.lower — every other field below is
     -- type-checked, so this is the one gap. both handlers funnel through here.
@@ -465,10 +554,19 @@ local function inject(line)
     local key = source_key(line.platform, line.channel)
     local targets = routes[key]
     if not targets then return end
+    -- `only`: history for ONE freshly linked tab. other tabs already linked to
+    -- the source have seen these ids, so for a shared source the seen-verdict
+    -- must not swallow the new tab's copy (it still records the id).
+    local shared = false
+    if only then
+        if not targets[only] then return end
+        shared = next(targets, next(targets)) ~= nil
+        targets = { [only] = true }
+    end
     -- dedup scoped BY SOURCE: two sources linked to the same tab that happen to
     -- share a message id can't shadow each other. a nil/blank id means "can't
     -- dedup" and injects (is_dup handles the non-string case for the raw path).
-    if type(line.id) == "string" and line.id ~= "" and is_dup(key .. "\1" .. line.id) then return end
+    if type(line.id) == "string" and line.id ~= "" and is_dup(key .. "\1" .. line.id) and not shared then return end
     local text = line.text
     if type(text) ~= "string" or text == "" then return end
     -- bound field lengths from the untrusted ws payload: a multi-MB username or

@@ -303,7 +303,7 @@ local function try_auto_multichat(channel)
             end
         end
         if type(p.youtube_username) == "string" and p.youtube_username ~= "" then
-            multichat.link(channel, "yt", p.youtube_username, true)
+            multichat.link(channel, "yt", p.youtube_username, true, p.youtube_channel_id)
         end
     end)
 end

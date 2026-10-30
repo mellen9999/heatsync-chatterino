@@ -107,6 +107,8 @@ function M.register(get_login)
         "the sub badge a heatsync user picked shows before their name")
     flag_command("/hscolors", "name colors", store.colors_enabled, store.set_colors,
         "heatsync users' picked name color on merged youtube lines")
+    flag_command("/hsbackfill", "history backfill", store.backfill_enabled, store.set_backfill,
+        "a linked kick/youtube source loads its last ~50 lines when merged")
 
     -- live-status toggle: go-live / went-offline lines for your linked kick/yt
     -- sources (chatterino shows twitch natively, so those are skipped)
@@ -171,6 +173,7 @@ function M.register(get_login)
             tostring(fc) .. " cached, " .. tostring(fp) .. " pending")
         u.sysmsg(ctx, "name colors: " .. (store.colors_enabled() and "on" or "off") .. " (/hscolors on|off) · " ..
             tostring(nc) .. " cached, " .. tostring(np) .. " pending")
+        u.sysmsg(ctx, "history backfill: " .. (store.backfill_enabled() and "on" or "off") .. " (/hsbackfill on|off)")
         -- per-tab link breakdown so a merge is legible, not just a count
         local links = multichat.detail()
         for _, l in ipairs(links) do u.sysmsg(ctx, "  #" .. l.tab .. " ← " .. l.sources) end
@@ -182,7 +185,7 @@ function M.register(get_login)
         u.sysmsg(ctx, "heatsync commands · build " .. caps.name())
         u.sysmsg(ctx, "emotes: :name tab-complete · /hsemotes menu · /hsfind <q> search · /hsinv <user> [page]")
         u.sysmsg(ctx, "archive: /hssearch <q> posts · /hschat <q> [@user] [#chan] chat-logs · /hslogs <user> [chan] · /hsmoments [<n>h] [plat] [pg] · /hsmoments on|off live spikes · /hshot [plat] [pg] · /hswhois <user> · /hscard <user>")
-        u.sysmsg(ctx, "chat: /hsmulti kick:<slug>|yt:<handle>|off|auto on|off · /hslive · /hspin · /hsflame · /hsbadges · /hsheat · /hsflair · /hscolors · /hsblock <name> · /hsunblock <name> · /hsblocklist")
+        u.sysmsg(ctx, "chat: /hsmulti kick:<slug>|yt:<handle>|off|auto on|off · /hslive · /hspin · /hsflame · /hsbadges · /hsheat · /hsflair · /hscolors · /hsbackfill · /hsblock <name> · /hsunblock <name> · /hsblocklist")
         u.sysmsg(ctx, "system: /hsstatus · /hsrefresh · /hsarchive on|off · /hsclear")
         u.sysmsg(ctx, "syntax: @user #channel narrow a search · plat:value links a multichat source · <n>h = hours")
         if caps.tier < 2 then

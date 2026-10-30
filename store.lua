@@ -187,5 +187,6 @@ end
 M.heat_enabled, M.set_heat = flag("heat.txt")
 M.flair_enabled, M.set_flair = flag("flair-badges.txt")
 M.colors_enabled, M.set_colors = flag("namecolors.txt")
+M.backfill_enabled, M.set_backfill = flag("backfill.txt")
 
 return M
