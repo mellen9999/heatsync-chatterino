@@ -16,6 +16,7 @@ local store = require("store")
 local ws = require("ws")
 local badges = require("badges")
 local heat = require("heat")
+local flair = require("flair")
 local recents = require("recents")
 -- NOTE: render no longer requires `seventv` — it renders only the sender's
 -- heatsync inventory; native chatterino handles 7tv/bttv/ffz. see has_hits.
@@ -284,11 +285,15 @@ local function is_username_el(el)
 end
 
 -- the marker row prepended before the username: chatterino badge (if opted in
--- and the user has one), the 🔥 heatsync marker, then the heat bar (the bar is
--- its own glyph — never an emoji beside a score).
-local function insert_markers(elems, msg, want_flame, heat_info)
+-- and the user has one), the heatsync sub-flair badge, the 🔥 heatsync marker,
+-- then the heat bar (the bar is its own glyph — never an emoji beside a score).
+local function insert_markers(elems, msg, want_flame, heat_info, want_flair)
     local badge = badges.element_for(msg.user_id)
     if badge then table.insert(elems, badge) end
+    if want_flair then
+        local fl = flair.element_for(msg.user_id)
+        if fl then table.insert(elems, fl) end
+    end
     if want_flame then
         table.insert(elems, { type = "text", text = FLAME, trailing_space = true })
     end
@@ -311,7 +316,7 @@ local function is_marker_el(el)
     return w[1] == FLAME or heat.GLYPHS[w[1]] == true
 end
 
-local function build_replacement(msg, sender_map, want_flame, t, heat_info)
+local function build_replacement(msg, sender_map, want_flame, t, heat_info, want_flair)
     local elems = {}
     local markers_done = false
     local budget = { n = 0 } -- emote/thread elements injected across THIS message
@@ -328,7 +333,7 @@ local function build_replacement(msg, sender_map, want_flame, t, heat_info)
                 goto continue
             end
             if is_username_el(el) then
-                insert_markers(elems, msg, want_flame, heat_info)
+                insert_markers(elems, msg, want_flame, heat_info, want_flair)
                 markers_done = true
             end
         end
@@ -348,7 +353,7 @@ local function build_replacement(msg, sender_map, want_flame, t, heat_info)
     -- fallback: no username element detected → markers at the very start
     if not markers_done then
         local pre = {}
-        insert_markers(pre, msg, want_flame, heat_info)
+        insert_markers(pre, msg, want_flame, heat_info, want_flair)
         for i = #pre, 1, -1 do table.insert(elems, 1, pre[i]) end
     end
     local highlight = msg.highlight_color
@@ -411,8 +416,8 @@ local function do_process(ch, msg, hint)
 
     -- rebuild if the message has renderable HS content, OR the sender is a
     -- known HS user with the flame on, OR the sender has a chatterino badge,
-    -- or a heat bar (resolved from a batched, cached lookup — an unseen chatter
-    -- queues one and renders plain until it lands).
+    -- a heat bar, or a sub flair (each resolved from a batched, cached lookup —
+    -- an unseen chatter queues one and renders plain until it lands).
     -- the flame tags OTHER heatsync users so you can spot them — it's pointless
     -- on your own messages, and skipping them avoids a needless rebuild that
     -- would drop your native channel badges (e.g. your sub badge).
@@ -420,13 +425,14 @@ local function do_process(ch, msg, hint)
         and senders.is_known_hs(login)
     local t = msg_time(msg)
     local heat_info = heat.info(login)
+    local want_flair = flair.has(msg.user_id, login)
     -- O(1) checks first; only pay the O(words) has_hits scan when neither the
-    -- flame, a badge nor a heat bar already forces the rebuild (Lua `or`
-    -- short-circuits).
-    if not (want_flame or heat_info or badges.has(msg.user_id)
+    -- flame, a badge, a heat bar nor a flair already forces the rebuild (Lua
+    -- `or` short-circuits).
+    if not (want_flame or heat_info or want_flair or badges.has(msg.user_id)
         or has_hits(text, sender_map, t)) then return end
 
-    local repl = build_replacement(msg, sender_map, want_flame, t, heat_info)
+    local repl = build_replacement(msg, sender_map, want_flame, t, heat_info, want_flair)
     if hint then
         ch:replace_message(msg, repl, hint)
     else
@@ -622,6 +628,7 @@ function M.start()
     M.started = true
     senders.on_loaded = function(login) M.backpass(login) end
     heat.set_on_loaded(function(login) M.backpass(login) end)
+    flair.set_on_loaded(function(login) M.backpass(login) end)
     inventory.on_change = function()
         if inventory.login then M.backpass(inventory.login) end
     end

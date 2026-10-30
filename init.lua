@@ -26,6 +26,7 @@ local live = require("live")
 local pin = require("pin")
 local spike = require("spike")
 local heat = require("heat")
+local flair = require("flair")
 
 -- tab-complete popup size (shared ceiling: own inventory fills first, then the
 -- 7tv/bttv/ffz catalog appends into whatever room is left). raised 25→40 so a
@@ -360,7 +361,7 @@ if caps.later then
     -- per handful of new chatters on a slower beat than senders (never urgent).
     -- each flush is isolated so one failing can't starve the others.
     net.every(4 * 1000, function()
-        for _, flush in ipairs({ heat.flush }) do
+        for _, flush in ipairs({ heat.flush, flair.flush }) do
             local ok, err = pcall(flush)
             if not ok then net.log_warn("lookup flush failed: " .. tostring(err)) end
         end

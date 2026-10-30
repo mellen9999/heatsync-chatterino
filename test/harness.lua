@@ -2855,7 +2855,7 @@ do
     store.set_spikes(false)
 end
 
--- ===== v1.11 parity: heat bars =====
+-- ===== v1.11 parity: heat bars, sub flair =====
 do
     local store = require("store")
     store.set_flame(false)
@@ -2942,6 +2942,7 @@ do
 
     -- drain whatever earlier sections left queued so counts below are exact
     pump("/api/users/heat", HEAT_ANSWER({}))
+    pump("/api/users/flair", function() return { flairs = {} } end)
 
     -- ---------------- heat ----------------
     local rc = #chan.replaced
@@ -3082,6 +3083,96 @@ do
         send("fzhttp", "63500", "hi"); advance(4000); http_fail("/api/users/heat")
         check(true, "heat: transport failure survives")
     end
+
+    -- ---------------- flair ----------------
+    local BADGE1 = "https://static-cdn.jtvnw.net/badges/v1/abc-123/1"
+    local BADGE4 = "https://static-cdn.jtvnw.net/badges/v1/abc-123/3"
+    local FLAIRS = {}
+    local function flair_answer(r)
+        local out = {}
+        for _, id in ipairs(ids_in(r.url)) do out[id] = FLAIRS[id] end
+        return { flairs = out }
+    end
+    FLAIRS["64001"] = { flair_type = "twitch_sub", broadcaster_login = "somestreamer", badge_url = BADGE1, badge_url_4x = BADGE4, tier = "1000" }
+    pump("/api/users/flair", flair_answer)
+    rc = #chan.replaced
+    send("flairuser", "64001", "no emotes here")
+    check(#chan.replaced == rc, "flair: unknown chatter not rebuilt until the lookup lands")
+    advance(4000)
+    local freq
+    for _, r in ipairs(http_queue) do if r.url:find("/api/users/flair", 1, true) then freq = r end end
+    check(freq ~= nil and freq.method == "GET" and freq.url:find("ids=", 1, true) ~= nil, "flair: batched GET /api/users/flair?ids=")
+    check(freq and #ids_in(freq.url) <= 50, "flair: batch is bounded")
+    answer_all("/api/users/flair", flair_answer)
+    advance(300)
+    check(#chan.replaced == rc + 1, "flair: back-pass rebuilt the sub's earlier line")
+    do
+        local m = last_repl()
+        local badge, bi, ni
+        for i, e in ipairs(m.init.elements) do
+            if type(e) == "table" and e.type == "scaling-image" then badge, bi = e, i end
+            if type(e) == "table" and e.flags == c2.MessageElementFlag.Username then ni = i end
+        end
+        check(badge ~= nil and bi < ni, "flair: badge image sits before the username")
+        check(badge and badge.images.i1.url == BADGE4 and badge.images.i1.scale == 0.25, "flair: 4x badge drawn at badge height (72px → 18)")
+        check(badge and badge.tooltip:find("somestreamer", 1, true) ~= nil, "flair: tooltip names the broadcaster")
+    end
+    rc = #chan.replaced
+    send("flairuser", "64001", "second")
+    check(#chan.replaced == rc + 1, "flair: later lines rebuilt from cache")
+    do -- idempotent
+        local m = fake_msg("flairuser", "64001", "again")
+        table.insert(m.elements(), 2, { type = "scaling-image", flags = 0 })
+        rc = #chan.replaced
+        chan.msgs[#chan.msgs + 1] = m
+        chan.appended_cb(m, nil)
+        local n = 0
+        for _, e in ipairs(last_repl().init.elements) do if type(e) == "table" and e.type == "scaling-image" then n = n + 1 end end
+        check(#chan.replaced == rc + 1 and n == 1, "flair: re-processing never stacks badges")
+    end
+    -- host off the allowlist / wrong type / hostile fields → nothing drawn, no rebuild
+    FLAIRS["64002"] = { flair_type = "twitch_sub", broadcaster_login = "x", badge_url = "https://evil.example/b.png", badge_url_4x = "https://evil.example/b4.png" }
+    FLAIRS["64003"] = { flair_type = "other", broadcaster_login = "x", badge_url = BADGE1 }
+    FLAIRS["64004"] = { flair_type = "twitch_sub", badge_url = "https://static-cdn.jtvnw.net/x\n.png" }
+    FLAIRS["64005"] = "garbage"
+    for i = 2, 5 do send("flairbad" .. i, tostring(64000 + i), "hi") end
+    pump("/api/users/flair", flair_answer)
+    rc = #chan.replaced
+    for i = 2, 5 do send("flairbad" .. i, tostring(64000 + i), "again") end
+    check(#chan.replaced == rc, "flair: off-allowlist host, wrong type, control bytes, junk row → never rebuilt")
+    FLAIRS["64006"] = { flair_type = "twitch_sub", badge_url = BADGE1 } -- no 4x, no broadcaster: still valid
+    send("flairmin", "64006", "hi"); pump("/api/users/flair", flair_answer)
+    send("flairmin", "64006", "again")
+    do
+        local b
+        for _, e in ipairs(last_repl().init.elements) do if type(e) == "table" and e.type == "scaling-image" then b = e end end
+        check(b and b.images.i1.url == BADGE1 and b.images.i1.scale == 1 and b.tooltip:find("subscriber", 1, true), "flair: 1x fallback + broadcaster-less tooltip")
+    end
+    -- non-numeric ids never become a lookup
+    send("flairjunk", "abc", "hi"); send("flairjunk2", "", "hi"); advance(4000)
+    local junk = false
+    for _, r in ipairs(http_queue) do if r.url:find("abc", 1, true) then junk = true end end
+    check(not junk, "flair: non-numeric user id is never queued")
+    -- malformed responses
+    do
+        local bad = { { flairs = 5 }, { flairs = "x" }, {}, { error = "x" }, { flairs = { ["64100"] = { flair_type = 5 } } }, { flairs = { ["64100"] = { flair_type = "twitch_sub", badge_url = {} } } } }
+        local ok_all = true
+        for i, payload in ipairs(bad) do
+            send("flairfz" .. i, tostring(64100 + i), "hi"); advance(4000)
+            ok_all = pcall(answer_all, "/api/users/flair", function() return payload end) and ok_all
+            advance(300)
+            rc = #chan.replaced
+            send("flairfz" .. i, tostring(64100 + i), "again")
+            if #chan.replaced ~= rc then ok_all = false end
+        end
+        check(ok_all, "flair: malformed responses degrade silently")
+    end
+    commands["/hsflair"]({ words = { "/hsflair", "off" }, channel = chan })
+    rc = #chan.replaced
+    send("flairuser", "64001", "flair off")
+    check(not store.flair_enabled() and #chan.replaced == rc, "flair: /hsflair off → no badge, no rebuild")
+    commands["/hsflair"]({ words = { "/hsflair", "on" }, channel = chan })
+    check(store.flair_enabled(), "flair: /hsflair on restores it")
 
 end
 

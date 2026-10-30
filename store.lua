@@ -185,5 +185,6 @@ local function flag(file)
     end
 end
 M.heat_enabled, M.set_heat = flag("heat.txt")
+M.flair_enabled, M.set_flair = flag("flair-badges.txt")
 
 return M
