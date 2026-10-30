@@ -100,6 +100,12 @@ off by default. the list is cached per channel for 10 minutes (the site's own re
 
 the image host is never contacted: the image loads through heatsync (`GET /api/img?url=…`), so your ip never reaches it. the first time a url is seen the plugin reads just the image's header bytes through the same proxy to learn its size, then the line is rebuilt with the image a moment later.
 
+## link previews
+
+`/hspreviews on` adds one compact line under a chat line whose first link isn't an image — a youtube video, a twitch clip, a tweet, an article: a small thumbnail and `title · site`, both clicking through to the original link. twitch lines and merged `[K]` / `[Y]` lines; one preview per message; cached by url; a failed lookup is remembered (a timeout is retried after 5 minutes). off by default: heatsync fetches and scans every link you preview, so at most 10 new links a minute are looked up and beyond that a link just stays a link. a link whose embed heatsync's scanner flagged shows nothing.
+
+the data comes from heatsync, anonymously: `GET /api/embed/resolve` for the providers the extension's chat embeds resolve (x/twitter, spotify, soundcloud, tenor, giphy, imgur, kick clips, reddit posts) and `GET /api/link-preview` for everything else (the extension declares that endpoint but its chat path doesn't call it, so youtube and plain articles would otherwise never get a title). the third party never sees you: the thumbnail loads only through heatsync's image proxy (`/api/img`), same as inline images, and its size is read through that proxy first (using the inline-image size budget), so the line is drawn once, a moment after the link lands. image links are left to `/hsimages`.
+
 ## user card
 
 `/hscard <user>` (or right-click → heatsync → card) prints a chatter's heatsync card in the tab: heat, posts, followers, live, how long they've followed this channel, what heatsync's archive has on them, and their last few lines. the name is a link — click it for chatterino's own usercard. it's one anonymous `POST /api/card`; if that ever comes back unusable it falls back to the plain profile + followage endpoints.
@@ -131,6 +137,7 @@ heatsync users get a 🔥 before their name in any chat, so they're identifiable
 | `/hscolors on\|off` | heatsync users' picked name color on merged youtube lines (on by default) |
 | `/hsbackfill on\|off` | load a merged kick/youtube source's last ~50 lines on link (on by default) |
 | `/hsmentions on\|off` | chatterino's mention highlight on merged kick/youtube lines that mention you (on by default) |
+| `/hspreviews on\|off` | title + small thumbnail line under a non-image link, loaded through heatsync (opt-in) |
 | `/hsmutes on\|off` | collapse the lines of chatters your channel's heatsync community muted to a short placeholder (opt-in) |
 | `/hsimages on\|off` | show image links as inline images, loaded through heatsync's proxy (opt-in) |
 | `/hsbadges on\|off` | show chatterino global badges on chatters (opt-in) |
@@ -172,7 +179,7 @@ for the full experience (rendering, the emote menu, multichat), use a build whos
 
 | permission | why |
 |---|---|
-| `Network` | public heatsync.org endpoints (`/api/profile`, `/api/users/<id>/emotes`, `/api/users/emotes/batch`, `/api/emote-search`, `/api/search`, `/api/archive/search`, `/api/moments`, `/api/live/top`, `/api/pin`, `/api/chatter/<...>/stats`, `/api/chatterino-badges`, `/api/users/heat`, `/api/users/flair`, `/api/paints`, `/api/card`, `/api/twitch/followage`, `/api/img` (inline images, opt-in; gif thumbnails), `/api/gifs/search` + `/api/gifs/top` (`/hsgif`), `/api/community-mutes/<channel>` (community mutes, opt-in), `/api/recent/<kick\|youtube>/<channel>`) plus one anonymous websocket for live sync and multichat. |
+| `Network` | public heatsync.org endpoints (`/api/profile`, `/api/users/<id>/emotes`, `/api/users/emotes/batch`, `/api/emote-search`, `/api/search`, `/api/archive/search`, `/api/moments`, `/api/live/top`, `/api/pin`, `/api/chatter/<...>/stats`, `/api/chatterino-badges`, `/api/users/heat`, `/api/users/flair`, `/api/paints`, `/api/card`, `/api/twitch/followage`, `/api/img` (inline images, opt-in; gif thumbnails), `/api/gifs/search` + `/api/gifs/top` (`/hsgif`), `/api/community-mutes/<channel>` (community mutes, opt-in), `/api/embed/resolve` + `/api/link-preview` (link previews, opt-in), `/api/recent/<kick\|youtube>/<channel>`) plus one anonymous websocket for live sync and multichat. |
 | `FilesystemRead` / `FilesystemWrite` | remembers your settings, block list, multichat links, and recently-used emotes in the plugin's own data folder. local only. |
 
 **what leaves chatterino:**
@@ -181,6 +188,7 @@ for the full experience (rendering, the emote menu, multichat), use a build whos
 - while `/hsarchive` is **on** (the default, render-capable builds only): which public twitch channel you're watching — just the channel name, at most once per 5 minutes — so heatsync can archive it server-side. `/hsarchive off` stops it. no message text, username, message id, or timestamp is ever sent.
 - while heat bars / sub flair are **on** (the default): the twitch logins and ids of chatters in the tabs you have open, in small batches, so heatsync can answer with their heat and flair — the same kind of lookup the emote sets already make. `/hsheat off` and `/hsflair off` stop them. name colors send the youtube channel ids of merged-in chatters the same way (`/hscolors off`).
 - while `/hsimages` is **on** (opt-in): an image link in chat is sent to heatsync (`/api/img?url=…`) so heatsync fetches, scans and serves the image — the image host never sees your ip, but heatsync sees the link. `/hsimages off` stops it.
+- while `/hspreviews` is **on** (opt-in): the first non-image link in a chat line is sent to heatsync (`/api/embed/resolve` or `/api/link-preview`) so heatsync fetches and scans it, and its thumbnail loads through `/api/img` — the linked site never sees your ip, but heatsync sees the link. `/hspreviews off` stops it.
 - while `/hsmutes` is **on** (opt-in): the name of each twitch channel you have open is sent to heatsync (`/api/community-mutes/<channel>`) to fetch its muted list — no chatter, message or account. `/hsmutes off` stops it.
 - `/hsgif` sends the query you typed to heatsync (`/api/gifs/search`) and loads the stills through its image proxy; only when you run it.
 - `/hscard` sends the one login you ask about, and the tab it's in. a merged kick/youtube source's history request sends the source's channel name (`/hsbackfill off` skips it).
@@ -188,7 +196,7 @@ for the full experience (rendering, the emote menu, multichat), use a build whos
 
 ## architecture
 
-small single-purpose modules: `caps` (feature detection), `net` (http / json / timers / data files), `inventory` (your emotes), `seventv` (catalog search + render cache), `senders` (other chatters' sets), `recents` (learned usage), `img` (image-set builder + CDN allowlist), `picker` (clickable emote / gif grids), `gifs` (gif search + cache), `ws` (socket lifecycle), `multichat` (kick/youtube injection), `live` (opt-in go-live status), `mention` (mention highlights), `pin` (view-only pinned message), `badges` (chatterino badges), `images` (inline image detection, proxy url, size probe), `mutes` (opt-in community-mute lists, collapsed by `render`), `lookup` (the shared batched ttl cache behind `heat` / `flair` / `namecolor` / `mutes`: heat bars, sub-flair badges, youtube name colors), `render` (hook → rebuild → replace), `store` (persisted toggles), and the command layer — `cmdutil` (shared helpers) plus `cmd_emotes` / `cmd_archive` / `cmd_card` / `cmd_multichat` / `cmd_system`, all wired by `init`. every hook is pcall-guarded and every capability is feature-detected, so a missing API degrades one feature instead of erroring. if chatterino ever exposes first-class plugin emote providers, `render.lua` is the only file that needs to change.
+small single-purpose modules: `caps` (feature detection), `net` (http / json / timers / data files), `inventory` (your emotes), `seventv` (catalog search + render cache), `senders` (other chatters' sets), `recents` (learned usage), `img` (image-set builder + CDN allowlist), `picker` (clickable emote / gif grids), `gifs` (gif search + cache), `ws` (socket lifecycle), `multichat` (kick/youtube injection), `live` (opt-in go-live status), `mention` (mention highlights), `pin` (view-only pinned message), `badges` (chatterino badges), `images` (inline image detection, proxy url, size probe), `previews` (opt-in link previews, drawn by `render`), `mutes` (opt-in community-mute lists, collapsed by `render`), `lookup` (the shared batched ttl cache behind `heat` / `flair` / `namecolor` / `mutes`: heat bars, sub-flair badges, youtube name colors), `render` (hook → rebuild → replace), `store` (persisted toggles), and the command layer — `cmdutil` (shared helpers) plus `cmd_emotes` / `cmd_archive` / `cmd_card` / `cmd_multichat` / `cmd_system`, all wired by `init`. every hook is pcall-guarded and every capability is feature-detected, so a missing API degrades one feature instead of erroring. if chatterino ever exposes first-class plugin emote providers, `render.lua` is the only file that needs to change.
 
 ## tests
 

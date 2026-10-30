@@ -20,6 +20,7 @@ local flair = require("flair")
 local recents = require("recents")
 local images = require("images")
 local mutes = require("mutes")
+local previews = require("previews")
 -- NOTE: render no longer requires `seventv` — it renders only the sender's
 -- heatsync inventory; native chatterino handles 7tv/bttv/ffz. see has_hits.
 
@@ -318,23 +319,28 @@ local function is_marker_el(el)
     return w[1] == FLAME or heat.GLYPHS[w[1]] == true
 end
 
--- the inline image goes on its own line under the text (a linebreak needs a
--- real flag or the layout skips it)
-local function append_image(elems, img_el)
+-- what goes under a line (an inline image, or a link preview's thumbnail + title)
+-- sits on its own line: a linebreak needs a real flag or the layout skips it
+local function append_under(elems, under)
     table.insert(elems, { type = "linebreak", flags = c2.MessageElementFlag.Text })
-    table.insert(elems, img_el)
+    for _, el in ipairs(under) do table.insert(elems, el) end
 end
 
--- did a prior pass already give this message its image?
+-- did a prior pass already give this message its image / preview? both stamp
+-- their elements with a tooltip
 local function read_tooltip(el) return el.tooltip end
-local function is_image_el(el)
+local function is_under_el(el)
     local ok, tip = pcall(read_tooltip, el)
-    return ok and tip == images.TIP
+    return ok and (tip == images.TIP or tip == previews.TIP)
+end
+local function is_preview_text_el(el)
+    local ok, tip = pcall(read_tooltip, el)
+    return ok and tip == previews.TIP
 end
 
 local rebuilt
 
-local function build_replacement(msg, sender_map, want_flame, t, heat_info, want_flair, img_el)
+local function build_replacement(msg, sender_map, want_flame, t, heat_info, want_flair, under)
     local elems = {}
     local markers_done = false
     local budget = { n = 0 } -- emote/thread elements injected across THIS message
@@ -355,13 +361,13 @@ local function build_replacement(msg, sender_map, want_flame, t, heat_info, want
                 markers_done = true
             end
         end
-        if ty == "text" then
+        if ty == "text" and not (markers_done and is_preview_text_el(el)) then
             rebuild_text_element(elems, el, sender_map, budget, t)
         else
             -- a non-text element ends any modifier adjacency (and returns a held prefix token)
             budget.last = nil
             release_pending(elems, budget)
-            if markers_done and ty == "scaling-image" and is_image_el(el) then budget.has_img = true end
+            if markers_done and (ty == "scaling-image" or ty == "text") and is_under_el(el) then budget.has_img = true end
             -- pass the object through; chatterino clones it (twitch emotes,
             -- badges, timestamps, mentions, reply curves stay verbatim)
             table.insert(elems, el)
@@ -375,7 +381,7 @@ local function build_replacement(msg, sender_map, want_flame, t, heat_info, want
         insert_markers(pre, msg, want_flame, heat_info, want_flair)
         for i = #pre, 1, -1 do table.insert(elems, 1, pre[i]) end
     end
-    if img_el and not budget.has_img then append_image(elems, img_el) end
+    if under and not budget.has_img then append_under(elems, under) end
     return rebuilt(msg, elems)
 end
 
@@ -420,13 +426,24 @@ end
 
 -- the per-message body, factored out so `process` can pcall it by reference
 -- instead of allocating a fresh closure on every appended message (hot path).
--- the image to add under this message, or nil (off, no image link, already has
--- one, or its size isn't known yet — an unseen url starts its probe here)
-local function image_for(msg, text)
-    if not images.enabled() then return nil end
-    local url = images.detect(text)
-    if not url or images.marked(msg.id) then return nil end
-    return images.element_for(url)
+-- what to add under this message, or nil (nothing enabled, no usable link, already
+-- has one, or not ready yet — an unseen url starts its size probe / preview fetch
+-- here and gets its line on the back-pass). an image link gets the inline image;
+-- any other first link gets a link preview. one or the other, never both.
+local function under_for(msg, text)
+    if images.marked(msg.id) then return nil end
+    if images.enabled() then
+        local url = images.detect(text)
+        if url then
+            local el = images.element_for(url)
+            return el and { el } or nil
+        end
+    end
+    if previews.enabled() then
+        local url = previews.detect(text)
+        if url then return previews.elements_for(url) end
+    end
+    return nil
 end
 
 -- is this one of multichat's injected lines? its tag is the first text element
@@ -491,7 +508,7 @@ local function channel_name_of(ch)
 end
 
 -- kick/youtube lines multichat injected carry no heatsync lookups of their own
--- to rebuild for; the only thing to add is the inline image, with every existing
+-- to rebuild for; the only thing to add is the inline image / link preview, with every existing
 -- element passed through untouched.
 local function do_line(ch, msg, hint, text)
     if (msg.flags & c2.MessageFlag.System) ~= 0 then return end
@@ -502,14 +519,14 @@ local function do_line(ch, msg, hint, text)
             return
         end
     end
-    local img_el = image_for(msg, text)
-    if not img_el or not multichat_platform(msg) then return end
+    local under = under_for(msg, text)
+    if not under or not multichat_platform(msg) then return end
     local elems = {}
     for _, el in ipairs(msg:elements()) do
-        if is_image_el(el) then return end
+        if is_under_el(el) then return end
         table.insert(elems, el)
     end
-    append_image(elems, img_el)
+    append_under(elems, under)
     local repl = rebuilt(msg, elems)
     if hint then ch:replace_message(msg, repl, hint) else ch:replace_message(msg, repl) end
     M.replaced_count = M.replaced_count + 1
@@ -560,21 +577,21 @@ local function do_process(ch, msg, hint)
     local t = msg_time(msg)
     local heat_info = heat.info(login)
     local want_flair = flair.has(msg.user_id, login)
-    local img_el = image_for(msg, text)
+    local under = under_for(msg, text)
     -- O(1) checks first; only pay the O(words) has_hits scan when neither the
     -- flame, a badge, a heat bar nor a flair already forces the rebuild (Lua
     -- `or` short-circuits).
-    if not (want_flame or heat_info or want_flair or img_el or badges.has(msg.user_id)
+    if not (want_flame or heat_info or want_flair or under or badges.has(msg.user_id)
         or has_hits(text, sender_map, t)) then return end
 
-    local repl = build_replacement(msg, sender_map, want_flame, t, heat_info, want_flair, img_el)
+    local repl = build_replacement(msg, sender_map, want_flame, t, heat_info, want_flair, under)
     if hint then
         ch:replace_message(msg, repl, hint)
     else
         ch:replace_message(msg, repl)
     end
     M.replaced_count = M.replaced_count + 1
-    if img_el then images.mark(msg.id) end
+    if under then images.mark(msg.id) end
 end
 
 -- shared by the live hook and the back-pass. hint is the 1-based index when
@@ -733,6 +750,20 @@ function M.backpass_url(url)
     end
 end
 
+-- a link preview's data (and thumbnail size) just landed: rebuild the recent lines
+-- whose first link it is, in every hooked channel
+function M.backpass_preview(url)
+    if not M.started then return end
+    for _, h in pairs(hooked) do
+        pcall(function()
+            if not h.ch:is_valid() then return end
+            for _, msg in ipairs(h.ch:message_snapshot(BACKPASS_DEPTH)) do
+                if previews.detect(msg.message_text) == url then process(h.ch, msg, nil) end
+            end
+        end)
+    end
+end
+
 -- a channel's community-mute list just landed: collapse its muted chatters' recent lines
 function M.backpass_channel(name)
     if not M.started then return end
@@ -792,6 +823,8 @@ function M.start()
     flair.set_on_loaded(function(login) M.backpass(login) end)
     images.on_loaded = function(url) M.backpass_url(url) end
     mutes.set_on_loaded(function(channel) M.backpass_channel(channel) end)
+    previews.on_ready = function(url) M.backpass_preview(url) end
+    images.on_settled = function(url) previews.thumb_settled(url) end
     inventory.on_change = function()
         if inventory.login then M.backpass(inventory.login) end
     end

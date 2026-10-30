@@ -14,6 +14,7 @@ local namecolor = require("namecolor")
 local images = require("images")
 local mutes = require("mutes")
 local gifs = require("gifs")
+local previews = require("previews")
 local u = require("cmdutil")
 
 local M = {}
@@ -74,7 +75,8 @@ function M.register(get_login)
         images.clear()
         mutes.clear()
         gifs.clear()
-        u.sysmsg(ctx, "search, sender, heat, flair, color, image and mute caches cleared")
+        previews.clear()
+        u.sysmsg(ctx, "search, sender, heat, flair, color, image, preview and mute caches cleared")
     end)
 
     -- chatterino badges toggle (shows chatterino global badges on chatters)
@@ -117,6 +119,8 @@ function M.register(get_login)
         "a linked kick/youtube source loads its last ~50 lines when merged")
     flag_command("/hsmentions", "mention highlights", store.mentions_enabled, store.set_mentions,
         "a merged kick/youtube line that mentions you gets chatterino's mention highlight")
+    flag_command("/hspreviews", "link previews", store.previews_enabled, store.set_previews,
+        "a link that isn't an image gets a title + small thumbnail line under it, fetched through heatsync so the site never sees your ip (off by default)")
     flag_command("/hsmutes", "community mutes", store.mutes_enabled, store.set_mutes,
         "chatters your channel's heatsync community muted collapse to a short placeholder line (off by default)")
     flag_command("/hsimages", "inline images", store.images_enabled, store.set_images,
@@ -190,6 +194,10 @@ function M.register(get_login)
         u.sysmsg(ctx, "mention highlights: " .. (store.mentions_enabled() and "on" or "off") ..
             " (/hsmentions on|off)" .. (caps.highlight and "" or " · unavailable on this build"))
         u.sysmsg(ctx, "gifs: /hsgif [query] [page] · " .. tostring(gifs.stats()) .. " searches cached")
+        local pk, pp = previews.stats()
+        u.sysmsg(ctx, "link previews: " .. (store.previews_enabled() and "on" or "off") .. " (/hspreviews on|off) · " ..
+            tostring(pk) .. " known, " .. tostring(pp) .. " pending" ..
+            (caps.tier == 2 and caps.images and "" or " · unavailable on this build"))
         local mk, mp = mutes.stats()
         u.sysmsg(ctx, "community mutes: " .. (store.mutes_enabled() and "on" or "off") .. " (/hsmutes on|off) · " ..
             tostring(mk) .. " channels cached, " .. tostring(mp) .. " pending" ..
@@ -208,7 +216,7 @@ function M.register(get_login)
         u.sysmsg(ctx, "heatsync commands · build " .. caps.name())
         u.sysmsg(ctx, "emotes: :name tab-complete · /hsemotes menu · /hsfind <q> search · /hsinv <user> [page] · /hsgif [query] [page] gifs")
         u.sysmsg(ctx, "archive: /hssearch <q> posts · /hschat <q> [@user] [#chan] chat-logs · /hslogs <user> [chan] · /hsmoments [<n>h] [plat] [pg] · /hsmoments on|off live spikes · /hshot [plat] [pg] · /hswhois <user> · /hscard <user>")
-        u.sysmsg(ctx, "chat: /hsmulti kick:<slug>|yt:<handle>|off|auto on|off · /hslive · /hspin · /hsflame · /hsbadges · /hsheat · /hsflair · /hscolors · /hsbackfill · /hsmentions · /hsmutes · /hsimages · /hsblock <name> · /hsunblock <name> · /hsblocklist")
+        u.sysmsg(ctx, "chat: /hsmulti kick:<slug>|yt:<handle>|off|auto on|off · /hslive · /hspin · /hsflame · /hsbadges · /hsheat · /hsflair · /hscolors · /hsbackfill · /hsmentions · /hsmutes · /hsimages · /hspreviews · /hsblock <name> · /hsunblock <name> · /hsblocklist")
         u.sysmsg(ctx, "system: /hsstatus · /hsrefresh · /hsarchive on|off · /hsclear")
         u.sysmsg(ctx, "syntax: @user #channel narrow a search · plat:value links a multichat source · <n>h = hours")
         if caps.tier < 2 then

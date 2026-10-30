@@ -60,10 +60,11 @@ local function own_origin(host)
         or string.sub(host, -13) == ".heatsync.org"
 end
 
--- the image url a message would embed, or nil. only the FIRST link counts (the
--- extension's rule): it must be https, a direct image by extension (query and
--- fragment ignored), not heatsync's own origin, and within the length cap.
-function M.detect(text)
+-- the first link in a message as a vetted https url, or nil: it must be https,
+-- not heatsync's own origin, no userinfo / ip literal / dotless host, within the
+-- length cap, trailing sentence punctuation trimmed. shared with previews.lua
+-- (which previews the first link when it is NOT an image).
+function M.first_link(text)
     if type(text) ~= "string" or #text < 12 then return nil end
     if not string.find(text, "://", 1, true) then return nil end
     local start = string.find(string.lower(text), "https?://")
@@ -75,13 +76,23 @@ function M.detect(text)
     local url = "https://" .. trim_url(rest)
     if #url > MAX_URL or string.find(url, "%c") then return nil end
     local authority = string.match(url, "^https://([^/?#]*)")
-    -- userinfo is the classic host-confusion trick; a real image link never has it
+    -- userinfo is the classic host-confusion trick; a real link never has it
     if not authority or authority == "" or string.find(authority, "@", 1, true) then return nil end
     local host = string.lower(string.match(authority, "^([^:]+)") or "")
     if not string.match(host, "^[%w%.%-]+$") or not string.find(host, ".", 1, true)
         or string.match(host, "^%d+%.%d+%.%d+%.%d+$") or own_origin(host) then
         return nil
     end
+    return url
+end
+
+-- the image url a message would embed, or nil. only the FIRST link counts (the
+-- extension's rule): it must be a direct image by extension (query and fragment
+-- ignored) on top of everything first_link checks.
+function M.detect(text)
+    local url = M.first_link(text)
+    if not url then return nil end
+    local authority = string.match(url, "^https://([^/?#]*)")
     local path = string.match(string.sub(url, 9 + #authority), "^[^?#]*")
     local ext = string.match(path, "%.(%w+)$")
     if not ext or not EXTS[string.lower(ext)] then return nil end
@@ -166,8 +177,19 @@ end
 -- fired (url) when a size lands; render.lua rebuilds the lines carrying it
 M.on_loaded = nil
 
+-- fired (url) when a probe ends for good — a size landed OR the image is
+-- unusable — so previews.lua can draw its line either way
+M.on_settled = nil
+
+local function settle(url)
+    if M.on_settled then pcall(M.on_settled, url) end
+end
+
+-- starts a size probe unless one is out or the per-minute budget is spent.
+-- returns false only when the budget refused it.
 local function probe(url)
-    if inflight[url] or not take_budget() then return end
+    if inflight[url] then return true end
+    if not take_budget() then return false end
     inflight[url] = true
     net.get_raw(M.proxy_url(url), { Range = "bytes=0-" .. (RANGE_BYTES - 1) }, 12000, function(body, err, status)
         inflight[url] = nil
@@ -175,6 +197,7 @@ local function probe(url)
         if w then
             remember(url, { w, h })
             if M.on_loaded then pcall(M.on_loaded, url) end
+            settle(url)
             return
         end
         -- a timeout / 429 / 5xx says nothing about the image: forget, a later
@@ -185,27 +208,40 @@ local function probe(url)
             return
         end
         remember(url, false)
+        settle(url)
     end)
+    return true
 end
 
--- chat-sized display height for an image of w x h (never enlarged)
-local function display_height(w, h)
-    local th = math.min(h, MAX_H)
-    if w * th / h > MAX_W then th = MAX_W * h / w end
+-- display height for an image of w x h inside a max_w x max_h box (never enlarged)
+local function display_height(w, h, max_h, max_w)
+    local th = math.min(h, max_h or MAX_H)
+    if w * th / h > (max_w or MAX_W) then th = (max_w or MAX_W) * h / w end
     return th
+end
+
+-- the remembered size of an image url, starting its probe when unseen:
+--   {w, h}  known            false  unusable (blocked, too large, not an image)
+--   nil, false  probe is out / just started       nil, true  budget refused it
+-- no toggle check here: callers (inline images, previews) gate themselves.
+function M.size_of(url)
+    local d = dims[url]
+    if d ~= nil then return d end
+    return nil, not probe(url)
+end
+
+-- the ImageSet for a sized url through the proxy, scaled into a max_w x max_h box
+function M.image_set(url, d, max_h, max_w)
+    return img.for_url(M.proxy_url(url), d[1], d[2], display_height(d[1], d[2], max_h, max_w))
 end
 
 -- the image element for a detected url, or nil. nil also means "not yet": an
 -- unseen url starts its size probe here and gets its image on the back-pass.
 function M.element_for(url)
     if not M.enabled() or type(url) ~= "string" then return nil end
-    local d = dims[url]
-    if d == nil then
-        probe(url)
-        return nil
-    end
+    local d = M.size_of(url)
     if not d then return nil end
-    local set = img.for_url(M.proxy_url(url), d[1], d[2], display_height(d[1], d[2]))
+    local set = M.image_set(url, d)
     if not set then return nil end
     return {
         type = "scaling-image",

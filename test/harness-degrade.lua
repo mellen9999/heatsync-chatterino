@@ -177,7 +177,7 @@ for _, m in ipairs(added) do
 end
 check(carded, "card: POST unavailable on " .. MODE .. " → public-endpoint fallback still renders the card")
 commands["/hscard"]({ words = { "/hscard" }, channel = ctx.channel })
-for _, c in ipairs({ "/hsheat", "/hsflair", "/hscolors", "/hsbackfill", "/hsmentions", "/hsmutes" }) do
+for _, c in ipairs({ "/hsheat", "/hsflair", "/hscolors", "/hsbackfill", "/hsmentions", "/hsmutes", "/hspreviews" }) do
     commands[c]({ words = { c, "off" }, channel = ctx.channel })
     commands[c]({ words = { c, "on" }, channel = ctx.channel })
     commands[c]({ words = { c }, channel = ctx.channel })
@@ -221,6 +221,18 @@ do
     local ok, handled = pcall(live.handle, { type = "stream:update", platform = "twitch", channel = "x", game = "a", title = "b", prevGame = "c", prevTitle = "d" })
     check(ok and handled == true, "live: twitch stream:update is a clean no-op without tabs on " .. MODE)
     commands["/hslive"]({ words = { "/hslive", "off" }, channel = ctx.channel })
+end
+
+-- link previews need the images capability: the toggle works, the feature is
+-- silently off and nothing is fetched
+do
+    local previews = require("previews")
+    local qn = #http_queue
+    commands["/hspreviews"]({ words = { "/hspreviews", "on" }, channel = ctx.channel })
+    check(not previews.enabled(), "previews: silently off without the images cap on " .. MODE)
+    check(previews.elements_for("https://youtu.be/dQw4w9WgXcQ") == nil and #http_queue == qn, "previews: no element, no request on " .. MODE)
+    check(previews.detect("see https://youtu.be/dQw4w9WgXcQ") ~= nil, "previews: pure detection still safe on " .. MODE)
+    commands["/hspreviews"]({ words = { "/hspreviews", "off" }, channel = ctx.channel })
 end
 
 -- /hsgif without image support: still searches and shows clickable captions

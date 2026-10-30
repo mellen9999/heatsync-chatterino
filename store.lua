@@ -203,5 +203,6 @@ local function optin(file)
 end
 M.images_enabled, M.set_images = optin("images.txt")
 M.mutes_enabled, M.set_mutes = optin("mutes.txt")
+M.previews_enabled, M.set_previews = optin("previews.txt")
 
 return M

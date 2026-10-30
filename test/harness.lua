@@ -4413,5 +4413,341 @@ do
     check(gifs.stats() == 0, "hsgif/wiring: /hsclear drops cached searches")
 end
 
+-- ===== v1.13 link previews: first non-image link, title + thumbnail through the proxy, opt-in =====
+do
+    local store = require("store")
+    local images = require("images")
+    local previews = require("previews")
+    local netm = require("net")
+    store.set_flame(false)
+    store.set_images(false)
+    store.set_previews(false)
+    advance(61000) -- fresh per-minute windows
+    local YT = "https://youtu.be/dQw4w9WgXcQ"
+    local ART = "https://news.example.com/story?id=1"
+
+    -- ---- detect / kind (pure) ----
+    local d = previews.detect
+    check(d("watch " .. YT .. " lol") == YT, "previews: a non-image first link is detected")
+    check(d("https://i.example.com/a.png") == nil and d("no links here at all") == nil and d("") == nil and d(nil) == nil, "previews: image links / no link / junk → nil")
+    check(d("https://heatsync.org/thread/abc") == nil and d("http://insecure.example.com/page") == nil and d("https://user:pw@evil.example.com/p") == nil, "previews: own origin / http / userinfo rejected")
+    check(d(ART .. " " .. YT) == ART and d("https://i.example.com/a.png " .. YT) == nil, "previews: only the FIRST link counts")
+    check(previews.kind(YT) == "preview" and previews.kind("https://clips.twitch.tv/AbCd") == "preview" and previews.kind(ART) == "preview", "previews: youtube / twitch clips / articles → /api/link-preview")
+    check(previews.kind("https://x.com/u/status/123") == "resolve" and previews.kind("https://twitter.com/u/status/1") == "resolve"
+        and previews.kind("https://open.spotify.com/track/abc") == "resolve" and previews.kind("https://kick.com/u/clips/c1") == "resolve"
+        and previews.kind("https://www.reddit.com/r/a/comments/abc1/t") == "resolve" and previews.kind("https://tenor.com/view/a-b-123") == "resolve", "previews: the providers the server resolves → /api/embed/resolve")
+    check(previews.kind("https://notx.com/u/status/1") == "preview" and previews.kind("https://x.com.evil.example/a") == "preview" and previews.kind("https://reddit.com/r/a/") == "preview", "previews: lookalike hosts / non-post reddit pages are not resolve targets")
+
+    -- ---- parse (pure) ----
+    local pi = previews.parse("preview", { title = "T", siteName = "Site", image = "https://i.example.com/t.jpg" }, ART)
+    check(pi and pi.title == "T" and pi.site == "Site" and pi.thumb == "https://i.example.com/t.jpg", "previews: link-preview payload parsed")
+    check(previews.parse("preview", { title = "T" }, ART).site == "news.example.com", "previews: a missing site falls back to the host")
+    pi = previews.parse("resolve", { type = "image", mediaUrl = "https://m.example.com/m.gif", title = "x", author = "Au" }, ART)
+    check(pi and pi.thumb == "https://m.example.com/m.gif" and pi.site == "Au", "previews: an image embed without a thumbnail uses its media url")
+    check(previews.parse("resolve", { type = "rich", title = "x", flagged = { "nsfw" } }, ART) == false, "previews: a scanner-flagged embed is dropped whole")
+    check(previews.parse("resolve", { type = "rich", title = "x", flagged = { "scan_failed" } }, ART) == false, "previews: scan_failed is dropped too")
+    check(previews.parse("preview", { title = "x", image = "http://insecure.example.com/a.jpg" }, ART).thumb == nil, "previews: an http thumbnail is dropped, the title stays")
+    check(previews.parse("preview", { title = "x", image = "https://heatsync.org/a.jpg" }, ART).thumb == nil, "previews: heatsync's own origin is never a thumbnail")
+    check(previews.parse("preview", {}, ART) == false and previews.parse("preview", { url = ART }, ART) == false, "previews: nothing to show → false")
+    check(previews.parse("preview", { error = "fetch failed" }, ART) == false and previews.parse("preview", "x", ART) == false and previews.parse("preview", nil, ART) == false, "previews: error / non-table → false")
+    check(previews.parse("preview", { title = 5, siteName = {}, image = 7 }, ART) == false, "previews: fuzz — wrong-typed fields are nothing")
+    pi = previews.parse("preview", { title = string.rep("t", 100000) .. "\n/ban", siteName = string.rep("s", 5000) }, ART)
+    check(#pi.title <= 120 and not pi.title:find("%c") and #pi.site <= 60, "previews: huge / control-byte strings are clamped")
+
+    -- ---- a hooked channel ----
+    local ch = fake_channel("prevchan")
+    channels[#channels + 1] = ch
+    render.discover()
+    local function send(login, uid, text)
+        local m = fake_msg(login, uid, text)
+        m.channel_name = "prevchan"
+        ch.msgs[#ch.msgs + 1] = m
+        ch.appended_cb(m, nil)
+        return m
+    end
+    local function lp_reqs()
+        local out = {}
+        for _, r in ipairs(http_queue) do if r.url:find("/api/link-preview?url=", 1, true) or r.url:find("/api/embed/resolve?url=", 1, true) then out[#out + 1] = r end end
+        return out
+    end
+    local function img_probes()
+        local out = {}
+        for _, r in ipairs(http_queue) do if r.url:find("/api/img?url=", 1, true) then out[#out + 1] = r end end
+        return out
+    end
+    local function answer_req(r, payload, status)
+        for i, q in ipairs(http_queue) do if q == r then table.remove(http_queue, i) break end end
+        if status and status >= 400 then
+            r.err({ error = function() return "http " .. status end, data = function() return payload and register_payload(payload) or "" end, status = function() return status end })
+        else
+            r.success({ data = function() return register_payload(payload) end, status = function() return status or 200 end })
+        end
+    end
+    local function answer_probe(r, body, status)
+        for i, q in ipairs(http_queue) do if q == r then table.remove(http_queue, i) break end end
+        if status and status >= 400 then
+            r.err({ error = function() return "http " .. status end, data = function() return "" end, status = function() return status end })
+        else
+            r.success({ data = function() return body end, status = function() return status or 206 end })
+        end
+    end
+    local function clear_net()
+        for i = #http_queue, 1, -1 do
+            local u2 = http_queue[i].url
+            if u2:find("/api/link-preview", 1, true) or u2:find("/api/embed/resolve", 1, true) or u2:find("/api/img?url=", 1, true) then table.remove(http_queue, i) end
+        end
+    end
+    local function under_of(m)
+        local out = {}
+        for _, e in ipairs(m.init.elements) do if type(e) == "table" and e.tooltip == previews.TIP then out[#out + 1] = e end end
+        return out
+    end
+    local function riff(kind, payload) return "RIFF" .. string.pack("<I4", #payload + 4) .. "WEBP" .. kind .. string.pack("<I4", #payload) .. payload end
+    local vp8 = riff("VP8 ", "\0\0\0\157\1\42" .. string.pack("<I2", 640) .. string.pack("<I2", 480) .. string.rep("\0", 8))
+
+    -- ---- off by default ----
+    check(store.previews_enabled() == false, "previews: OFF by default")
+    local rc = #ch.replaced
+    send("pvuser0", "7000", "look " .. YT)
+    advance(1000)
+    check(#ch.replaced == rc and #lp_reqs() == 0, "previews: toggle off → no request, line untouched")
+    commands["/hspreviews"]({ words = { "/hspreviews" }, channel = ch })
+    check(tostring(ch.added[#ch.added]):find("link previews is off", 1, true) ~= nil, "previews: bare /hspreviews reports off")
+    commands["/hspreviews"]({ words = { "/hspreviews", "on" }, channel = ch })
+    check(store.previews_enabled() and previews.enabled(), "previews: /hspreviews on enables (t2)")
+
+    -- ---- first sighting: one fetch, nothing rebuilt yet ----
+    rc = #ch.replaced
+    local m1 = send("pvuser1", "7001", "watch " .. YT .. " now")
+    local rq = lp_reqs()
+    check(#rq == 1 and rq[1].url == "https://heatsync.org/api/link-preview?url=" .. netm.percent_encode(YT), "previews: youtube → one anonymous /api/link-preview request (got " .. tostring(rq[1] and rq[1].url) .. ")")
+    check(#ch.replaced == rc, "previews: line untouched until the data lands")
+    send("pvuser2", "7002", "same " .. YT)
+    check(#lp_reqs() == 1, "previews: a repeat of an in-flight url is deduped")
+    answer_req(rq[1], { title = "Never Gonna Give You Up", siteName = "YouTube", url = YT, image = "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg" })
+    local pr = img_probes()
+    check(#pr == 1 and pr[1].url == images.proxy_url("https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"), "previews: the thumbnail is measured through /api/img, never the host")
+    check(#ch.replaced == rc, "previews: still waiting for the thumbnail's size")
+    answer_probe(pr[1], vp8)
+    check(#ch.replaced == rc + 3, "previews: size landed → every recent line carrying the url was rebuilt")
+    do
+        local m = ch.replaced[#ch.replaced].new
+        local u2 = under_of(m)
+        check(#u2 == 2 and u2[1].type == "scaling-image" and u2[2].type == "text", "previews: a thumbnail and a title line")
+        check(u2[1].link.value == YT and u2[2].link.value == YT and u2[1].link.type == c2.LinkType.Url, "previews: both click through to the ORIGINAL url")
+        check(u2[2].text == "Never Gonna Give You Up · YouTube" and u2[2].color == "link", "previews: title · site")
+        check(u2[1].images.i1.url == images.proxy_url("https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg") and math.abs(u2[1].images.i1.scale - 56 / 480) < 1e-9, "previews: small thumbnail (56px high) from the proxy url")
+        local els = m.init.elements
+        local at
+        for i, e in ipairs(els) do if e == u2[1] then at = i end end
+        check(at and els[at - 1].type == "linebreak" and els[#els] == u2[2], "previews: the preview sits on its own line after the text")
+        local kept = false
+        for _, x in ipairs(els) do if type(x) == "table" and x.type == "text" and x.tooltip == nil and (x.text or ""):find("youtu.be", 1, true) then kept = true end end
+        check(kept, "previews: the original link text stays in the message")
+    end
+    for _, r in ipairs(http_queue) do check(not r.url:find("^https://i%.ytimg") and not r.url:find("^https://youtu"), "previews: no request ever targets the third party directly") end
+
+    -- ---- known url → rebuilt as it arrives, no new request ----
+    rc = #ch.replaced
+    send("pvuser3", "7003", YT)
+    check(#ch.replaced == rc + 1 and #lp_reqs() == 0 and #img_probes() == 0, "previews: a known url renders on arrival with no new request")
+    -- reprocessing a line that has its preview does not stack another
+    do
+        local done = ch.replaced[#ch.replaced].new
+        local again = fake_msg("pvuser3", "7003", YT)
+        again.id = done.init.id
+        again.channel_name = "prevchan"
+        local els = {}
+        for _, e in ipairs(done.init.elements) do
+            if type(e) == "table" and e.type == "text" and e.tooltip ~= previews.TIP then els[#els + 1] = { type = "text", words = { e.text }, flags = e.flags or c2.MessageElementFlag.Text }
+            else els[#els + 1] = e end
+        end
+        again.elements = function() return els end
+        local before = #ch.replaced
+        ch.appended_cb(again, nil)
+        check(#ch.replaced == before, "previews: a message already given its preview (by id) is left alone")
+        -- and a rebuild for another reason (a heat bar landing) carries it through untouched
+        local again2 = fake_msg("pvuser3", "7003", YT)
+        again2.id = "other-id"
+        again2.channel_name = "prevchan"
+        again2.elements = function() return els end
+        before = #ch.replaced
+        local ok = pcall(ch.appended_cb, again2, nil)
+        check(ok, "previews: reprocessing a line that carries a preview never throws")
+        if #ch.replaced > before then
+            check(#under_of(ch.replaced[#ch.replaced].new) == 2, "previews: a rebuild passes the existing preview through, no duplicate and no relinking")
+        end
+    end
+
+    -- ---- no thumbnail → text-only the moment the data lands ----
+    rc = #ch.replaced
+    local ma = send("pvuser4", "7004", ART)
+    local ra = lp_reqs()
+    check(#ra == 1, "previews: an article → a link-preview request")
+    answer_req(ra[1], { title = "Big Story", siteName = "News", url = ART })
+    check(#ch.replaced == rc + 1 and #img_probes() == 0, "previews: no image → text-only line right away, no probe")
+    do
+        local u2 = under_of(ch.replaced[#ch.replaced].new)
+        check(#u2 == 1 and u2[1].type == "text" and u2[1].text == "Big Story · News", "previews: the text-only preview")
+    end
+
+    -- ---- thumbnail unusable (moderation 403) → text-only ----
+    do
+        local U = "https://blog.example.com/p1"
+        rc = #ch.replaced
+        send("pvuser5", "7005", U)
+        answer_req(lp_reqs()[1], { title = "Post", image = "https://cdn.example.com/p.jpg" })
+        check(#ch.replaced == rc, "previews: waiting on the thumbnail")
+        answer_probe(img_probes()[1], nil, 403)
+        check(#ch.replaced == rc + 1 and #under_of(ch.replaced[#ch.replaced].new) == 1, "previews: a blocked thumbnail settles to the text-only line")
+    end
+
+    -- ---- embed/resolve providers + flagged embeds ----
+    do
+        local X = "https://x.com/someone/status/12345"
+        rc = #ch.replaced
+        send("pvuser6", "7006", X)
+        local r = lp_reqs()[1]
+        check(r and r.url == "https://heatsync.org/api/embed/resolve?url=" .. netm.percent_encode(X), "previews: x/twitter → /api/embed/resolve")
+        answer_req(r, { type = "rich", url = X, title = "hello tweet", author = "someone", flagged = { "violence" } })
+        check(#ch.replaced == rc, "previews: a flagged embed shows nothing")
+        send("pvuser6", "7006", X)
+        check(#lp_reqs() == 0 and #ch.replaced == rc, "previews: …and is remembered (no re-request)")
+        local S = "https://open.spotify.com/track/abc"
+        send("pvuser7", "7007", S)
+        answer_req(lp_reqs()[1], { type = "rich", url = S, title = "A Song", author = "Band" })
+        check(#ch.replaced == rc + 1 and under_of(ch.replaced[#ch.replaced].new)[1].text == "A Song · Band", "previews: a resolved embed draws title · author")
+    end
+
+    -- ---- failures ----
+    do
+        local U1, U2, U3 = "https://f1.example.com/a", "https://f2.example.com/a", "https://f3.example.com/a"
+        rc = #ch.replaced
+        send("pvuser8", "7008", U1)
+        answer_req(lp_reqs()[1], { error = "fetch failed" }, 502)
+        send("pvuser8", "7008", U2)
+        answer_req(lp_reqs()[1], { error = "unsupported_or_failed" }, 404)
+        send("pvuser8", "7008", U2)
+        check(#lp_reqs() == 0, "previews: a 404 is final and remembered")
+        send("pvuser8", "7008", U1)
+        check(#lp_reqs() == 0, "previews: a 5xx is not retried immediately")
+        advance(301000)
+        send("pvuser8", "7008", U1)
+        check(#lp_reqs() == 1, "previews: …but is retried after the cool-off")
+        answer_req(lp_reqs()[1], { title = "Back", siteName = "S" })
+        check(#ch.replaced > rc, "previews: a retry that works draws the line")
+        send("pvuser8", "7008", U3)
+        local r = lp_reqs()[1]
+        for i, q in ipairs(http_queue) do if q == r then table.remove(http_queue, i) break end end
+        r.err({ error = function() return "timeout" end, data = function() return "" end, status = function() return nil end })
+        send("pvuser8", "7008", U3)
+        check(#lp_reqs() == 0, "previews: a timeout is remembered for the cool-off too")
+    end
+
+    -- ---- malformed bodies never throw / never draw ----
+    do
+        rc = #ch.replaced
+        for i, body in ipairs({ {}, { title = {} }, { title = 5 }, { image = 3 }, { siteName = "only" } }) do
+            local U = "https://fz" .. i .. ".example.com/x"
+            send("pvuser9", "7009", U)
+            local r = lp_reqs()[1]
+            local ok = pcall(answer_req, r, body)
+            check(ok, "previews: malformed body " .. i .. " is harmless")
+        end
+        check(#ch.replaced == rc, "previews: junk bodies draw nothing")
+        clear_net()
+    end
+
+    -- ---- budget ----
+    do
+        advance(61000)
+        clear_net()
+        local sent = 0
+        for i = 1, 14 do
+            send("pvuser10", "7010", "https://budget" .. i .. ".example.com/p")
+        end
+        sent = #lp_reqs()
+        check(sent == 10, "previews: at most 10 new urls a minute (sent " .. sent .. ")")
+        clear_net()
+    end
+
+    -- ---- one preview per message; images keep priority ----
+    do
+        advance(61000)
+        clear_net()
+        send("pvuser11", "7011", "https://one.example.com/a https://two.example.com/b https://three.example.com/c")
+        local r = lp_reqs()
+        check(#r == 1 and r[1].url:find(netm.percent_encode("https://one.example.com/a"), 1, true) ~= nil, "previews: three links in one line → only the first is considered")
+        clear_net()
+        send("pvuser11", "7011", "https://i.example.com/pic.png")
+        check(#lp_reqs() == 0, "previews: an image link is not previewed (images off)")
+        store.set_images(true)
+        send("pvuser11", "7011", "https://i.example.com/pic2.png")
+        check(#lp_reqs() == 0 and #img_probes() == 1, "previews: with inline images on, an image link goes to the image path, not a preview")
+        store.set_images(false)
+        clear_net()
+    end
+
+    -- ---- merged kick line ----
+    do
+        advance(61000)
+        local mc = fake_channel("prevmc")
+        channels[#channels + 1] = mc
+        render.discover()
+        commands["/hsmulti"]({ words = { "/hsmulti", "kick:prevsrc" }, channel = mc })
+        for i = #http_queue, 1, -1 do if http_queue[i].url:find("/api/recent/", 1, true) then table.remove(http_queue, i) end end
+        for _ = 1, 200 do
+            if ws.connected then break end
+            advance(1000)
+            local sk = sockets[#sockets]
+            if not sk.closed then sk.opts.on_open() end
+        end
+        local function hooked(m)
+            local els = {}
+            for _, e in ipairs(m.init.elements) do
+                if e.type == "text" then els[#els + 1] = { type = "text", words = { e.text }, flags = e.flags or c2.MessageElementFlag.Text, tooltip = e.tooltip }
+                else els[#els + 1] = e end
+            end
+            return { flags = 0, id = "", login_name = m.init.login_name, display_name = m.init.display_name, message_text = m.init.message_text,
+                search_text = m.init.message_text, channel_name = "", frozen = true, elements = function() return els end }
+        end
+        local k = #mc.added
+        local KU = "https://kickstory.example.com/s"
+        sockets[#sockets].opts.on_text(register_payload({ type = "kick-chat-message", data = { platform = "kick", channel = "prevsrc", id = "pk1", username = "kk", content = "read " .. KU, timestamp = 1761825602000 } }))
+        local m = mc.added[k + 1]
+        if m then mc.msgs[#mc.msgs + 1] = hooked(m); mc.appended_cb(mc.msgs[#mc.msgs], nil) end
+        local r0 = #mc.replaced
+        local r = lp_reqs()
+        check(#r == 1, "previews/kick: a merged kick line starts a preview fetch")
+        answer_req(r[1], { title = "Kick Story", siteName = "KS" })
+        check(#mc.replaced == r0 + 1 and #under_of(mc.replaced[#mc.replaced].new) == 1, "previews/kick: the merged line gets its preview line")
+        local tag = false
+        for _, e in ipairs(mc.replaced[#mc.replaced].new.init.elements) do if type(e) == "table" and e.words and e.words[1] == "[K]" then tag = true end end
+        check(tag, "previews/kick: tag carried over")
+        commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = mc })
+        for i = #channels, 1, -1 do if channels[i] == mc then table.remove(channels, i) end end
+    end
+
+    -- ---- wiring ----
+    do
+        local seen = {}
+        local sys_ctx = { words = { "/hshelp" }, channel = { add_system_message = function(_, m) seen[#seen + 1] = m end, add_message = function() end, get_name = function() return "x" end } }
+        commands["/hshelp"](sys_ctx)
+        commands["/hsstatus"](sys_ctx)
+        local blob = table.concat(seen, "\n")
+        check(blob:find("/hspreviews", 1, true) ~= nil and blob:find("link previews: on", 1, true) ~= nil, "previews/wiring: /hshelp lists it, /hsstatus reports it")
+        commands["/hsclear"](sys_ctx)
+        check(select(1, previews.stats()) == 0, "previews/wiring: /hsclear drops known previews")
+        commands["/hspreviews"]({ words = { "/hspreviews", "off" }, channel = ch })
+        check(not store.previews_enabled() and not previews.enabled(), "previews/wiring: /hspreviews off turns it off")
+        rc = #ch.replaced
+        send("pvuser12", "7012", YT)
+        check(#ch.replaced == rc, "previews/wiring: off again → a previously seen url no longer rebuilds")
+    end
+    clear_net()
+    for i = #channels, 1, -1 do if channels[i] == ch then table.remove(channels, i) end end
+    store.set_previews(false)
+end
+
 print(failures == 0 and "\nALL PASS" or ("\n" .. failures .. " FAILURES"))
 host_os.exit(failures == 0 and 0 or 1)
