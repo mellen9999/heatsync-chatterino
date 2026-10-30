@@ -19,6 +19,7 @@ local heat = require("heat")
 local flair = require("flair")
 local recents = require("recents")
 local images = require("images")
+local mutes = require("mutes")
 -- NOTE: render no longer requires `seventv` — it renders only the sender's
 -- heatsync inventory; native chatterino handles 7tv/bttv/ffz. see has_hits.
 
@@ -378,16 +379,20 @@ local function build_replacement(msg, sender_map, want_flame, t, heat_info, want
     return rebuilt(msg, elems)
 end
 
--- a copy of `msg`'s fields around a new element list
-function rebuilt(msg, elems)
+-- a copy of `msg`'s fields around a new element list. `quiet` (a collapsed
+-- community-muted line) drops the text a search or filter would still see and any
+-- highlight, so nothing of the muted body survives anywhere.
+function rebuilt(msg, elems, quiet)
     local highlight = msg.highlight_color
-    if highlight == "" then highlight = nil end
+    if highlight == "" or quiet then highlight = nil end
+    local flags = msg.flags
+    if quiet and type(flags) == "number" then flags = flags & ~(c2.MessageFlag.Highlighted or 0) end
     return net.new_message({
-        flags = msg.flags,
+        flags = flags,
         id = msg.id,
         parse_time = msg.parse_time,
-        search_text = msg.search_text,
-        message_text = msg.message_text,
+        search_text = quiet and "" or msg.search_text,
+        message_text = quiet and "" or msg.message_text,
         login_name = msg.login_name,
         display_name = msg.display_name,
         localized_name = msg.localized_name,
@@ -425,17 +430,64 @@ local function image_for(msg, text)
 end
 
 -- is this one of multichat's injected lines? its tag is the first text element
--- after any timestamp. only asked of a line that carries an image link.
+-- after any timestamp. returns the platform ("kick" | "youtube") or nil. only
+-- asked of a line that carries an image link or whose sender may be muted.
 local function read_words_of(el) return el.words end
-local function is_multichat_line(msg)
+local TAG_PLATFORM = { ["[K]"] = "kick", ["[Y]"] = "youtube" }
+local function multichat_platform(msg)
     for _, el in ipairs(msg:elements()) do
         local ok, ty = pcall(read_type, el)
         if ok and ty == "text" then
             local okw, w = pcall(read_words_of, el)
-            return okw and type(w) == "table" and (w[1] == "[K]" or w[1] == "[Y]")
+            return okw and type(w) == "table" and TAG_PLATFORM[w[1]] or nil
         end
     end
-    return false
+    return nil
+end
+
+-- community mutes: a muted chatter's line collapses to timestamp + badges + name
+-- and a short placeholder (the site keeps the row and strips the body; a plugin
+-- can't delete). already-collapsed lines carry the placeholder's tooltip.
+local function is_mute_el(el)
+    local ok, tip = pcall(read_tooltip, el)
+    return ok and tip == mutes.TIP
+end
+
+local function collapse_muted(ch, msg)
+    local elems = {}
+    for _, el in ipairs(msg:elements()) do
+        if is_mute_el(el) then return false end -- already collapsed
+    end
+    for _, el in ipairs(msg:elements()) do
+        local ok, ty = pcall(read_type, el)
+        -- everything up to and including the username survives (timestamp, badges,
+        -- the name itself); the body after it is what the community muted
+        if ty == "scaling-image" and not (ok and is_username_el(el)) then
+            goto skip -- our own markers before the name aren't worth keeping
+        end
+        table.insert(elems, el)
+        if is_username_el(el) then
+            elems[#elems + 1] = { type = "text", text = mutes.TEXT, color = "system", tooltip = mutes.TIP }
+            local repl = rebuilt(msg, elems, true)
+            ch:replace_message(msg, repl)
+            M.replaced_count = M.replaced_count + 1
+            return true
+        end
+        ::skip::
+    end
+    -- no username element found: a plain labelled placeholder instead
+    local who = type(msg.display_name) == "string" and msg.display_name ~= "" and msg.display_name or msg.login_name
+    ch:replace_message(msg, rebuilt(msg, {
+        { type = "text", text = tostring(who) .. ":", color = "system" },
+        { type = "text", text = mutes.TEXT, color = "system", tooltip = mutes.TIP },
+    }, true))
+    M.replaced_count = M.replaced_count + 1
+    return true
+end
+
+local function channel_name_of(ch)
+    local ok, name = pcall(function() return ch:get_name() end)
+    return ok and type(name) == "string" and name or ""
 end
 
 -- kick/youtube lines multichat injected carry no heatsync lookups of their own
@@ -443,8 +495,15 @@ end
 -- element passed through untouched.
 local function do_line(ch, msg, hint, text)
     if (msg.flags & c2.MessageFlag.System) ~= 0 then return end
+    if mutes.enabled() then
+        local plat = multichat_platform(msg)
+        if plat and mutes.is_muted(channel_name_of(ch), msg.login_name, plat) then
+            collapse_muted(ch, msg)
+            return
+        end
+    end
     local img_el = image_for(msg, text)
-    if not img_el or not is_multichat_line(msg) then return end
+    if not img_el or not multichat_platform(msg) then return end
     local elems = {}
     for _, el in ipairs(msg:elements()) do
         if is_image_el(el) then return end
@@ -473,6 +532,12 @@ local function do_process(ch, msg, hint)
     if (msg.flags & c2.MessageFlag.System) ~= 0 then return end
     local text = msg.message_text
     if type(text) ~= "string" or text == "" then return end
+
+    -- community-muted chatter: collapse and stop (nothing else is worth looking up)
+    if mutes.enabled() and mutes.is_muted(msg.channel_name, login, "twitch") then
+        collapse_muted(ch, msg)
+        return
+    end
 
     -- learn recently-used emotes from your OWN outgoing messages — the only
     -- usage signal the plugin can observe (click-to-insert has no callback).
@@ -668,6 +733,17 @@ function M.backpass_url(url)
     end
 end
 
+-- a channel's community-mute list just landed: collapse its muted chatters' recent lines
+function M.backpass_channel(name)
+    if not M.started then return end
+    local h = hooked[name]
+    if not h then return end
+    pcall(function()
+        if not h.ch:is_valid() then return end
+        for _, msg in ipairs(h.ch:message_snapshot(BACKPASS_DEPTH)) do process(h.ch, msg, nil) end
+    end)
+end
+
 -- coalesce backpasses: senders.on_loaded fires once per resolved sender, and a
 -- senderKeys invalidate (up to 50 targets) or a batch flush (up to 15) can land
 -- several in one tick — without this each would run the O(channels × 50-msg
@@ -715,6 +791,7 @@ function M.start()
     heat.set_on_loaded(function(login) M.backpass(login) end)
     flair.set_on_loaded(function(login) M.backpass(login) end)
     images.on_loaded = function(url) M.backpass_url(url) end
+    mutes.set_on_loaded(function(channel) M.backpass_channel(channel) end)
     inventory.on_change = function()
         if inventory.login then M.backpass(inventory.login) end
     end

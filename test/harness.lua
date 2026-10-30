@@ -4040,5 +4040,235 @@ do
     store.set_live(false)
 end
 
+-- ===== v1.13 community mutes: opt-in collapse of muted chatters, per-channel ttl cache =====
+do
+    local store = require("store")
+    local mutes = require("mutes")
+    local own_before = senders.own_login
+    senders.own_login = "mellen"
+    local ch = fake_channel("mutechan")
+    channels[#channels + 1] = ch
+    render.discover()
+    local function send(login, text, extra)
+        local m = fake_msg(login, "9" .. #login, text)
+        m.channel_name = "mutechan"
+        for k, v in pairs(extra or {}) do m[k] = v end
+        ch.msgs[#ch.msgs + 1] = m
+        ch.appended_cb(m, nil)
+        return m
+    end
+    local function reqs()
+        local out = {}
+        for _, r in ipairs(http_queue) do if r.url:find("/api/community-mutes/", 1, true) then out[#out + 1] = r end end
+        return out
+    end
+    local function drop_reqs() for i = #http_queue, 1, -1 do if http_queue[i].url:find("/api/community-mutes/", 1, true) then table.remove(http_queue, i) end end end
+    local function collapsed(rep)
+        local els = rep.new.init.elements
+        local last = els[#els]
+        return type(last) == "table" and last.tooltip == mutes.TIP
+    end
+
+    -- ---- pure parse ----
+    local p = mutes.parse
+    local set = p({ { username = "Bad", platform = "twitch" }, { username = "KK", platform = "kick" }, { username = "Any" }, { username = "Yt", platform = "youtube" }, { username = "Yt2", platform = "yt" } })
+    check(set and set.twitch.bad and set.kick.kk and set.any.any and set.youtube.yt and set.youtube.yt2, "mutes: parse buckets by platform; null platform = every platform; names lowercased")
+    check(p({}) == false and p("x") == false and p(nil) == false and p(7) == false, "mutes: empty / non-table lists parse to nothing")
+    check(p({ 5, "a", {}, { username = 42 }, { username = "" }, { username = "x\ny" }, { username = string.rep("a", 101) } }) == false, "mutes: fuzz — junk rows are skipped, an all-junk list is nothing")
+    local big = {}
+    for i = 1, 900 do big[i] = { username = "u" .. i } end
+    local capped = p(big)
+    check(capped.any.u500 and not capped.any.u501, "mutes: a huge list is capped at the server's own 500")
+
+    -- ---- off by default: no request, nothing replaced ----
+    check(store.mutes_enabled() == false, "mutes: OFF by default")
+    local rc = #ch.replaced
+    send("baduser", "spam spam")
+    advance(4100)
+    check(#reqs() == 0 and #ch.replaced == rc, "mutes: toggle off → no lookup, line untouched")
+
+    -- ---- command ----
+    commands["/hsmutes"]({ words = { "/hsmutes" }, channel = ch })
+    check(tostring(ch.added[#ch.added]):find("community mutes is off", 1, true) ~= nil, "mutes: bare /hsmutes reports off")
+    commands["/hsmutes"]({ words = { "/hsmutes", "on" }, channel = ch })
+    check(store.mutes_enabled() and mutes.enabled(), "mutes: /hsmutes on enables (t2)")
+
+    -- ---- first sighting queues ONE lookup for the channel; lines render normally until it lands ----
+    local early = send("baduser", "early spam")
+    send("gooduser", "hello")
+    rc = #ch.replaced
+    advance(4100)
+    local rq = reqs()
+    check(#rq == 1 and rq[1].url == "https://heatsync.org/api/community-mutes/mutechan?threshold=25&limit=500", "mutes: one anonymous lookup, channel + site threshold 25 (got " .. tostring(rq[1] and rq[1].url) .. ")")
+    check(#ch.replaced == rc, "mutes: nothing is hidden on a guess before the list lands")
+    http_answer("/api/community-mutes/mutechan", { channel = "mutechan", generated_at = "x", mutes = {
+        { username = "BadUser", platform = "twitch", since_iso = "2026-01-01T00:00:00.000Z" },
+        { username = "scoped", platform = "kick" },
+        { username = "everywhere" },
+        { username = "mellen", platform = "twitch" },
+    } })
+    advance(200) -- coalesced? back-pass runs straight from the lookup callback
+    local reps = {}
+    for i = rc + 1, #ch.replaced do reps[#reps + 1] = ch.replaced[i] end
+    local has_early = false
+    for _, r in ipairs(reps) do if r.old == early then has_early = true end end
+    check(#reps == 2 and collapsed(reps[1]) and collapsed(reps[2]) and has_early, "mutes: list landed → both earlier lines of the muted chatter collapsed, the good one left alone")
+    do
+        local els = reps[1].new.init.elements
+        check(#els == 3 and els[1].type == "timestamp" and els[2].words and els[2].words[1] == "baduser:" and els[3].text == mutes.TEXT and els[3].color == "system", "mutes: collapsed line keeps timestamp + name, body replaced by the placeholder")
+        check(reps[1].new.init.message_text == "" and reps[1].new.init.search_text == "", "mutes: the muted body is gone from search/filter text too")
+        check(els[3].tooltip == mutes.TIP and els[3].text:find("[A-Z]") == nil, "mutes: placeholder copy is lowercase")
+    end
+
+    -- ---- live lines after the list is cached ----
+    rc = #ch.replaced
+    send("baduser", "more spam")
+    check(#ch.replaced == rc + 1 and collapsed(ch.replaced[#ch.replaced]), "mutes: a later line from a muted chatter collapses as it arrives")
+    send("gooduser", "still fine")
+    check(#ch.replaced == rc + 1, "mutes: a non-muted chatter is never rebuilt")
+    send("mellen", "i am in the list")
+    check(#ch.replaced == rc + 1 or not collapsed(ch.replaced[#ch.replaced]), "mutes: your own line is never collapsed")
+    do
+        -- platform scoping: a kick-only mute does not touch a twitch chatter of the same name
+        local n = #ch.replaced
+        send("scoped", "twitch scoped")
+        check(#ch.replaced == n, "mutes: a kick-scoped mute leaves the twitch chatter alone")
+        send("everywhere", "x")
+        check(#ch.replaced == n + 1, "mutes: a platform-less mute applies on twitch too")
+    end
+    -- the placeholder fed back through the hook (backpass / replace echo) is not collapsed again
+    do
+        local n = #ch.replaced
+        local again = fake_msg("baduser", "9", "x")
+        again.channel_name = "mutechan"
+        again.elements = function() return ch.replaced[n - 1] and ch.replaced[n - 1].new.init.elements or {} end
+        local els = {}
+        for _, e in ipairs(ch.replaced[#ch.replaced].new.init.elements) do els[#els + 1] = e end
+        again.elements = function() return els end
+        ch.appended_cb(again, nil)
+        check(#ch.replaced == n, "mutes: an already-collapsed line is not collapsed again")
+    end
+    -- a muted line that carried a mention highlight loses it
+    do
+        local hl = send("baduser", "hey mellen", { highlight_color = "#7f7f3f49", flags = c2.MessageFlag.Highlighted })
+        local new = ch.replaced[#ch.replaced].new.init
+        check(new.highlight_color == nil and (new.flags & c2.MessageFlag.Highlighted) == 0, "mutes: a collapsed line drops its highlight")
+    end
+
+    -- ---- cache: ttl, no storm ----
+    for _ = 1, 5 do send("baduser", "s") end
+    advance(4100)
+    check(#reqs() == 0, "mutes: cached → no new request per message")
+    advance(605000)
+    send("baduser", "after ttl")
+    advance(4100)
+    check(#reqs() == 1, "mutes: past the ttl the channel is re-fetched once")
+    -- stale list keeps working while the refresh is out
+    local n = #ch.replaced
+    send("baduser", "during refresh")
+    check(#ch.replaced == n + 1, "mutes: the stale list still applies while a refresh is in flight")
+    http_fail("/api/community-mutes/mutechan")
+    advance(4100)
+    check(#reqs() == 0, "mutes: a failed refresh is remembered; no hot loop")
+    n = #ch.replaced
+    send("baduser", "after failure")
+    check(#ch.replaced == n + 1, "mutes: a failed refresh keeps the previous list")
+    advance(61000)
+    send("baduser", "retry")
+    advance(4100)
+    check(#reqs() == 1, "mutes: retried after the short failure window")
+    http_answer("/api/community-mutes/mutechan", { mutes = {} })
+    n = #ch.replaced
+    send("baduser", "unmuted now")
+    check(#ch.replaced == n, "mutes: an empty list unmutes")
+
+    -- ---- malformed responses never throw, never mute ----
+    for i, body in ipairs({ { mutes = "x" }, { mutes = { 1, 2, "x" } }, { error = "Invalid channel" }, {}, { mutes = { { username = {} } } } }) do
+        advance(605000)
+        send("baduser", "fuzz " .. i)
+        advance(4100)
+        local ok = pcall(http_answer, "/api/community-mutes/mutechan", body)
+        n = #ch.replaced
+        send("baduser", "fuzz2 " .. i)
+        check(ok and #ch.replaced == n, "mutes: malformed response " .. i .. " is harmless")
+    end
+    drop_reqs()
+
+    -- ---- hostile channel names never become a request ----
+    do
+        local before = #reqs()
+        local m = fake_msg("x", "1", "y"); m.channel_name = "Bad Name/../"
+        ch.msgs[#ch.msgs + 1] = m; ch.appended_cb(m, nil)
+        advance(4100)
+        check(#reqs() == before, "mutes: a hostile channel name is never queried")
+    end
+
+    -- ---- merged kick / youtube lines in the same tab ----
+    do
+        local mc = fake_channel("mutemc")
+        channels[#channels + 1] = mc
+        render.discover()
+        commands["/hsmulti"]({ words = { "/hsmulti", "kick:mutesrc" }, channel = mc })
+        for i = #http_queue, 1, -1 do if http_queue[i].url:find("/api/recent/", 1, true) then table.remove(http_queue, i) end end
+        for _ = 1, 200 do
+            if ws.connected then break end
+            advance(1000)
+            local sk = sockets[#sockets]
+            if not sk.closed then sk.opts.on_open() end
+        end
+        local function hooked(m)
+            local els = {}
+            for _, e in ipairs(m.init.elements) do
+                if e.type == "text" then els[#els + 1] = { type = "text", words = { e.text }, flags = e.flags or c2.MessageElementFlag.Text, tooltip = e.tooltip }
+                else els[#els + 1] = e end
+            end
+            return { flags = 0, id = "", login_name = m.init.login_name, display_name = m.init.display_name, message_text = m.init.message_text,
+                search_text = m.init.message_text, channel_name = "", frozen = true, elements = function() return els end }
+        end
+        local function kick_line(id, user, text)
+            local k = #mc.added
+            sockets[#sockets].opts.on_text(register_payload({ type = "kick-chat-message", data = { platform = "kick", channel = "mutesrc", id = id, username = user, content = text, timestamp = 1761825602000 } }))
+            local m = mc.added[k + 1]
+            if m then mc.msgs[#mc.msgs + 1] = hooked(m); mc.appended_cb(mc.msgs[#mc.msgs], nil) end
+        end
+        local r0 = #mc.replaced
+        kick_line("mk1", "scoped", "kick spam")
+        advance(4100)
+        check(#reqs() == 1 and reqs()[1].url:find("/api/community-mutes/mutemc?", 1, true) ~= nil, "mutes/kick: the merged line's TAB is the channel asked about")
+        http_answer("/api/community-mutes/mutemc", { mutes = { { username = "scoped", platform = "kick" }, { username = "ytbad", platform = "youtube" } } })
+        check(#mc.replaced == r0 + 1 and collapsed(mc.replaced[#mc.replaced]), "mutes/kick: list landed → the kick chatter's earlier merged line collapsed")
+        local tag = false
+        for _, e in ipairs(mc.replaced[#mc.replaced].new.init.elements) do if type(e) == "table" and e.words and e.words[1] == "[K]" then tag = true end end
+        check(tag, "mutes/kick: the [K] tag stays on the collapsed line")
+        r0 = #mc.replaced
+        kick_line("mk2", "scoped", "more")
+        check(#mc.replaced == r0 + 1, "mutes/kick: a live merged kick line from a muted chatter collapses")
+        kick_line("mk3", "ytbad", "kick user sharing a youtube-scoped name")
+        check(#mc.replaced == r0 + 1, "mutes/kick: a youtube-scoped mute does not hit a kick chatter")
+        kick_line("mk4", "fine", "ok")
+        check(#mc.replaced == r0 + 1, "mutes/kick: other chatters untouched")
+        commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = mc })
+        for i = #channels, 1, -1 do if channels[i] == mc then table.remove(channels, i) end end
+    end
+
+    -- ---- wiring ----
+    do
+        local seen = {}
+        local sys_ctx = { words = { "/hshelp" }, channel = { add_system_message = function(_, m) seen[#seen + 1] = m end, add_message = function() end, get_name = function() return "x" end } }
+        commands["/hshelp"](sys_ctx)
+        commands["/hsstatus"](sys_ctx)
+        local blob = table.concat(seen, "\n")
+        check(blob:find("/hsmutes", 1, true) ~= nil and blob:find("community mutes: on", 1, true) ~= nil, "mutes/wiring: /hshelp lists it, /hsstatus reports it")
+        commands["/hsclear"](sys_ctx)
+        check(select(1, mutes.stats()) == 0, "mutes/wiring: /hsclear drops the cached lists")
+        commands["/hsmutes"]({ words = { "/hsmutes", "off" }, channel = ch })
+        check(not mutes.enabled(), "mutes/wiring: /hsmutes off turns it off")
+    end
+    drop_reqs()
+    for i = #channels, 1, -1 do if channels[i] == ch then table.remove(channels, i) end end
+    store.set_mutes(false)
+    senders.own_login = own_before
+end
+
 print(failures == 0 and "\nALL PASS" or ("\n" .. failures .. " FAILURES"))
 host_os.exit(failures == 0 and 0 or 1)

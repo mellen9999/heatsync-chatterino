@@ -101,11 +101,21 @@ function L:flush()
     local gen = self.gen
     local ok = pcall(self.fetch, keys, function(results)
         if gen == self.gen then self.inflight = false end
+        -- a key asked about again while its fetch was out (a stale entry is
+        -- re-queued by every resolve) is answered by this very result: drop the
+        -- re-queue, or each refresh would be followed by an immediate second one
+        local function settled(k)
+            if self.pending[k] then
+                self.pending[k] = nil
+                self.pending_n = self.pending_n - 1
+            end
+        end
         if type(results) ~= "table" then
             -- negative-cache briefly so a flaky upstream doesn't hot-loop
             for _, k in ipairs(keys) do
                 local e = self.cache[k]
                 self:store(k, e and e.v or false, self.ttl - self.fail_ttl)
+                settled(k)
             end
             return
         end
@@ -113,6 +123,7 @@ function L:flush()
             local v = results[k]
             if v == nil then v = false end
             self:store(k, v)
+            settled(k)
             if self.on_loaded then pcall(self.on_loaded, k, v) end
         end
     end)

@@ -177,7 +177,7 @@ for _, m in ipairs(added) do
 end
 check(carded, "card: POST unavailable on " .. MODE .. " → public-endpoint fallback still renders the card")
 commands["/hscard"]({ words = { "/hscard" }, channel = ctx.channel })
-for _, c in ipairs({ "/hsheat", "/hsflair", "/hscolors", "/hsbackfill", "/hsmentions" }) do
+for _, c in ipairs({ "/hsheat", "/hsflair", "/hscolors", "/hsbackfill", "/hsmentions", "/hsmutes" }) do
     commands[c]({ words = { c, "off" }, channel = ctx.channel })
     commands[c]({ words = { c, "on" }, channel = ctx.channel })
     commands[c]({ words = { c }, channel = ctx.channel })
@@ -221,6 +221,18 @@ do
     local ok, handled = pcall(live.handle, { type = "stream:update", platform = "twitch", channel = "x", game = "a", title = "b", prevGame = "c", prevTitle = "d" })
     check(ok and handled == true, "live: twitch stream:update is a clean no-op without tabs on " .. MODE)
     commands["/hslive"]({ words = { "/hslive", "off" }, channel = ctx.channel })
+end
+
+-- community mutes replace lines, which needs the t2 render path: below it the
+-- toggle is accepted but the feature is silently off and asks the server nothing
+do
+    local mutes = require("mutes")
+    local qn = #http_queue
+    commands["/hsmutes"]({ words = { "/hsmutes", "on" }, channel = ctx.channel })
+    check(not mutes.enabled(), "mutes: silently off without the render path on " .. MODE)
+    check(mutes.is_muted("somechan", "someone", "twitch") == false and #http_queue == qn, "mutes: no answer, no request on " .. MODE)
+    check(mutes.parse({ { username = "a" } }) ~= false, "mutes: pure parsing still safe on " .. MODE)
+    commands["/hsmutes"]({ words = { "/hsmutes", "off" }, channel = ctx.channel })
 end
 
 print(failures == 0 and "ALL PASS (" .. MODE .. ")" or (failures .. " FAILURES (" .. MODE .. ")"))

@@ -28,6 +28,7 @@ local spike = require("spike")
 local heat = require("heat")
 local flair = require("flair")
 local namecolor = require("namecolor")
+local mutes = require("mutes")
 
 -- tab-complete popup size (shared ceiling: own inventory fills first, then the
 -- 7tv/bttv/ffz catalog appends into whatever room is left). raised 25→40 so a
@@ -358,11 +359,11 @@ if caps.later then
         if inventory.boot_failed_at then login_and_refresh_tick() end
     end)
     net.every(2 * 1000, senders.flush)
-    -- cosmetic lookup batches (heat bars, sub flair, name colors): one request
+    -- cosmetic lookup batches (heat bars, sub flair, name colors, community mutes): one request
     -- per handful of new chatters on a slower beat than senders (never urgent).
     -- each flush is isolated so one failing can't starve the others.
     net.every(4 * 1000, function()
-        for _, flush in ipairs({ heat.flush, flair.flush, namecolor.flush }) do
+        for _, flush in ipairs({ heat.flush, flair.flush, namecolor.flush, mutes.flush }) do
             local ok, err = pcall(flush)
             if not ok then net.log_warn("lookup flush failed: " .. tostring(err)) end
         end
