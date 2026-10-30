@@ -1,6 +1,6 @@
 # heatsync chatterino plugin
 
-heatsync inside chatterino. your emote inventory tab-completes everywhere and — on a render-capable build — heatsync emotes **render as real images** in chat (yours and every other heatsync user's), you get a **click-to-insert emote menu**, you can **browse any chatter's emotes** and **search heatsync's post + chat-log archive** (heatsync archives the channels you watch itself, `/hschat` reads it back) without leaving chat, plus clickable `>>id` threadlinks, a 🔥 marker on heatsync users, and **kick + youtube chat merged into your twitch tabs**.
+heatsync inside chatterino. your emote inventory tab-completes everywhere and — on a render-capable build — heatsync emotes **render as real images** in chat (yours and every other heatsync user's), you get a **click-to-insert emote menu**, you can **browse any chatter's emotes** and **search heatsync's post + chat-log archive** (heatsync archives the channels you watch itself, `/hschat` reads it back) without leaving chat, plus clickable `>>id` threadlinks, a 🔥 marker on heatsync users, heat bars and sub-flair badges on chatters, a **user card** (`/hscard`), and **kick + youtube chat merged into your twitch tabs** (with their recent history).
 
 no fork, no patched binary. one lua plugin that feature-detects the host build and degrades a capability at a time instead of breaking:
 
@@ -20,7 +20,7 @@ no fork, no patched binary. one lua plugin that feature-detects the host build a
 
 twitch emotes, badges, timestamps, and replies pass through untouched. a message with no heatsync content is never rebuilt — the render decision is two hash lookups per word, nothing allocated on a miss.
 
-known limits: zero-width overlay emotes render as normal inline images; modifier tokens (`w!`, `h!`, `ffzX`, `c!#ff8700`, chains like `w!h!ffzX`) are recognised next to a heatsync emote and named in its tooltip (`· wide · flipH`), but the image itself isn't transformed — a plugin can't — and the token word is hidden rather than printed as stray text; username paints don't render (there's no plugin API for them, and they're not faked with colored text).
+known limits: zero-width overlay emotes render as normal inline images; modifier tokens (`w!`, `h!`, `ffzX`, `c!#ff8700`, chains like `w!h!ffzX`) are recognised next to a heatsync emote and named in its tooltip (`· wide · flipH`), but the image itself isn't transformed — a plugin can't — and the token word is hidden rather than printed as stray text; username paints don't render (there's no plugin API for them, and they're not faked with colored text — a painted chatter just keeps the default color).
 
 ## the emote menu
 
@@ -37,6 +37,8 @@ recents are learned from the emotes you actually send (the only usage signal a p
 `/hsmulti kick:<slug>` or `/hsmulti yt:<handle>` inside a twitch channel tab merges that platform's **live chat** into the tab, tagged `[K]` / `[Y]`. heatsync already ingests kick + youtube chat; the plugin pulls it over the same anonymous websocket and injects it client-side — re-subscribing on reconnect, replaying what a dropped socket missed, deduping by message id, and remembering your links across restarts. a kick/youtube chatter's own heatsync emotes render inline in their merged lines, same rule as twitch.
 
 `/hsmulti auto` (on by default) merges a stream's kick/youtube chat automatically when you open its twitch tab — but only where that streamer has *publicly linked* their cross-platform accounts on heatsync, so channels that haven't stay quiet. `/hsmulti auto off` to disable, `/hsmulti off` to unlink a tab.
+
+when a source is merged it also loads its last ~50 archived lines (`GET /api/recent/...`), so a fresh tab isn't empty — deduped by id against what the socket delivers, oldest first, once per link per session. kick works by slug; youtube needs the channel's `UC…` id (a typed handle has no archive key, but auto-merge passes the id along). `/hsbackfill off` skips it.
 
 chatterino has no native kick/youtube. this makes heatsync the cross-platform chat layer *inside* it. (youtube chat only exists while the channel is live — a source linked while offline says so and retries every couple of minutes.)
 
@@ -64,6 +66,22 @@ add an emote on heatsync.org and it's usable in chatterino within a second — a
 
 on a build with plugin context menus, right-clicking a chat message adds a `heatsync` submenu: that chatter's emotes, chat logs, and whois. right-click a heatsync emote to block or unblock it locally. older builds just don't get the menu — the commands below do the same.
 
+## heat bars
+
+chatters who have heat on heatsync get a colored bar before their name — the plugin's version of the extension's left-edge heat border: nothing under 5 heat, white → yellow → red as it climbs, and the bar thickens with the tier (`▎ ▍ ▌ ▊`). hover it for the score, posts and replies. it's a single glyph, never an emoji beside a number. scores come from one batched `POST /api/users/heat` per handful of new chatters, cached ~2 minutes, and refresh live from the server's heat push. on by default; `/hsheat off` turns it off.
+
+## sub flair
+
+a heatsync user can pick one twitch sub badge to show off; here it appears as a badge image before their name, hover names the broadcaster. one batched `GET /api/users/flair` per handful of new chatters (twitch badge images only — the same cdn host chatterino already uses). on by default; `/hsflair off` turns it off.
+
+## name colors
+
+a heatsync user's picked name color applies to their name on merged **youtube** lines (the first line from someone new keeps the default color while it's looked up; later ones pick it up). same rule as the extension: twitch names are never recolored (twitch's own color is a paid perk), and a chatter with a heatsync paint is left as-is — paints are gradients a plugin can't draw, and a flat stand-in would be a fake. on by default; `/hscolors off` turns it off.
+
+## user card
+
+`/hscard <user>` (or right-click → heatsync → card) prints a chatter's heatsync card in the tab: heat, posts, followers, live, how long they've followed this channel, what heatsync's archive has on them, and their last few lines. the name is a link — click it for chatterino's own usercard. it's one anonymous `POST /api/card`; if that ever comes back unusable it falls back to the plain profile + followage endpoints.
+
 ## the 🔥 marker
 
 heatsync users get a 🔥 before their name in any chat, so they're identifiable even on plain-text lines. it appears once we've seen someone post heatsync content (no lookup storm on silent chat), and never on your own messages (you know it's you). `/hsflame off` turns it off.
@@ -81,9 +99,14 @@ heatsync users get a 🔥 before their name in any chat, so they're identifiable
 | `/hsmulti kick:<slug>` \| `yt:<handle>` \| `off` \| `auto on\|off` | merge kick/youtube chat into this tab; `auto` links a stream's platforms automatically |
 | `/hshot [platform] [page]` | hottest live streams right now (cross-platform, heat-ranked); filter by platform, page through; click a twitch one to open it |
 | `/hswhois <user>` | heatsync profile card for any streamer (heat, followers, live, posts) |
+| `/hscard <user>` | a chatter's card: heat, posts, follows this channel since, archive stats, last lines; the name opens chatterino's usercard |
 | `/hsarchive on\|off` | tell heatsync which public twitch channels you watch, so it archives them itself (on by default; `off` to opt out) |
 | `/hsblock <name>` \| `/hsunblock` \| `/hsblocklist` | locally hide an emote (render + tab-complete) |
 | `/hsflame on\|off` | toggle the 🔥 heatsync-user marker |
+| `/hsheat on\|off` | heat bars before chatters' names (on by default) |
+| `/hsflair on\|off` | sub-flair badges before chatters' names (on by default) |
+| `/hscolors on\|off` | heatsync users' picked name color on merged youtube lines (on by default) |
+| `/hsbackfill on\|off` | load a merged kick/youtube source's last ~50 lines on link (on by default) |
 | `/hsbadges on\|off` | show chatterino global badges on chatters (opt-in) |
 | `/hspin on\|off` | the channel's heatsync pinned message as a 📌 line, view-only (on by default) |
 | `/hslive on\|off` | 🔴/⚫ go-live + offline lines for your linked kick/youtube sources (opt-in) |
@@ -123,18 +146,20 @@ for the full experience (rendering, the emote menu, multichat), use a build whos
 
 | permission | why |
 |---|---|
-| `Network` | public heatsync.org endpoints (`/api/profile`, `/api/users/<id>/emotes`, `/api/users/emotes/batch`, `/api/emote-search`, `/api/search`, `/api/archive/search`, `/api/moments`, `/api/live/top`, `/api/pin`, `/api/chatter/<...>/stats`, `/api/chatterino-badges`) plus one anonymous websocket for live sync and multichat. |
+| `Network` | public heatsync.org endpoints (`/api/profile`, `/api/users/<id>/emotes`, `/api/users/emotes/batch`, `/api/emote-search`, `/api/search`, `/api/archive/search`, `/api/moments`, `/api/live/top`, `/api/pin`, `/api/chatter/<...>/stats`, `/api/chatterino-badges`, `/api/users/heat`, `/api/users/flair`, `/api/paints`, `/api/card`, `/api/twitch/followage`, `/api/recent/<kick\|youtube>/<channel>`) plus one anonymous websocket for live sync and multichat. |
 | `FilesystemRead` / `FilesystemWrite` | remembers your settings, block list, multichat links, and recently-used emotes in the plugin's own data folder. local only. |
 
 **what leaves chatterino:**
 
 - your twitch login (of the selected account) — so the server can sync your emote inventory.
 - while `/hsarchive` is **on** (the default, render-capable builds only): which public twitch channel you're watching — just the channel name, at most once per 5 minutes — so heatsync can archive it server-side. `/hsarchive off` stops it. no message text, username, message id, or timestamp is ever sent.
+- while heat bars / sub flair are **on** (the default): the twitch logins and ids of chatters in the tabs you have open, in small batches, so heatsync can answer with their heat and flair — the same kind of lookup the emote sets already make. `/hsheat off` and `/hsflair off` stop them. name colors send the youtube channel ids of merged-in chatters the same way (`/hscolors off`).
+- `/hscard` sends the one login you ask about, and the tab it's in. a merged kick/youtube source's history request sends the source's channel name (`/hsbackfill off` skips it).
 - nothing else. no auth tokens (the socket is anonymous), no whispers/DMs, no browsing history, no telemetry.
 
 ## architecture
 
-small single-purpose modules: `caps` (feature detection), `net` (http / json / timers / data files), `inventory` (your emotes), `seventv` (catalog search + render cache), `senders` (other chatters' sets), `recents` (learned usage), `img` (image-set builder + CDN allowlist), `picker` (clickable emote grids), `ws` (socket lifecycle), `multichat` (kick/youtube injection), `live` (opt-in go-live status), `pin` (view-only pinned message), `badges` (chatterino badges), `render` (hook → rebuild → replace), `store` (persisted toggles), and the command layer — `cmdutil` (shared helpers) plus `cmd_emotes` / `cmd_archive` / `cmd_multichat` / `cmd_system`, all wired by `init`. every hook is pcall-guarded and every capability is feature-detected, so a missing API degrades one feature instead of erroring. if chatterino ever exposes first-class plugin emote providers, `render.lua` is the only file that needs to change.
+small single-purpose modules: `caps` (feature detection), `net` (http / json / timers / data files), `inventory` (your emotes), `seventv` (catalog search + render cache), `senders` (other chatters' sets), `recents` (learned usage), `img` (image-set builder + CDN allowlist), `picker` (clickable emote grids), `ws` (socket lifecycle), `multichat` (kick/youtube injection), `live` (opt-in go-live status), `pin` (view-only pinned message), `badges` (chatterino badges), `lookup` (the shared batched ttl cache behind `heat` / `flair` / `namecolor`: heat bars, sub-flair badges, youtube name colors), `render` (hook → rebuild → replace), `store` (persisted toggles), and the command layer — `cmdutil` (shared helpers) plus `cmd_emotes` / `cmd_archive` / `cmd_card` / `cmd_multichat` / `cmd_system`, all wired by `init`. every hook is pcall-guarded and every capability is feature-detected, so a missing API degrades one feature instead of erroring. if chatterino ever exposes first-class plugin emote providers, `render.lua` is the only file that needs to change.
 
 ## tests
 

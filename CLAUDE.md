@@ -25,10 +25,14 @@ a single lua plugin (no fork, no patched binary) that brings heatsync into chatt
 - moment spikes (`spikes.txt`) — **off** (opt-in), `/hsmoments on|off`
 - badges — **off** (opt-in)
 - flame 🔥 — on
+- heat bars (`heat.txt`) — **on** (opt-out), `/hsheat on|off`; never a 🔥 on/next to a heat score
+- sub flair (`flair-badges.txt`) — **on** (opt-out), `/hsflair on|off`
+- name colors (`namecolors.txt`) — **on** (opt-out), `/hscolors on|off`; youtube lines only (twitch never recolored, painted chatters untouched)
+- history backfill (`backfill.txt`) — **on** (opt-out), `/hsbackfill on|off`
 
 ## modules
 
-`caps` feature-detect · `net` http/json/timers/datafiles · `inventory` your emotes · `seventv` catalog search + render cache · `senders` other chatters' sets · `recents` learned usage · `picker` clickable grids · `ws` socket lifecycle · `multichat` kick/yt injection · `pin` heatsync pinned message (view-only) · `spike` opt-in moment spikes · `modifiers` emote modifier tokens (tooltip only) · `render` hook→rebuild→replace · `store` persisted toggles · `commands` · `menu` right-click context menu · `init` wiring.
+`caps` feature-detect · `net` http/json/timers/datafiles · `inventory` your emotes · `seventv` catalog search + render cache · `senders` other chatters' sets · `recents` learned usage · `picker` clickable grids · `ws` socket lifecycle · `multichat` kick/yt injection · `pin` heatsync pinned message (view-only) · `lookup` shared batched ttl cache · `heat` / `flair` / `namecolor` batched cosmetic lookups (rendered by `render`, `multichat`) · `cmd_card` /hscard + right-click card · `spike` opt-in moment spikes · `modifiers` emote modifier tokens (tooltip only) · `render` hook→rebuild→replace · `store` persisted toggles · `commands` · `menu` right-click context menu · `init` wiring.
 
 ## conventions
 
