@@ -4270,5 +4270,148 @@ do
     senders.own_login = own_before
 end
 
+-- ===== v1.13 /hsgif: heatsync gif library as a click-to-insert grid =====
+do
+    local gifs = require("gifs")
+    local cmd_gifs = require("cmd_gifs")
+    local g = fake_channel("gifchan")
+    local function gif_rows(n, prefix)
+        local out = {}
+        for i = 1, n do
+            out[i] = { id = tostring(i), url = "https://media.giphy.com/media/" .. (prefix or "a") .. i .. "/giphy.gif",
+                preview = "https://media.giphy.com/media/" .. (prefix or "a") .. i .. "/200_s.gif",
+                animated = "https://media.giphy.com/media/" .. (prefix or "a") .. i .. "/200.gif", label = "Cat " .. i, uses = i }
+        end
+        return out
+    end
+    local function gif_reqs()
+        local out = {}
+        for _, r in ipairs(http_queue) do if r.url:find("/api/gifs/", 1, true) then out[#out + 1] = r end end
+        return out
+    end
+    local function drop() for i = #http_queue, 1, -1 do if http_queue[i].url:find("/api/gifs/", 1, true) then table.remove(http_queue, i) end end end
+    local function tiles(m)
+        local out = {}
+        for _, e in ipairs(m.init.elements) do
+            if type(e) == "table" and e.link and e.link.type == c2.LinkType.InsertText then out[#out + 1] = e end
+        end
+        return out
+    end
+    local function last_msg() return g.added[#g.added] end
+
+    -- ---- args ----
+    local q, p = cmd_gifs.parse_args({ "/hsgif", "cat", "jam", "2" })
+    check(q == "cat jam" and p == 2, "hsgif: trailing number after a query is the page")
+    q, p = cmd_gifs.parse_args({ "/hsgif", "3" })
+    check(q == "" and p == 3, "hsgif: a lone number pages the top gifs")
+    q, p = cmd_gifs.parse_args({ "/hsgif" })
+    check(q == "" and p == 1, "hsgif: bare → top, page 1")
+    q, p = cmd_gifs.parse_args({ "/hsgif", "cat", "abc" })
+    check(q == "cat abc" and p == 1, "hsgif: a non-numeric last word stays in the query")
+    q, p = cmd_gifs.parse_args({ "/hsgif", "", "0" })
+    check(q == "0" and p == 1, "hsgif: page 0 is not a page")
+
+    -- ---- search: endpoint, encoding, grid ----
+    commands["/hsgif"]({ words = { "/hsgif", "cat", "jam" }, channel = g })
+    local rq = gif_reqs()
+    check(#rq == 1 and rq[1].url == "https://heatsync.org/api/gifs/search?q=cat%20jam&limit=12", "hsgif: query → /api/gifs/search with encoded q and page-sized limit (got " .. tostring(rq[1] and rq[1].url) .. ")")
+    check(rq[1].headers.Authorization == nil and rq[1].headers.Cookie == nil, "hsgif: anonymous request")
+    http_answer("/api/gifs/search", { gifs = gif_rows(12), library = { state = "ready", indexed = 900 } })
+    local m = last_msg()
+    local t = tiles(m)
+    check(type(m) == "table" and #t == 12, "hsgif: twelve clickable tiles")
+    check(t[1].type == "scaling-image" and t[1].link.value == "https://media.giphy.com/media/a1/giphy.gif ", "hsgif: a click inserts the gif's direct url (+ space)")
+    check(t[1].images.i1.url == "https://heatsync.org/api/img?url=" .. require("net").percent_encode("https://media.giphy.com/media/a1/200_s.gif"), "hsgif: thumbnails load through the /api/img proxy, never the gif host")
+    check(math.abs(t[1].images.i1.scale - 72 / 200) < 1e-9, "hsgif: tile scaled to the tile height")
+    check(m.init.elements[1].text:find("click to insert", 1, true) ~= nil and m.init.elements[1].text:find("cat jam", 1, true) ~= nil, "hsgif: header names the query")
+    check(t[1].tooltip:find("Cat 1", 1, true) ~= nil, "hsgif: tooltip carries the label")
+    for _, r in ipairs(http_queue) do check(not r.url:find("giphy.com", 1, true) or r.url:find("^https://heatsync.org/api/img"), "hsgif: no request ever targets giphy directly") end
+
+    -- ---- cache: same query is served from memory ----
+    drop()
+    local a0 = #g.added
+    commands["/hsgif"]({ words = { "/hsgif", "cat", "jam" }, channel = g })
+    check(#gif_reqs() == 0 and #g.added == a0 + 1, "hsgif: a repeat query is answered from the cache, no request")
+
+    -- ---- top (no query) + paging ----
+    commands["/hsgif"]({ words = { "/hsgif" }, channel = g })
+    check(gif_reqs()[1] and gif_reqs()[1].url == "https://heatsync.org/api/gifs/top?limit=12", "hsgif: no query → /api/gifs/top")
+    http_answer("/api/gifs/top", { gifs = gif_rows(12, "t"), library = { state = "ready" } })
+    check(last_msg().init.elements[1].text:find("/hsgif 2 for more", 1, true) ~= nil, "hsgif: a full page hints the next page")
+    commands["/hsgif"]({ words = { "/hsgif", "2" }, channel = g })
+    check(gif_reqs()[1] and gif_reqs()[1].url == "https://heatsync.org/api/gifs/top?limit=24", "hsgif: page 2 asks for 24 (the server has no offset)")
+    http_answer("/api/gifs/top", { gifs = gif_rows(24, "t"), library = { state = "ready" } })
+    local p2 = tiles(last_msg())
+    check(#p2 == 12 and p2[1].link.value:find("/t13/", 1, true) ~= nil, "hsgif: page 2 shows items 13-24")
+    commands["/hsgif"]({ words = { "/hsgif", "999" }, channel = g })
+    check(gif_reqs()[1] and gif_reqs()[1].url == "https://heatsync.org/api/gifs/top?limit=48", "hsgif: a huge page is clamped to what the server can give")
+    http_answer("/api/gifs/top", { gifs = gif_rows(20, "u"), library = { state = "ready" } })
+    check(#tiles(last_msg()) == 8, "hsgif: a short answer clamps to the last real page")
+
+    -- ---- states + failures ----
+    local function say(words, payload, fail_status)
+        a0 = #g.added
+        commands["/hsgif"]({ words = words, channel = g })
+        if fail_status then http_error("/api/gifs/", fail_status, payload) else http_answer("/api/gifs/", payload) end
+        return g.added[#g.added]
+    end
+    local msg = say({ "/hsgif", "nothingzz" }, { gifs = {}, library = { state = "ready", indexed = 900 } })
+    check(tostring(msg):find("no gifs for 'nothingzz'", 1, true) ~= nil, "hsgif: empty result on a ready library says no gifs")
+    msg = say({ "/hsgif", "coldstart" }, { gifs = {}, library = { state = "building", indexed = 3 } })
+    check(tostring(msg):find("still filling up", 1, true) ~= nil, "hsgif: a cold library is not blamed on the query")
+    msg = say({ "/hsgif", "limited" }, { error = "slow down" }, 429)
+    check(tostring(msg):find("rate limited", 1, true) ~= nil, "hsgif: 429 → a plain rate-limit note")
+    msg = say({ "/hsgif", "broken" }, { error = "gif library unavailable" }, 500)
+    check(tostring(msg):find("gif search failed", 1, true) ~= nil, "hsgif: server error → a failure note")
+    a0 = #g.added
+    commands["/hsgif"]({ words = { "/hsgif", "failcb" }, channel = g })
+    http_fail("/api/gifs/")
+    check(tostring(g.added[#g.added]):find("gif search failed", 1, true) ~= nil, "hsgif: transport failure → a failure note")
+    msg = say({ "/hsgif", "failed-then-fine" }, { gifs = gif_rows(1, "f"), library = { state = "ready" } })
+    check(type(msg) == "table", "hsgif: a failure is not cached; the next try works")
+
+    -- ---- malformed / hostile records ----
+    local bad = {
+        { url = "https://ok.example/a.gif" },
+        { url = "http://ok.example/a.gif" },
+        { url = "/ban someone" },
+        { url = "https://x.example/a\n/ban" },
+        { url = "https://x.example/a b.gif" },
+        { url = 7 }, { url = "" }, "str", 5, {},
+        { url = "https://g.example/b.gif", preview = "javascript:alert(1)", label = { 1 } },
+        { url = "https://g.example/c.gif", preview = "http://insecure.example/s.gif", label = "x\n/ban" .. string.rep("z", 500) },
+    }
+    msg = say({ "/hsgif", "hostile" }, { gifs = bad, library = { state = "ready" } })
+    local ht = tiles(msg)
+    local vals = {}
+    for _, e in ipairs(ht) do vals[#vals + 1] = e.link.value end
+    check(#ht == 3 and vals[1] == "https://ok.example/a.gif " and vals[2] == "https://g.example/b.gif " and vals[3] == "https://g.example/c.gif ", "hsgif: only plain https urls become tiles (got " .. table.concat(vals, "|") .. ")")
+    check(ht[2].images.i1.url == "https://heatsync.org/api/img?url=" .. require("net").percent_encode("https://g.example/b.gif"), "hsgif: an unusable preview falls back to the gif url, still via the proxy")
+    check(not ht[3].tooltip:find("\n", 1, true) and #ht[3].tooltip < 200, "hsgif: label is clamped + control-free")
+    for _, e in ipairs(ht) do check(e.link.value:find("^https://") ~= nil, "hsgif: inserted text always starts https:// (never a slash command)") end
+    for fi, body in ipairs({ { gifs = "x" }, { gifs = 5 }, {}, { library = {} }, { gifs = { gifs = {} } } }) do
+        local before = #g.added
+        local ok = pcall(function() say({ "/hsgif", "fuzz" .. fi }, body) end)
+        check(ok and #g.added > before, "hsgif: malformed body is a graceful failure note, never a throw")
+    end
+    -- more than the server's ceiling is truncated
+    msg = say({ "/hsgif", "toomany" }, { gifs = gif_rows(200, "m"), library = { state = "ready" } })
+    check(#tiles(msg) == 12, "hsgif: an oversized answer still renders one page")
+    -- long query is clamped, never an unbounded url
+    commands["/hsgif"]({ words = { "/hsgif", string.rep("q", 500) }, channel = g })
+    check(gif_reqs()[1] and #gif_reqs()[1].url < 200, "hsgif: a huge query is clamped before it becomes a url")
+    drop()
+
+    -- ---- wiring ----
+    local seen = {}
+    local sys = { words = { "/hshelp" }, channel = { add_system_message = function(_, t2) seen[#seen + 1] = t2 end, add_message = function() end, get_name = function() return "x" end } }
+    commands["/hshelp"](sys)
+    commands["/hsstatus"](sys)
+    local blob = table.concat(seen, "\n")
+    check(blob:find("/hsgif", 1, true) ~= nil and blob:find("searches cached", 1, true) ~= nil, "hsgif/wiring: /hshelp lists it, /hsstatus reports it")
+    commands["/hsclear"](sys)
+    check(gifs.stats() == 0, "hsgif/wiring: /hsclear drops cached searches")
+end
+
 print(failures == 0 and "\nALL PASS" or ("\n" .. failures .. " FAILURES"))
 host_os.exit(failures == 0 and 0 or 1)

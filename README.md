@@ -32,6 +32,10 @@ known limits: zero-width overlay emotes render as normal inline images; modifier
 
 recents are learned from the emotes you actually send (the only usage signal a plugin can observe — chatterino handles click-inserts itself with no callback) and persist across restarts.
 
+## gifs
+
+`/hsgif <query>` shows heatsync's gif library as a clickable grid (12 per page); click one and its url drops into your input, ready to send — the same thing the extension's gif tab does. `/hsgif` alone shows the top gifs, `/hsgif <query> 2` the next page (up to page 4; the server has no offset, so a later page re-asks for more). the library is heatsync's own — searching never reaches giphy or tenor — and the tiles are still frames loaded through heatsync's image proxy (`/api/img`), so the gif host never sees your ip. a cold library says it's still filling up instead of blaming your query. tiles are scaled from an assumed still height, so a source whose stills aren't 200px tall lands proportionally bigger or smaller. on a build without image support you get clickable `[caption]`s instead. nothing is fetched until you run it, so there's no toggle.
+
 ## multichat — kick + youtube in your twitch tab
 
 `/hsmulti kick:<slug>` or `/hsmulti yt:<handle>` inside a twitch channel tab merges that platform's **live chat** into the tab, tagged `[K]` / `[Y]`. heatsync already ingests kick + youtube chat; the plugin pulls it over the same anonymous websocket and injects it client-side — re-subscribing on reconnect, replaying what a dropped socket missed, deduping by message id, and remembering your links across restarts. a kick/youtube chatter's own heatsync emotes render inline in their merged lines, same rule as twitch.
@@ -111,6 +115,7 @@ heatsync users get a 🔥 before their name in any chat, so they're identifiable
 | `<tab>` | own inventory first (usage-weighted), then the global catalog (7TV/BTTV/FFZ, popularity-ranked) |
 | `/hsemotes [page\|query]` | **your emote menu** — clickable inventory grid, recents-first; page or filter it |
 | `/hsfind <query>` | **catalog search** — inventory + 7TV/BTTV/FFZ shown as images; click one to insert |
+| `/hsgif [query] [page]` | **gif search** — heatsync's gif library as a grid of stills; click one to insert its url |
 | `/hsinv <user> [page]` | **browse anyone's inventory** — a user's heatsync emotes as a click-to-insert grid, paged |
 | `/hssearch <query>` | **search heatsync posts** — click a result to open the thread |
 | `/hschat <query> [@user] [#channel]` | **search the chat archive** — heatsync's twitch-chat archive; click a line to open it at the exact message. narrow with `@user`/`#channel` (a bare query scopes to the current tab), or the server's `from:` `in:` `has:` `before:` `after:` operators |
@@ -167,7 +172,7 @@ for the full experience (rendering, the emote menu, multichat), use a build whos
 
 | permission | why |
 |---|---|
-| `Network` | public heatsync.org endpoints (`/api/profile`, `/api/users/<id>/emotes`, `/api/users/emotes/batch`, `/api/emote-search`, `/api/search`, `/api/archive/search`, `/api/moments`, `/api/live/top`, `/api/pin`, `/api/chatter/<...>/stats`, `/api/chatterino-badges`, `/api/users/heat`, `/api/users/flair`, `/api/paints`, `/api/card`, `/api/twitch/followage`, `/api/img` (inline images, opt-in), `/api/community-mutes/<channel>` (community mutes, opt-in), `/api/recent/<kick\|youtube>/<channel>`) plus one anonymous websocket for live sync and multichat. |
+| `Network` | public heatsync.org endpoints (`/api/profile`, `/api/users/<id>/emotes`, `/api/users/emotes/batch`, `/api/emote-search`, `/api/search`, `/api/archive/search`, `/api/moments`, `/api/live/top`, `/api/pin`, `/api/chatter/<...>/stats`, `/api/chatterino-badges`, `/api/users/heat`, `/api/users/flair`, `/api/paints`, `/api/card`, `/api/twitch/followage`, `/api/img` (inline images, opt-in; gif thumbnails), `/api/gifs/search` + `/api/gifs/top` (`/hsgif`), `/api/community-mutes/<channel>` (community mutes, opt-in), `/api/recent/<kick\|youtube>/<channel>`) plus one anonymous websocket for live sync and multichat. |
 | `FilesystemRead` / `FilesystemWrite` | remembers your settings, block list, multichat links, and recently-used emotes in the plugin's own data folder. local only. |
 
 **what leaves chatterino:**
@@ -177,12 +182,13 @@ for the full experience (rendering, the emote menu, multichat), use a build whos
 - while heat bars / sub flair are **on** (the default): the twitch logins and ids of chatters in the tabs you have open, in small batches, so heatsync can answer with their heat and flair — the same kind of lookup the emote sets already make. `/hsheat off` and `/hsflair off` stop them. name colors send the youtube channel ids of merged-in chatters the same way (`/hscolors off`).
 - while `/hsimages` is **on** (opt-in): an image link in chat is sent to heatsync (`/api/img?url=…`) so heatsync fetches, scans and serves the image — the image host never sees your ip, but heatsync sees the link. `/hsimages off` stops it.
 - while `/hsmutes` is **on** (opt-in): the name of each twitch channel you have open is sent to heatsync (`/api/community-mutes/<channel>`) to fetch its muted list — no chatter, message or account. `/hsmutes off` stops it.
+- `/hsgif` sends the query you typed to heatsync (`/api/gifs/search`) and loads the stills through its image proxy; only when you run it.
 - `/hscard` sends the one login you ask about, and the tab it's in. a merged kick/youtube source's history request sends the source's channel name (`/hsbackfill off` skips it).
 - nothing else. no auth tokens (the socket is anonymous), no whispers/DMs, no browsing history, no telemetry.
 
 ## architecture
 
-small single-purpose modules: `caps` (feature detection), `net` (http / json / timers / data files), `inventory` (your emotes), `seventv` (catalog search + render cache), `senders` (other chatters' sets), `recents` (learned usage), `img` (image-set builder + CDN allowlist), `picker` (clickable emote grids), `ws` (socket lifecycle), `multichat` (kick/youtube injection), `live` (opt-in go-live status), `mention` (mention highlights), `pin` (view-only pinned message), `badges` (chatterino badges), `images` (inline image detection, proxy url, size probe), `mutes` (opt-in community-mute lists, collapsed by `render`), `lookup` (the shared batched ttl cache behind `heat` / `flair` / `namecolor` / `mutes`: heat bars, sub-flair badges, youtube name colors), `render` (hook → rebuild → replace), `store` (persisted toggles), and the command layer — `cmdutil` (shared helpers) plus `cmd_emotes` / `cmd_archive` / `cmd_card` / `cmd_multichat` / `cmd_system`, all wired by `init`. every hook is pcall-guarded and every capability is feature-detected, so a missing API degrades one feature instead of erroring. if chatterino ever exposes first-class plugin emote providers, `render.lua` is the only file that needs to change.
+small single-purpose modules: `caps` (feature detection), `net` (http / json / timers / data files), `inventory` (your emotes), `seventv` (catalog search + render cache), `senders` (other chatters' sets), `recents` (learned usage), `img` (image-set builder + CDN allowlist), `picker` (clickable emote / gif grids), `gifs` (gif search + cache), `ws` (socket lifecycle), `multichat` (kick/youtube injection), `live` (opt-in go-live status), `mention` (mention highlights), `pin` (view-only pinned message), `badges` (chatterino badges), `images` (inline image detection, proxy url, size probe), `mutes` (opt-in community-mute lists, collapsed by `render`), `lookup` (the shared batched ttl cache behind `heat` / `flair` / `namecolor` / `mutes`: heat bars, sub-flair badges, youtube name colors), `render` (hook → rebuild → replace), `store` (persisted toggles), and the command layer — `cmdutil` (shared helpers) plus `cmd_emotes` / `cmd_archive` / `cmd_card` / `cmd_multichat` / `cmd_system`, all wired by `init`. every hook is pcall-guarded and every capability is feature-detected, so a missing API degrades one feature instead of erroring. if chatterino ever exposes first-class plugin emote providers, `render.lua` is the only file that needs to change.
 
 ## tests
 

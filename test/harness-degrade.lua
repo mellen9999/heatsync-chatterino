@@ -223,6 +223,20 @@ do
     commands["/hslive"]({ words = { "/hslive", "off" }, channel = ctx.channel })
 end
 
+-- /hsgif without image support: still searches and shows clickable captions
+-- (the tiles fall back to text), nothing throws on the stripped api
+do
+    local before = #added
+    commands["/hsgif"]({ words = { "/hsgif", "cat" }, channel = ctx.channel })
+    http_answer("/api/gifs/search", { gifs = { { url = "https://media.giphy.com/media/a/giphy.gif", preview = "https://media.giphy.com/media/a/200_s.gif", label = "Cat" } }, library = { state = "ready" } })
+    local m = added[#added]
+    local cap = false
+    if type(m) == "table" and m.init then
+        for _, e in ipairs(m.init.elements) do if e.text == "[Cat]" and e.link then cap = true end end
+    end
+    check(#added > before and cap, "gifs: /hsgif degrades to clickable captions on " .. MODE)
+end
+
 -- community mutes replace lines, which needs the t2 render path: below it the
 -- toggle is accepted but the feature is silently off and asks the server nothing
 do

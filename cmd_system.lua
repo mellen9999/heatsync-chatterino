@@ -13,6 +13,7 @@ local flair = require("flair")
 local namecolor = require("namecolor")
 local images = require("images")
 local mutes = require("mutes")
+local gifs = require("gifs")
 local u = require("cmdutil")
 
 local M = {}
@@ -72,6 +73,7 @@ function M.register(get_login)
         namecolor.clear()
         images.clear()
         mutes.clear()
+        gifs.clear()
         u.sysmsg(ctx, "search, sender, heat, flair, color, image and mute caches cleared")
     end)
 
@@ -187,6 +189,7 @@ function M.register(get_login)
         u.sysmsg(ctx, "history backfill: " .. (store.backfill_enabled() and "on" or "off") .. " (/hsbackfill on|off)")
         u.sysmsg(ctx, "mention highlights: " .. (store.mentions_enabled() and "on" or "off") ..
             " (/hsmentions on|off)" .. (caps.highlight and "" or " · unavailable on this build"))
+        u.sysmsg(ctx, "gifs: /hsgif [query] [page] · " .. tostring(gifs.stats()) .. " searches cached")
         local mk, mp = mutes.stats()
         u.sysmsg(ctx, "community mutes: " .. (store.mutes_enabled() and "on" or "off") .. " (/hsmutes on|off) · " ..
             tostring(mk) .. " channels cached, " .. tostring(mp) .. " pending" ..
@@ -203,7 +206,7 @@ function M.register(get_login)
     -- grouped, with a tier note so it's honest about what's unavailable here.
     c2.register_command("/hshelp", function(ctx)
         u.sysmsg(ctx, "heatsync commands · build " .. caps.name())
-        u.sysmsg(ctx, "emotes: :name tab-complete · /hsemotes menu · /hsfind <q> search · /hsinv <user> [page]")
+        u.sysmsg(ctx, "emotes: :name tab-complete · /hsemotes menu · /hsfind <q> search · /hsinv <user> [page] · /hsgif [query] [page] gifs")
         u.sysmsg(ctx, "archive: /hssearch <q> posts · /hschat <q> [@user] [#chan] chat-logs · /hslogs <user> [chan] · /hsmoments [<n>h] [plat] [pg] · /hsmoments on|off live spikes · /hshot [plat] [pg] · /hswhois <user> · /hscard <user>")
         u.sysmsg(ctx, "chat: /hsmulti kick:<slug>|yt:<handle>|off|auto on|off · /hslive · /hspin · /hsflame · /hsbadges · /hsheat · /hsflair · /hscolors · /hsbackfill · /hsmentions · /hsmutes · /hsimages · /hsblock <name> · /hsunblock <name> · /hsblocklist")
         u.sysmsg(ctx, "system: /hsstatus · /hsrefresh · /hsarchive on|off · /hsclear")
