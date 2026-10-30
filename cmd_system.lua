@@ -122,13 +122,13 @@ function M.register(get_login)
         local arg = ctx.words[2]
         if arg == "on" then
             store.set_live(true)
-            u.sysmsg(ctx, "live-status ON — 🔴/⚫ lines when a linked kick/youtube source goes live or offline")
+            u.sysmsg(ctx, "live-status ON — 🔴/⚫ when a linked kick/youtube source goes live or offline, 🎮/📝 when its (or an open twitch tab's) game or title changes")
         elseif arg == "off" then
             store.set_live(false)
             u.sysmsg(ctx, "live-status OFF")
         else
             u.sysmsg(ctx, "live-status is " .. (store.live_enabled() and "on" or "off") ..
-                " · /hslive on|off · shows 🔴/⚫ for your linked kick/youtube sources")
+                " · /hslive on|off · 🔴/⚫ for your linked kick/youtube sources, 🎮/📝 game + title switches for those and your open twitch tabs")
         end
     end)
 
@@ -168,6 +168,7 @@ function M.register(get_login)
             u.sysmsg(ctx, "rendering: unavailable on this build (needs nightly)")
         end
         u.sysmsg(ctx, "multichat: " .. multichat.summary())
+        u.sysmsg(ctx, "live status: " .. (store.live_enabled() and "on" or "off") .. " (/hslive on|off)")
         u.sysmsg(ctx, "moment spikes: " .. (store.spikes_enabled() and "on" or "off") .. " (/hsmoments on|off)")
         u.sysmsg(ctx, "pinned message: " .. (store.pin_enabled() and "on" or "off") .. " (/hspin on|off)")
         local hc, hp = heat.stats()

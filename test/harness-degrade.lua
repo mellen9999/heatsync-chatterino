@@ -213,5 +213,15 @@ do
     check(mention.matches("hey mellen", "mellen"), "mentions: pure matching still safe on " .. MODE)
 end
 
+-- twitch game/title lines ride the same live toggle; with no c2.Channel / render
+-- on this api there is no tab to put them in, and that must stay silent
+do
+    local live = require("live")
+    commands["/hslive"]({ words = { "/hslive", "on" }, channel = ctx.channel })
+    local ok, handled = pcall(live.handle, { type = "stream:update", platform = "twitch", channel = "x", game = "a", title = "b", prevGame = "c", prevTitle = "d" })
+    check(ok and handled == true, "live: twitch stream:update is a clean no-op without tabs on " .. MODE)
+    commands["/hslive"]({ words = { "/hslive", "off" }, channel = ctx.channel })
+end
+
 print(failures == 0 and "ALL PASS (" .. MODE .. ")" or (failures .. " FAILURES (" .. MODE .. ")"))
 host_os.exit(failures == 0 and 0 or 1)

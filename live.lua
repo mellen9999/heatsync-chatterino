@@ -4,9 +4,13 @@
 -- surface a go-live / went-offline system line in the twitch tab a kick/youtube
 -- source is merged into. OFF by default (opt-in — it's a new surfaced signal).
 --
--- twitch stream events are deliberately skipped: chatterino already shows twitch
--- live status natively, so echoing it would just be noise. the value here is
--- kick/youtube, which chatterino has no native status for.
+-- twitch go-live / offline events are deliberately skipped: chatterino already
+-- shows twitch live status natively, so echoing it would just be noise. what
+-- chatterino does NOT show natively is a twitch game or title change, so a twitch
+-- stream:update is surfaced as the same 🎮 / 📝 line in that channel's own open
+-- tab. it needs nothing extra: every open twitch tab is already joined to its
+-- anonymous twitch/<login> room (render.on_channel_found), which is where the
+-- server sends these. one toggle (/hslive) covers every stream-state line.
 local store = require("store")
 local multichat = require("multichat")
 local net = require("net")
@@ -50,6 +54,20 @@ local function emit(platform, channel, live, game, title)
     end
 end
 
+-- the tabs a (platform, channel) update belongs in: a merged source's linked
+-- tabs, or for twitch the channel's own tab (named by its login). only a tab that
+-- is really a twitch channel counts, so a same-named other split never gets it.
+local function tabs_for(platform, channel)
+    if platform ~= "twitch" then return multichat.tabs_for(platform, channel) end
+    if not string.match(channel, "^[a-z0-9_]+$") then return {} end
+    local ok, is_tw = pcall(function()
+        local ch = c2.Channel.by_name(channel)
+        if not (ch and ch:is_valid()) then return false end
+        return ch:is_twitch_channel() ~= false
+    end)
+    return (ok and is_tw) and { channel } or {}
+end
+
 -- last game/title shown per source, so a re-emit of the same update (the server
 -- reconciles) doesn't repeat the line. bounded; a reset costs one repeat.
 local last_update = {}
@@ -66,7 +84,7 @@ local function emit_update(platform, msg)
     local game_changed = game ~= nil and msg.game ~= msg.prevGame
     local title_changed = title ~= nil and msg.title ~= msg.prevTitle
     if not game_changed and not title_changed then return end
-    local tabs = multichat.tabs_for(platform, string.lower(channel))
+    local tabs = tabs_for(platform, string.lower(channel))
     if #tabs == 0 then return end
     local key = platform .. "/" .. string.lower(channel)
     local sig = tostring(game) .. "\1" .. tostring(title)
@@ -99,7 +117,12 @@ function M.handle(msg)
     if t ~= "stream:online" and t ~= "stream:offline" and t ~= "stream:update" then return false end
 
     local platform = norm_platform(tostring(msg.platform or ""))
-    if platform ~= "kick" and platform ~= "yt" then return true end -- twitch = native
+    if platform == "twitch" then
+        -- go-live / offline = native; only a game/title change adds anything
+        if t == "stream:update" then pcall(emit_update, platform, msg) end
+        return true
+    end
+    if platform ~= "kick" and platform ~= "yt" then return true end
     if t == "stream:update" then
         pcall(emit_update, platform, msg)
         return true

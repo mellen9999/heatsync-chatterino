@@ -2769,9 +2769,8 @@ do
     a0 = #chan.added
     upd({ isLive = true, game = "Same", title = "Same", prevGame = "Same", prevTitle = "Same" })
     check(#chan.added == a0, "update: nothing changed -> no line")
-    upd({ platform = "twitch", channel = "somechannel", game = "X", title = "Y", prevGame = "A", prevTitle = "B" })
     upd({ channel = "unlinkedkick", game = "X", title = "Y", prevGame = "A", prevTitle = "B" })
-    check(#chan.added == a0, "update: twitch skipped, unlinked source ignored")
+    check(#chan.added == a0, "update: unlinked source ignored")
     upd({ game = string.rep("g", 100000), title = string.rep("t", 100000), prevGame = "a", prevTitle = "b" })
     check(#chan.added == a0 + 1 and #chan.added[#chan.added] < 500, "update: hostile huge strings are clamped")
     local ok = pcall(upd, { game = 5, title = {}, prevGame = true })
@@ -3976,6 +3975,69 @@ do
     commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = mc })
     for i = #channels, 1, -1 do if channels[i] == mc then table.remove(channels, i) end end
     senders.own_login = own_before
+end
+
+-- ===== v1.13 twitch game/title switch lines (stream:update on an open twitch tab) =====
+do
+    local store = require("store")
+    store.set_live(true)
+    local function pin_frame(t)
+        for _ = 1, 200 do
+            if ws.connected then break end
+            advance(1000)
+            local sk = sockets[#sockets]
+            if not sk.closed then sk.opts.on_open() end
+        end
+        sockets[#sockets].opts.on_text(register_payload(t))
+    end
+    local tw = fake_channel("twswitch")
+    channels[#channels + 1] = tw
+    local function upd(t)
+        t.type = "stream:update"; t.platform = t.platform or "twitch"; t.channel = t.channel or "twswitch"
+        pin_frame(t)
+    end
+    local function last_text()
+        local m = tw.added[#tw.added]
+        if type(m) == "string" then return m end
+        return m and m.init and m.init.elements and m.init.elements[1] and m.init.elements[1].text or ""
+    end
+    local a0 = #tw.added
+    upd({ isLive = true, game = "Slots", title = "t1", prevGame = "Chatting", prevTitle = "t1" })
+    check(#tw.added == a0 + 1 and last_text():find("🎮 twswitch switched to Slots", 1, true) ~= nil and not last_text():find("· t1", 1, true), "twitch update: a game change shows the 🎮 line in the channel's own tab")
+    a0 = #tw.added
+    upd({ isLive = true, game = "Slots", title = "t1", prevGame = "Chatting", prevTitle = "t1" })
+    check(#tw.added == a0, "twitch update: an identical repeat is deduped")
+    upd({ isLive = true, game = "Slots", title = "new title", prevGame = "Slots", prevTitle = "t1" })
+    check(#tw.added == a0 + 1 and last_text():find("📝 twswitch · new title", 1, true) ~= nil, "twitch update: a title-only change shows the 📝 line")
+    a0 = #tw.added
+    upd({ isLive = true, game = "Poker", title = "new title", prevGame = "Slots", prevTitle = "new title" })
+    check(#tw.added == a0 + 1 and last_text():find("switched to Poker", 1, true) ~= nil, "twitch update: the next change shows again")
+    a0 = #tw.added
+    pin_frame({ type = "stream:online", platform = "twitch", channel = "twswitch", game = "Poker", title = "x" })
+    pin_frame({ type = "stream:offline", platform = "twitch", channel = "twswitch" })
+    check(#tw.added == a0, "twitch update: go-live / offline stay native (no line)")
+    upd({ channel = "notopentab", game = "A", title = "B", prevGame = "C", prevTitle = "D" })
+    check(#tw.added == a0, "twitch update: no open tab for the channel → ignored")
+    upd({ channel = "Bad Name!", game = "A", title = "B", prevGame = "C", prevTitle = "D" })
+    upd({ channel = "../../x", game = "A", title = "B", prevGame = "C", prevTitle = "D" })
+    check(#tw.added == a0, "twitch update: a hostile channel name is ignored")
+    upd({ game = string.rep("g", 100000), title = string.rep("t", 100000), prevGame = "a", prevTitle = "b" })
+    check(#tw.added == a0 + 1 and #last_text() < 500, "twitch update: huge strings are clamped")
+    local ok = pcall(upd, { game = 5, title = {}, prevGame = true })
+    ok = pcall(upd, { channel = 7 }) and ok
+    ok = pcall(upd, { game = {}, title = {}, prevGame = {}, prevTitle = {} }) and ok
+    check(ok, "twitch update: wrong-typed fields never throw")
+    tw.valid = false
+    a0 = #tw.added
+    upd({ game = "Gone", title = "x", prevGame = "a", prevTitle = "b" })
+    check(#tw.added == a0, "twitch update: a closed tab gets nothing")
+    tw.valid = true
+    store.set_live(false)
+    upd({ game = "Off", title = "x", prevGame = "a", prevTitle = "b" })
+    check(#tw.added == a0, "twitch update: /hslive off suppresses it")
+    store.set_live(true)
+    for i = #channels, 1, -1 do if channels[i] == tw then table.remove(channels, i) end end
+    store.set_live(false)
 end
 
 print(failures == 0 and "\nALL PASS" or ("\n" .. failures .. " FAILURES"))

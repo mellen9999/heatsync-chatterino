@@ -23,6 +23,7 @@ a single lua plugin (no fork, no patched binary) that brings heatsync into chatt
 - auto-multichat — **on** (opt-out), only where streamer publicly linked accounts
 - pinned message (`pin.txt`) — **on** (opt-out), view-only; the socket is anonymous so no pinning from the plugin
 - moment spikes (`spikes.txt`) — **off** (opt-in), `/hsmoments on|off`
+- live status (`live.txt`) — **off** (opt-in), `/hslive on|off`; 🔴/⚫ for kick/yt only (twitch go-live is native), 🎮/📝 game+title lines for kick/yt AND open twitch tabs — one toggle
 - badges — **off** (opt-in)
 - flame 🔥 — on
 - heat bars (`heat.txt`) — **on** (opt-out), `/hsheat on|off`; never a 🔥 on/next to a heat score
@@ -34,7 +35,7 @@ a single lua plugin (no fork, no patched binary) that brings heatsync into chatt
 
 ## modules
 
-`caps` feature-detect · `net` http/json/timers/datafiles · `inventory` your emotes · `seventv` catalog search + render cache · `senders` other chatters' sets · `recents` learned usage · `picker` clickable grids · `ws` socket lifecycle · `multichat` kick/yt injection · `pin` heatsync pinned message (view-only) · `lookup` shared batched ttl cache · `heat` / `flair` / `namecolor` batched cosmetic lookups (rendered by `render`, `multichat`) · `cmd_card` /hscard + right-click card · `spike` opt-in moment spikes · `modifiers` emote modifier tokens (tooltip only) · `mention` highlight flag+color for merged lines aimed at you (built in `multichat`) · `images` image-link detection + proxy url + webp size probe (rendered by `render`) · `render` hook→rebuild→replace · `store` persisted toggles · `commands` · `menu` right-click context menu · `init` wiring.
+`caps` feature-detect · `net` http/json/timers/datafiles · `inventory` your emotes · `seventv` catalog search + render cache · `senders` other chatters' sets · `recents` learned usage · `picker` clickable grids · `ws` socket lifecycle · `multichat` kick/yt injection · `live` opt-in stream-state lines (kick/yt live+game/title, twitch game/title) · `pin` heatsync pinned message (view-only) · `lookup` shared batched ttl cache · `heat` / `flair` / `namecolor` batched cosmetic lookups (rendered by `render`, `multichat`) · `cmd_card` /hscard + right-click card · `spike` opt-in moment spikes · `modifiers` emote modifier tokens (tooltip only) · `mention` highlight flag+color for merged lines aimed at you (built in `multichat`) · `images` image-link detection + proxy url + webp size probe (rendered by `render`) · `render` hook→rebuild→replace · `store` persisted toggles · `commands` · `menu` right-click context menu · `init` wiring.
 
 ## conventions
 
