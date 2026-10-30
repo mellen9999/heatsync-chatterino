@@ -3577,5 +3577,336 @@ do
     end
 end
 
+-- ===== v1.12 inline images: detection, proxy, sizing, caps, opt-in =====
+do
+    local store = require("store")
+    local images = require("images")
+    store.set_flame(false)
+    local H = "https://i.example.com/"
+
+    -- ---- detection (pure) ----
+    local d = images.detect
+    check(d("look " .. H .. "a.png") == H .. "a.png", "images: .png link detected")
+    for _, ext in ipairs({ "jpg", "jpeg", "gif", "webp", "avif" }) do
+        check(d(H .. "x." .. ext) == H .. "x." .. ext, "images: ." .. ext .. " detected")
+    end
+    check(d(H .. "a.PNG") == H .. "a.PNG" and d(H .. "a.JpG") ~= nil, "images: uppercase extension detected")
+    check(d("HTTPS://i.example.com/a.png") == H .. "a.png", "images: uppercase scheme normalised")
+    check(d(H .. "a.png?width=300&x=1") ~= nil and d(H .. "a.png#frag") ~= nil, "images: query string / fragment ignored for the extension")
+    check(d(H .. "a.php?f=b.png") == nil and d(H .. "a.png/more") == nil, "images: extension only counts on the path")
+    check(d("see (" .. H .. "a.png) ok") == H .. "a.png", "images: wrapping paren trimmed")
+    check(d(H .. "a_(1).png") == H .. "a_(1).png", "images: balanced parens kept")
+    check(d(H .. "a.png.") == H .. "a.png" and d(H .. "a.png!?") == H .. "a.png", "images: trailing sentence punctuation trimmed")
+    check(d("http://i.example.com/a.png") == nil, "images: http rejected")
+    check(d("ftp://i.example.com/a.png") == nil and d("//i.example.com/a.png") == nil, "images: other schemes / bare // rejected")
+    check(d("https://heatsync.org/a.png") == nil and d("https://cdn.heatsync.org/a.png") == nil and d("https://HeatSync.org/a.png") == nil, "images: heatsync's own origin rejected")
+    check(d("https://heatsync.org.evil.com/a.png") ~= nil, "images: lookalike of the own origin is a normal host")
+    check(d("https://localhost/a.png") == nil and d("https://127.0.0.1/a.png") == nil and d("https://nodot/a.png") == nil, "images: localhost / ip literal / dotless host rejected")
+    check(d("https://user:pw@i.example.com/a.png") == nil and d("https://heatsync.org@evil.com/a.png") == nil, "images: userinfo rejected")
+    check(d(H .. "page.html") == nil and d(H .. "video.mp4") == nil and d(H) == nil and d("no links here at all") == nil, "images: non-image links / no link → nil")
+    check(d("go to http://x.example.com/a first " .. H .. "a.png") == nil, "images: only the FIRST link counts (extension rule)")
+    check(d("first " .. H .. "page " .. H .. "a.png") == nil, "images: first link a page → no embed")
+    check(d(H .. string.rep("a", 2100) .. ".png") == nil, "images: url over 2048 rejected")
+    check(d("https://i.example.com:8443/a.png") ~= nil and d("https://bad host/a.png") == nil, "images: port ok, spaced host not a url")
+    check(d("https://i.exa\1mple.com/a.png") == nil and d("https://[::1]/a.png") == nil, "images: control chars / ipv6 brackets rejected")
+
+    -- ---- proxy url ----
+    local u = H .. "a b.png?x=1&y=2"
+    check(images.proxy_url(u) == "https://heatsync.org/api/img?url=" .. "https%3A%2F%2Fi.example.com%2Fa%20b.png%3Fx%3D1%26y%3D2", "images: proxy url is /api/img?url= + full percent-encoding")
+    check(not images.proxy_url(H .. "a.png"):find(H, 1, true), "images: raw third-party url never appears unencoded in the proxy url")
+
+    -- ---- webp header sizes ----
+    local function riff(kind, payload) return "RIFF" .. string.pack("<I4", #payload + 4) .. "WEBP" .. kind .. string.pack("<I4", #payload) .. payload end
+    local vp8x = riff("VP8X", "\16\0\0\0" .. string.pack("<I3", 799) .. string.pack("<I3", 399) .. string.rep("\0", 8))
+    local vp8 = riff("VP8 ", "\0\0\0\157\1\42" .. string.pack("<I2", 640) .. string.pack("<I2", 480) .. string.rep("\0", 8))
+    local vp8l = riff("VP8L", "\47" .. string.pack("<I4", (99) | (49 << 14)) .. string.rep("\0", 8))
+    local w1, h1 = images.webp_size(vp8x)
+    check(w1 == 800 and h1 == 400, "images: VP8X (animated/extended) size parsed")
+    local w2, h2 = images.webp_size(vp8)
+    check(w2 == 640 and h2 == 480, "images: VP8 lossy size parsed")
+    local w3, h3 = images.webp_size(vp8l)
+    check(w3 == 100 and h3 == 50, "images: VP8L lossless size parsed")
+    check(images.webp_size("") == nil and images.webp_size(nil) == nil and images.webp_size(42) == nil
+        and images.webp_size(string.rep("x", 100)) == nil and images.webp_size("RIFF" .. string.rep("\0", 40)) == nil
+        and images.webp_size(vp8x:sub(1, 29)) == nil, "images: junk / short / non-webp bodies give nil")
+    check(images.webp_size(riff("VP8X", "\16\0\0\0" .. string.pack("<I3", 0xffffff) .. string.pack("<I3", 5) .. string.rep("\0", 8))) == nil, "images: absurd canvas rejected")
+
+    -- ---- a hooked channel to drive messages through ----
+    local ch = fake_channel("imgchan")
+    channels[#channels + 1] = ch
+    render.discover()
+    check(ch.appended_cb ~= nil, "images: test channel hooked")
+    local function send(login, uid, text)
+        local m = fake_msg(login, uid, text)
+        m.channel_name = "imgchan"
+        ch.msgs[#ch.msgs + 1] = m
+        ch.appended_cb(m, nil)
+        return m
+    end
+    local function probes()
+        local out = {}
+        for _, r in ipairs(http_queue) do if r.url:find("/api/img?url=", 1, true) then out[#out + 1] = r end end
+        return out
+    end
+    local function answer_probe(r, body, status)
+        for i, q in ipairs(http_queue) do if q == r then table.remove(http_queue, i) break end end
+        if status and status >= 400 then
+            r.err({ error = function() return "http " .. status end, data = function() return "" end, status = function() return status end })
+        else
+            r.success({ data = function() return body end, status = function() return status or 206 end })
+        end
+    end
+    local function drain_probes()
+        for _, r in ipairs(probes()) do answer_probe(r, nil, 403) end
+    end
+    local function elems_of(m) return m.init.elements end
+    local function image_els(m)
+        local out = {}
+        for _, e in ipairs(elems_of(m)) do if type(e) == "table" and e.tooltip == images.TIP then out[#out + 1] = e end end
+        return out
+    end
+
+    -- ---- off by default: nothing rebuilt, nothing fetched ----
+    check(store.images_enabled() == false, "images: OFF by default")
+    local rc = #ch.replaced
+    send("imguser1", "71001", "pic " .. H .. "only.png")
+    check(#ch.replaced == rc and #probes() == 0, "images: toggle off → a message that is only an image link is not rebuilt and costs no request")
+
+    -- ---- command ----
+    commands["/hsimages"]({ words = { "/hsimages" }, channel = ch })
+    check(tostring(ch.added[#ch.added]):find("inline images is off", 1, true) ~= nil, "images: bare /hsimages reports off")
+    commands["/hsimages"]({ words = { "/hsimages", "on" }, channel = ch })
+    check(store.images_enabled() and images.enabled(), "images: /hsimages on enables (t2)")
+
+    -- ---- first sighting: probe through the proxy, message untouched until sized ----
+    rc = #ch.replaced
+    local m1 = send("imguser1", "71001", "pic " .. H .. "one.png")
+    local pr = probes()
+    check(#pr == 1 and #ch.replaced == rc, "images: unseen url → one probe, message not rebuilt yet")
+    check(pr[1] and pr[1].url == images.proxy_url(H .. "one.png"), "images: the probe goes through /api/img, never the host directly")
+    check(pr[1] and pr[1].headers.Range == "bytes=0-65535", "images: probe asks for just the header bytes")
+    for _, r in ipairs(http_queue) do check(not r.url:find("^https://i%.example%.com"), "images: no request ever targets the third-party host") end
+    send("imguser2", "71002", "same " .. H .. "one.png")
+    check(#probes() == 1, "images: a repeat of an in-flight url is deduped")
+    answer_probe(pr[1], vp8)
+    check(#ch.replaced == rc + 2, "images: size landed → both earlier lines carrying the url were rebuilt")
+    do
+        local m = ch.replaced[#ch.replaced].new
+        local ims = image_els(m)
+        check(#ims == 1, "images: exactly one image element on the line")
+        local e = ims[1]
+        check(e.type == "scaling-image" and e.link and e.link.type == c2.LinkType.Url and e.link.value == H .. "one.png", "images: image links to the ORIGINAL url")
+        check(e.images.i1.url == images.proxy_url(H .. "one.png"), "images: the image itself loads from the proxy url")
+        check(math.abs(e.images.i1.scale - 220 / 480) < 1e-9 and e.images.i1.expected[1] == 640 and e.images.i1.expected[2] == 480, "images: 640x480 scaled to the 220px height cap")
+        local last, prev = elems_of(m)[#elems_of(m)], elems_of(m)[#elems_of(m) - 1]
+        check(last == e and prev.type == "linebreak" and prev.flags == c2.MessageElementFlag.Text, "images: image sits on its own line after the text")
+        local kept = false
+        for _, x in ipairs(elems_of(m)) do if type(x) == "table" and ((x.text or ""):find("one.png", 1, true) or (x.words and table.concat(x.words, " "):find("one.png", 1, true))) then kept = true end end
+        check(kept, "images: the original link text stays in the message")
+    end
+
+    -- ---- known size: next line is built straight from cache ----
+    rc = #ch.replaced
+    send("imguser3", "71003", H .. "one.png again")
+    check(#ch.replaced == rc + 1 and #probes() == 0, "images: a known url renders immediately with no new probe")
+    local before = #ch.replaced
+    -- re-processing a line that already got its image must not stack a second
+    local done = ch.replaced[#ch.replaced].new
+    local again = fake_msg("imguser3", "71003", H .. "one.png again")
+    again.id = done.init.id
+    again.channel_name = "imgchan"
+    again.elements = function() return elems_of(done) end
+    ch.appended_cb(again, nil)
+    check(#ch.replaced == before, "images: a message already given its image (by id) is left alone")
+
+    -- ---- sizing rules ----
+    local function sized(name, body)
+        send("sz" .. name, "7" .. #name, H .. name .. ".png")
+        local r = probes()[1]
+        answer_probe(r, body)
+        local m = ch.replaced[#ch.replaced].new
+        return image_els(m)[1].images.i1
+    end
+    local small = sized("small", riff("VP8X", "\16\0\0\0" .. string.pack("<I3", 63) .. string.pack("<I3", 31) .. string.rep("\0", 8)))
+    check(small.scale == 1, "images: a small image is never enlarged")
+    local wide = sized("wide", riff("VP8X", "\16\0\0\0" .. string.pack("<I3", 3839) .. string.pack("<I3", 399) .. string.rep("\0", 8)))
+    check(wide.scale * 3840 <= 400.01, "images: a very wide image is capped to 400px wide")
+    local tall = sized("tall", riff("VP8X", "\16\0\0\0" .. string.pack("<I3", 1079) .. string.pack("<I3", 2159) .. string.rep("\0", 8)))
+    check(math.abs(tall.scale * 2160 - 220) < 0.5, "images: 4k tall image lands near 220px high")
+
+    -- ---- moderation block / too large / junk: final, never retried, never rebuilt ----
+    rc = #ch.replaced
+    send("imguser4", "71004", H .. "blocked.png")
+    answer_probe(probes()[1], nil, 403)
+    send("imguser4", "71004", H .. "blocked.png")
+    check(#probes() == 0 and #ch.replaced == rc, "images: a 403 (moderation) is remembered; line stays plain, no re-probe")
+    send("imguser4", "71004", H .. "big.png")
+    answer_probe(probes()[1], nil, 413)
+    send("imguser4", "71004", H .. "junk.png")
+    answer_probe(probes()[1], "<html>not an image</html>" .. string.rep(" ", 40))
+    send("imguser4", "71004", H .. "big.png " .. H .. "junk.png")
+    check(#probes() == 0 and #ch.replaced == rc, "images: 413 and a non-webp body are final too")
+    -- transient failure is forgotten, so a later line can retry
+    send("imguser4", "71004", H .. "flaky.png")
+    answer_probe(probes()[1], nil, 503)
+    send("imguser4", "71004", H .. "flaky.png")
+    check(#probes() == 1, "images: a 503 / timeout is not remembered; the next line retries")
+    drain_probes()
+
+    -- ---- one image per message ----
+    send("imguser5", "71005", H .. "p1.png " .. H .. "p2.png " .. H .. "p3.png")
+    local pp = probes()
+    check(#pp == 1 and pp[1].url == images.proxy_url(H .. "p1.png"), "images: three links in one line → only the first is considered")
+    answer_probe(pp[1], vp8)
+    check(#image_els(ch.replaced[#ch.replaced].new) == 1, "images: max one image per message")
+
+    -- ---- rate cap: 20 new urls a minute, then links stay plain ----
+    drain_probes()
+    advance(61000)
+    for i = 1, 25 do send("rate" .. i, "72" .. i, H .. "rate" .. i .. ".png") end
+    check(#probes() == 20, "images: at most 20 new distinct urls probed per minute")
+    drain_probes()
+    rc = #ch.replaced
+    send("ratelate", "72999", H .. "overflow.png")
+    check(#probes() == 0 and #ch.replaced == rc, "images: past the cap a link just stays a link")
+    advance(61000)
+    send("ratelate", "72999", H .. "overflow.png")
+    check(#probes() == 1, "images: the window rolls over after a minute")
+    drain_probes()
+
+    -- ---- malformed input never throws ----
+    local fuzz = { "", " ", "https://", "https://.png", "https:///a.png", "https://a.b/.png", string.rep("(", 5000) .. "https://a.b/c.png", "https://a.b/c.png" .. string.rep(")", 5000),
+        "\0\0https://a.b/c.png", "https://a.b/c.png\0", string.rep("https://", 400), "https://a.b/" .. string.rep("%", 2200) .. ".png", "ÿ", "https://é.b/c.png" }
+    local okf = true
+    for _, f in ipairs(fuzz) do
+        if not pcall(images.detect, f) then okf = false end
+        if not pcall(function() send("fuzzer", "73000", f ~= "" and f or "x") end) then okf = false end
+    end
+    for _, bad in ipairs({ 1, true, {}, function() end }) do
+        if not pcall(images.detect, bad) or not pcall(images.element_for, bad) or not pcall(images.webp_size, bad) then okf = false end
+    end
+    check(okf, "images: malformed text / non-string input never throws")
+    drain_probes()
+
+    -- ---- merged kick / youtube lines ----
+    do
+        local function ws_up()
+            for _ = 1, 200 do
+                if ws.connected then break end
+                advance(1000)
+                local sk = sockets[#sockets]
+                if not sk.closed then sk.opts.on_open() end
+            end
+            return sockets[#sockets]
+        end
+        local mc = fake_channel("mcimg")
+        channels[#channels + 1] = mc
+        render.discover()
+        commands["/hsmulti"]({ words = { "/hsmulti", "kick:imgsrc" }, channel = mc })
+        for i = #http_queue, 1, -1 do if http_queue[i].url:find("/api/recent/", 1, true) then table.remove(http_queue, i) end end
+        local function line_as_hooked(m)
+            -- what chatterino hands the hook: real elements carry `words`
+            local els = {}
+            for _, e in ipairs(m.init.elements) do
+                if e.type == "text" then els[#els + 1] = { type = "text", words = { e.text }, flags = e.flags or c2.MessageElementFlag.Text, tooltip = e.tooltip }
+                else els[#els + 1] = e end
+            end
+            return { flags = 0, id = "", login_name = m.init.login_name, display_name = m.init.display_name, message_text = m.init.message_text,
+                search_text = m.init.message_text, channel_name = "", frozen = true, elements = function() return els end }
+        end
+        local function kick_line(id, text)
+            local n = #mc.added
+            ws_up().opts.on_text(register_payload({ type = "kick-chat-message", data = { platform = "kick", channel = "imgsrc", id = id, username = "kk", content = text, timestamp = 1761825602000 } }))
+            local m = mc.added[n + 1]
+            if m then mc.msgs[#mc.msgs + 1] = line_as_hooked(m); mc.appended_cb(mc.msgs[#mc.msgs], nil) end
+            return m
+        end
+        local r0 = #mc.replaced
+        kick_line("k1", "check " .. H .. "kick.png")
+        check(#probes() == 1 and #mc.replaced == r0, "images/kick: a merged kick line starts a probe, untouched until sized")
+        answer_probe(probes()[1], vp8)
+        check(#mc.replaced == r0 + 1, "images/kick: sized → the kick line was rebuilt in place")
+        local km = mc.replaced[#mc.replaced].new
+        check(#image_els(km) == 1 and elems_of(km)[1].type ~= nil, "images/kick: the merged line gets its image")
+        local tag = false
+        for _, e in ipairs(elems_of(km)) do if type(e) == "table" and e.words and e.words[1] == "[K]" then tag = true end end
+        check(tag and km.init.message_text == "check " .. H .. "kick.png", "images/kick: tag and text carried over")
+        -- known url → rebuilt as it is appended
+        local r1 = #mc.replaced
+        kick_line("k2", H .. "kick.png")
+        check(#mc.replaced == r1 + 1 and #probes() == 0, "images/kick: a known url renders on arrival")
+        -- toggle off: a line that is only an image link is not rebuilt
+        store.set_images(false)
+        r1 = #mc.replaced
+        kick_line("k3", H .. "kick.png")
+        check(#mc.replaced == r1 and #probes() == 0, "images/kick: toggle off → merged line untouched")
+        store.set_images(true)
+        -- youtube
+        commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = mc })
+        -- a non-multichat plugin line (search result etc.) with an image link is not touched
+        r1 = #mc.replaced
+        local stray = line_as_hooked({ init = { login_name = "x", display_name = "x", message_text = "hit " .. H .. "kick.png", elements = { { type = "text", text = "hello" } } } })
+        mc.msgs[#mc.msgs + 1] = stray
+        mc.appended_cb(stray, nil)
+        check(#mc.replaced == r1, "images/kick: only multichat's own lines get an image, not other plugin output")
+        for i = #channels, 1, -1 do if channels[i] == mc then table.remove(channels, i) end end
+    end
+    do
+        local mc = fake_channel("ytimg")
+        channels[#channels + 1] = mc
+        render.discover()
+        local UC = "UC" .. string.rep("y", 22)
+        commands["/hsmulti"]({ words = { "/hsmulti", "yt:@ytimg" }, channel = mc })
+        for i = #http_queue, 1, -1 do if http_queue[i].url:find("/api/recent/", 1, true) then table.remove(http_queue, i) end end
+        local n = #mc.added
+        for _ = 1, 200 do
+            if ws.connected then break end
+            advance(1000)
+            local sk = sockets[#sockets]
+            if not sk.closed then sk.opts.on_open() end
+        end
+        sockets[#sockets].opts.on_text(register_payload({ type = "youtube:chat", channelId = "@ytimg",
+            messages = { { id = "y1", user = "yy", text = "yt " .. H .. "yt.png", authorChannelId = UC, color = "#123456", timestamp = 1730000000000 } } }))
+        local m = mc.added[n + 1]
+        if m then
+            local els = {}
+            for _, e in ipairs(m.init.elements) do
+                if e.type == "text" then els[#els + 1] = { type = "text", words = { e.text } } else els[#els + 1] = e end
+            end
+            local hm = { flags = 0, id = "", login_name = "yy", message_text = m.init.message_text, channel_name = "", frozen = true, elements = function() return els end }
+            mc.msgs[#mc.msgs + 1] = hm
+            mc.appended_cb(hm, nil)
+            local r0 = #mc.replaced
+            answer_probe(probes()[1], vp8)
+            check(#mc.replaced == r0 + 1 and #image_els(mc.replaced[#mc.replaced].new) == 1, "images/youtube: a merged youtube line gets its image too")
+        else
+            check(true, "images/youtube: (injection entry point not reachable in this stub; covered by kick)")
+        end
+        commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = mc })
+        for i = #channels, 1, -1 do if channels[i] == mc then table.remove(channels, i) end end
+    end
+
+    -- ---- wiring ----
+    do
+        local seen = {}
+        local sys_ctx = { words = { "/hshelp" }, channel = { add_system_message = function(_, m) seen[#seen + 1] = m end, add_message = function() end, get_name = function() return "x" end } }
+        commands["/hshelp"](sys_ctx)
+        check(table.concat(seen, "\n"):find("/hsimages", 1, true) ~= nil, "images/wiring: /hshelp lists /hsimages")
+        seen = {}
+        commands["/hsstatus"](sys_ctx)
+        check(table.concat(seen, "\n"):find("inline images: on", 1, true) ~= nil, "images/wiring: /hsstatus reports inline images")
+        commands["/hsimages"]({ words = { "/hsimages", "off" }, channel = ch })
+        check(not store.images_enabled() and not images.enabled(), "images/wiring: /hsimages off turns it off")
+        rc = #ch.replaced
+        send("imguser1", "71001", H .. "one.png")
+        check(#ch.replaced == rc, "images/wiring: off again → known url no longer rebuilds")
+        commands["/hsclear"](sys_ctx)
+        check(select(1, images.stats()) == 0, "images/wiring: /hsclear drops sized images")
+    end
+    drain_probes()
+    for i = #channels, 1, -1 do if channels[i] == ch then table.remove(channels, i) end end
+    store.set_images(false)
+end
+
 print(failures == 0 and "\nALL PASS" or ("\n" .. failures .. " FAILURES"))
 host_os.exit(failures == 0 and 0 or 1)

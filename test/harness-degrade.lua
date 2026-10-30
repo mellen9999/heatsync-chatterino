@@ -189,5 +189,18 @@ commands["/hsemotes"]({ words = { "/hsemotes" }, channel = ctx.channel })
 commands["/hsblocklist"]({ words = { "/hsblocklist" }, channel = ctx.channel })
 check(#added > hb, "network + picker commands survive the stripped API on " .. MODE)
 
+-- inline images need the images capability: without it the toggle still works
+-- but the feature is silently off (nothing detected into a fetch, no request)
+do
+    local images = require("images")
+    local qn = #http_queue
+    commands["/hsimages"]({ words = { "/hsimages", "on" }, channel = ctx.channel })
+    commands["/hsimages"]({ words = { "/hsimages" }, channel = ctx.channel })
+    check(not images.enabled(), "images: feature silently off without the images cap on " .. MODE)
+    check(images.element_for("https://i.example.com/a.png") == nil and #http_queue == qn, "images: no element, no request on " .. MODE)
+    check(images.detect("https://i.example.com/a.png") ~= nil, "images: pure detection still safe on " .. MODE)
+    commands["/hsimages"]({ words = { "/hsimages", "off" }, channel = ctx.channel })
+end
+
 print(failures == 0 and "ALL PASS (" .. MODE .. ")" or (failures .. " FAILURES (" .. MODE .. ")"))
 host_os.exit(failures == 0 and 0 or 1)

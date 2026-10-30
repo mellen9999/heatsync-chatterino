@@ -189,4 +189,17 @@ M.flair_enabled, M.set_flair = flag("flair-badges.txt")
 M.colors_enabled, M.set_colors = flag("namecolors.txt")
 M.backfill_enabled, M.set_backfill = flag("backfill.txt")
 
+-- ----- opt-in flags (off by default) -----
+-- the mirror of flag(): only an explicit "1" on disk turns one on. inline
+-- images are opt-in because every new image url costs heatsync a moderation
+-- scan, and they're other people's images landing in your chat.
+local function optin(file)
+    local on = file_is(file, "1")
+    return function() return on end, function(v)
+        on = v and true or false
+        net.write_data(file, on and "1" or "0")
+    end
+end
+M.images_enabled, M.set_images = optin("images.txt")
+
 return M

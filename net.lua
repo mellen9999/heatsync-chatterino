@@ -322,6 +322,40 @@ function M.post_json(url, body, timeout_ms, cb)
     request_json(c2.HTTPMethod.Post, url, timeout_ms, payload, cb)
 end
 
+-- One-shot GET returning the RAW body (no json), with optional request headers.
+-- cb(body, nil, status) on success, cb(nil, err, status) on any failure; fires
+-- exactly once, never throws, and a throwing cb is logged instead of escaping
+-- into chatterino. images.lua uses it to read a hosted image's header bytes.
+function M.get_raw(url, headers, timeout_ms, cb)
+    local fired = false
+    local function done(body, err, status)
+        if fired then return end
+        fired = true
+        local ok, e = pcall(cb, body, err, status)
+        if not ok then M.log_warn("get_raw callback failed: " .. tostring(e)) end
+    end
+    local ok, err = pcall(function()
+        local req = c2.HTTPRequest.create(c2.HTTPMethod.Get, url)
+        req:set_timeout(timeout_ms or 10000)
+        for k, v in pairs(headers or {}) do req:set_header(k, v) end
+        req:on_error(function(res)
+            local status = nil
+            pcall(function() status = res:status() end)
+            local e = "http error"
+            pcall(function() e = tostring(res:error()) end)
+            done(nil, e, status)
+        end)
+        req:on_success(function(res)
+            local status, body = nil, nil
+            pcall(function() status = res:status() end)
+            pcall(function() body = res:data() end)
+            if type(body) == "string" then done(body, nil, status) else done(nil, "no body", status) end
+        end)
+        req:execute()
+    end)
+    if not ok then done(nil, tostring(err)) end
+end
+
 -- Self-rearming timer on c2.later (one-shot by design). A task error is
 -- logged and the loop survives. Caller must gate on caps.later. Returns a
 -- cancel function.

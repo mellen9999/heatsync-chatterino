@@ -18,6 +18,7 @@ local badges = require("badges")
 local heat = require("heat")
 local flair = require("flair")
 local recents = require("recents")
+local images = require("images")
 -- NOTE: render no longer requires `seventv` — it renders only the sender's
 -- heatsync inventory; native chatterino handles 7tv/bttv/ffz. see has_hits.
 
@@ -316,7 +317,23 @@ local function is_marker_el(el)
     return w[1] == FLAME or heat.GLYPHS[w[1]] == true
 end
 
-local function build_replacement(msg, sender_map, want_flame, t, heat_info, want_flair)
+-- the inline image goes on its own line under the text (a linebreak needs a
+-- real flag or the layout skips it)
+local function append_image(elems, img_el)
+    table.insert(elems, { type = "linebreak", flags = c2.MessageElementFlag.Text })
+    table.insert(elems, img_el)
+end
+
+-- did a prior pass already give this message its image?
+local function read_tooltip(el) return el.tooltip end
+local function is_image_el(el)
+    local ok, tip = pcall(read_tooltip, el)
+    return ok and tip == images.TIP
+end
+
+local rebuilt
+
+local function build_replacement(msg, sender_map, want_flame, t, heat_info, want_flair, img_el)
     local elems = {}
     local markers_done = false
     local budget = { n = 0 } -- emote/thread elements injected across THIS message
@@ -343,6 +360,7 @@ local function build_replacement(msg, sender_map, want_flame, t, heat_info, want
             -- a non-text element ends any modifier adjacency (and returns a held prefix token)
             budget.last = nil
             release_pending(elems, budget)
+            if markers_done and ty == "scaling-image" and is_image_el(el) then budget.has_img = true end
             -- pass the object through; chatterino clones it (twitch emotes,
             -- badges, timestamps, mentions, reply curves stay verbatim)
             table.insert(elems, el)
@@ -356,6 +374,12 @@ local function build_replacement(msg, sender_map, want_flame, t, heat_info, want
         insert_markers(pre, msg, want_flame, heat_info, want_flair)
         for i = #pre, 1, -1 do table.insert(elems, 1, pre[i]) end
     end
+    if img_el and not budget.has_img then append_image(elems, img_el) end
+    return rebuilt(msg, elems)
+end
+
+-- a copy of `msg`'s fields around a new element list
+function rebuilt(msg, elems)
     local highlight = msg.highlight_color
     if highlight == "" then highlight = nil end
     return net.new_message({
@@ -391,6 +415,47 @@ end
 
 -- the per-message body, factored out so `process` can pcall it by reference
 -- instead of allocating a fresh closure on every appended message (hot path).
+-- the image to add under this message, or nil (off, no image link, already has
+-- one, or its size isn't known yet — an unseen url starts its probe here)
+local function image_for(msg, text)
+    if not images.enabled() then return nil end
+    local url = images.detect(text)
+    if not url or images.marked(msg.id) then return nil end
+    return images.element_for(url)
+end
+
+-- is this one of multichat's injected lines? its tag is the first text element
+-- after any timestamp. only asked of a line that carries an image link.
+local function read_words_of(el) return el.words end
+local function is_multichat_line(msg)
+    for _, el in ipairs(msg:elements()) do
+        local ok, ty = pcall(read_type, el)
+        if ok and ty == "text" then
+            local okw, w = pcall(read_words_of, el)
+            return okw and type(w) == "table" and (w[1] == "[K]" or w[1] == "[Y]")
+        end
+    end
+    return false
+end
+
+-- kick/youtube lines multichat injected carry no heatsync lookups of their own
+-- to rebuild for; the only thing to add is the inline image, with every existing
+-- element passed through untouched.
+local function do_line(ch, msg, hint, text)
+    if (msg.flags & c2.MessageFlag.System) ~= 0 then return end
+    local img_el = image_for(msg, text)
+    if not img_el or not is_multichat_line(msg) then return end
+    local elems = {}
+    for _, el in ipairs(msg:elements()) do
+        if is_image_el(el) then return end
+        table.insert(elems, el)
+    end
+    append_image(elems, img_el)
+    local repl = rebuilt(msg, elems)
+    if hint then ch:replace_message(msg, repl, hint) else ch:replace_message(msg, repl) end
+    M.replaced_count = M.replaced_count + 1
+end
+
 local function do_process(ch, msg, hint)
     local login = msg.login_name
     if type(login) ~= "string" or login == "" then return end
@@ -400,7 +465,11 @@ local function do_process(ch, msg, hint)
     -- rebuild them and, worse, a kick/yt username colliding with a cached
     -- twitch HS login would false-flag them. multichat does its own emote
     -- rendering, so there's nothing to gain here anyway.
-    if type(msg.channel_name) ~= "string" or msg.channel_name == "" then return end
+    if type(msg.channel_name) ~= "string" or msg.channel_name == "" then
+        local line_text = msg.message_text
+        if type(line_text) == "string" then return do_line(ch, msg, hint, line_text) end
+        return
+    end
     if (msg.flags & c2.MessageFlag.System) ~= 0 then return end
     local text = msg.message_text
     if type(text) ~= "string" or text == "" then return end
@@ -426,19 +495,21 @@ local function do_process(ch, msg, hint)
     local t = msg_time(msg)
     local heat_info = heat.info(login)
     local want_flair = flair.has(msg.user_id, login)
+    local img_el = image_for(msg, text)
     -- O(1) checks first; only pay the O(words) has_hits scan when neither the
     -- flame, a badge, a heat bar nor a flair already forces the rebuild (Lua
     -- `or` short-circuits).
-    if not (want_flame or heat_info or want_flair or badges.has(msg.user_id)
+    if not (want_flame or heat_info or want_flair or img_el or badges.has(msg.user_id)
         or has_hits(text, sender_map, t)) then return end
 
-    local repl = build_replacement(msg, sender_map, want_flame, t, heat_info, want_flair)
+    local repl = build_replacement(msg, sender_map, want_flame, t, heat_info, want_flair, img_el)
     if hint then
         ch:replace_message(msg, repl, hint)
     else
         ch:replace_message(msg, repl)
     end
     M.replaced_count = M.replaced_count + 1
+    if img_el then images.mark(msg.id) end
 end
 
 -- shared by the live hook and the back-pass. hint is the 1-based index when
@@ -583,6 +654,20 @@ local function run_backpass(login)
     end
 end
 
+-- an image's size just landed: rebuild the recent lines carrying that url (any
+-- sender, twitch or merged kick/youtube) in every hooked channel
+function M.backpass_url(url)
+    if not M.started then return end
+    for _, h in pairs(hooked) do
+        pcall(function()
+            if not h.ch:is_valid() then return end
+            for _, msg in ipairs(h.ch:message_snapshot(BACKPASS_DEPTH)) do
+                if images.detect(msg.message_text) == url then process(h.ch, msg, nil) end
+            end
+        end)
+    end
+end
+
 -- coalesce backpasses: senders.on_loaded fires once per resolved sender, and a
 -- senderKeys invalidate (up to 50 targets) or a batch flush (up to 15) can land
 -- several in one tick — without this each would run the O(channels × 50-msg
@@ -629,6 +714,7 @@ function M.start()
     senders.on_loaded = function(login) M.backpass(login) end
     heat.set_on_loaded(function(login) M.backpass(login) end)
     flair.set_on_loaded(function(login) M.backpass(login) end)
+    images.on_loaded = function(url) M.backpass_url(url) end
     inventory.on_change = function()
         if inventory.login then M.backpass(inventory.login) end
     end
