@@ -258,17 +258,22 @@ function M.new_message(init)
     return msg
 end
 
--- One-shot GET expecting JSON. cb(data, nil, status) on success, cb(nil, err,
+-- One-shot request expecting JSON. cb(data, nil, status) on success, cb(nil, err,
 -- status, body) on any failure — status/body let a caller branch on 429/503
 -- without a second request shape; both are best-effort (pcall'd: an older
 -- build's HTTPResponse may not expose status()) and simply nil when
 -- unavailable, so every existing 2-arg callback keeps working untouched.
--- Never throws; the callback always fires exactly once.
-function M.get_json(url, timeout_ms, cb)
+-- Never throws; the callback always fires exactly once. `payload` (a string)
+-- makes it a JSON POST body; nil is a plain GET.
+local function request_json(method, url, timeout_ms, payload, cb)
     local ok, err = pcall(function()
-        local req = c2.HTTPRequest.create(c2.HTTPMethod.Get, url)
+        local req = c2.HTTPRequest.create(method, url)
         req:set_timeout(timeout_ms or 10000)
         req:set_header("Accept", "application/json")
+        if payload then
+            req:set_header("Content-Type", "application/json")
+            req:set_payload(payload)
+        end
         -- the callback runs LATER (async), outside the setup pcall below, so it
         -- must be guarded here or a bug in any handler — indexing a wrong-shaped
         -- field, a bad element table — escapes into chatterino's native dispatch.
@@ -303,6 +308,18 @@ function M.get_json(url, timeout_ms, cb)
     if not ok then
         cb(nil, tostring(err))
     end
+end
+
+function M.get_json(url, timeout_ms, cb)
+    request_json(c2.HTTPMethod.Get, url, timeout_ms, nil, cb)
+end
+
+-- JSON POST (heat batch, user card). `body` is a table; a body that won't
+-- serialize fails through cb like any other error.
+function M.post_json(url, body, timeout_ms, cb)
+    local payload = M.json_stringify(body)
+    if not payload then return cb(nil, "unserializable body") end
+    request_json(c2.HTTPMethod.Post, url, timeout_ms, payload, cb)
 end
 
 -- Self-rearming timer on c2.later (one-shot by design). A task error is
