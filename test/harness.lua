@@ -2855,7 +2855,7 @@ do
     store.set_spikes(false)
 end
 
--- ===== v1.11 parity: heat bars, sub flair =====
+-- ===== v1.11 parity: heat bars, sub flair, name colors =====
 do
     local store = require("store")
     store.set_flame(false)
@@ -3173,6 +3173,65 @@ do
     check(not store.flair_enabled() and #chan.replaced == rc, "flair: /hsflair off → no badge, no rebuild")
     commands["/hsflair"]({ words = { "/hsflair", "on" }, channel = chan })
     check(store.flair_enabled(), "flair: /hsflair on restores it")
+
+    -- ---------------- name colors (youtube lines; never twitch) ----------------
+    commands["/hsmulti"]({ words = { "/hsmulti", "yt:@ncstream" }, channel = chan })
+    local UC1 = "UC" .. string.rep("a", 22)
+    local UC2 = "UC" .. string.rep("b", 22)
+    local COLORS = {}
+    local PAINTS = {}
+    local function paints_answer(r)
+        local colors, paints = {}, {}
+        for _, id in ipairs(ids_in(r.url)) do colors[id] = COLORS[id]; paints[id] = PAINTS[id] end
+        return { paints = paints, plus = {}, colors = colors }
+    end
+    COLORS["yt_" .. UC1] = "#ff8700"
+    COLORS["yt_" .. UC2] = "#00ff00"; PAINTS["yt_" .. UC2] = { v = 1 }
+    local function yt_line(id, author, text, tag)
+        local s = wsock()
+        local ba = #chan.added
+        s.opts.on_text(register_payload({ type = "youtube:chat", channelId = tag or "@ncstream",
+            messages = { { id = id, user = "Viewer", text = text, authorChannelId = author, color = "#123456", timestamp = 1730000000000 } } }))
+        local m = chan.added[#chan.added]
+        if #chan.added ~= ba + 1 then return nil end
+        for _, e in ipairs(m.init.elements) do if type(e) == "table" and e.flags == c2.MessageElementFlag.Username then return e.color end end
+    end
+    check(yt_line("nc1", UC1, "first") == "#123456", "namecolor: first line from an unseen chatter keeps the default color")
+    yt_line("nc2", UC2, "painted first")
+    advance(4000)
+    local preq
+    for _, r in ipairs(http_queue) do if r.url:find("/api/paints", 1, true) then preq = r end end
+    check(preq ~= nil and preq.method == "GET" and preq.url:find("yt_" .. UC1, 1, true) ~= nil, "namecolor: batched GET /api/paints?ids=yt_<UC id>")
+    pump("/api/paints", paints_answer)
+    check(yt_line("nc3", UC1, "second") == "#ff8700", "namecolor: later lines take the chatter's picked color")
+    check(yt_line("nc4", UC2, "painted") == "#123456", "namecolor: a painted chatter is left alone (paint wins, no fake stand-in)")
+    local only_yt = true
+    for _, r in ipairs(http_queue) do
+        if r.url:find("/api/paints", 1, true) and r.url:find("ids=%d") then only_yt = false end
+    end
+    check(only_yt, "namecolor: twitch ids are never looked up (twitch keeps its native color)")
+    -- garbage author ids never queue a lookup
+    for i, junk in ipairs({ 5, {}, "", "UC", "UCshort", string.rep("U", 400), "ZZ" .. string.rep("a", 22), "UC" .. string.rep("!", 22) }) do
+        yt_line("ncj" .. i, junk, "x")
+    end
+    advance(4000)
+    check(pending("/api/paints") == 0, "namecolor: malformed author ids queue nothing")
+    COLORS["yt_" .. string.rep("U", 0) .. "UC" .. string.rep("c", 22)] = "red"
+    local UC3 = "UC" .. string.rep("c", 22)
+    yt_line("nc5", UC3, "x"); pump("/api/paints", paints_answer)
+    check(yt_line("nc6", UC3, "y") == "#123456", "namecolor: a non-#rrggbb color is ignored")
+    for i, bad in ipairs({ { colors = 5 }, { paints = {} }, {}, { colors = { x = {} } } }) do
+        local UCx = "UC" .. string.rep(string.char(100 + i), 22)
+        yt_line("ncf" .. i, UCx, "x"); advance(4000)
+        pcall(answer_all, "/api/paints", function() return bad end)
+        yt_line("ncg" .. i, UCx, "y")
+    end
+    check(true, "namecolor: malformed paints responses survive")
+    commands["/hscolors"]({ words = { "/hscolors", "off" }, channel = chan })
+    check(not store.colors_enabled() and yt_line("nc7", UC1, "off") == "#123456", "namecolor: /hscolors off → default color")
+    commands["/hscolors"]({ words = { "/hscolors", "on" }, channel = chan })
+    check(yt_line("nc8", UC1, "on") == "#ff8700", "namecolor: /hscolors on restores it")
+    commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = chan })
 
 end
 

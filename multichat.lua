@@ -35,6 +35,7 @@ local ws = require("ws")
 local img = require("img")
 local caps = require("caps")
 local store = require("store")
+local namecolor = require("namecolor")
 
 local M = {
     -- fn(routing_tag, status) — wired by init.lua to live.lua's youtube feed.
@@ -540,7 +541,8 @@ local function handle_yt(m, routing_tag)
         username = m.user,
         display = m.user,
         text = text,
-        color = m.color,
+        -- the chatter's picked heatsync color wins over youtube's own (see namecolor)
+        color = namecolor.for_youtube(m.authorChannelId) or m.color,
         time_ms = tonumber(m.timestamp),
         emotes = m.emotes,
         hsEmotes = m.hsEmotes,
