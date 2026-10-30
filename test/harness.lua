@@ -3260,7 +3260,8 @@ do
             twitch_followers = 1200, twitch_is_live = true, is_shadow = false },
         followage = { followedAt = "2024-03-01T10:00:00.000Z", followerCount = 5, channelFollowedAt = nil },
         corpus = { messages = 52, firstDay = "2025-01-02", firstChannel = "x", also = { "a", "b" } },
-        recent = { { channel = "x", message = "hi there" }, { channel = "y", message = "second" } },
+        recent = { { channel = "x", message = "hi there" }, { channel = "x", message = "hi there" },
+            { channel = "y", message = "second" } },
     }
     local a0 = #chan.added
     commands["/hscard"]({ words = { "/hscard" }, channel = chan })
@@ -3283,7 +3284,7 @@ do
         check(all:find("heat 88", 1, true) and all:find("7 posts", 1, true) and all:find("1200 followers", 1, true) and all:find("live", 1, true), "card: heat, posts, followers, live")
         check(all:find("following #somechannel since 2024-03-01", 1, true), "card: follow age for this channel")
         check(all:find("52 msgs archived · first seen 2025-01-02 in #x · also in #a #b", 1, true), "card: archive corpus line")
-        check(all:find("#x · hi there", 1, true) and all:find("#y · second", 1, true), "card: recent lines")
+        check(all:find("#x · hi there ×2", 1, true) and all:find("#y · second\n", 1, true), "card: recent lines, back-to-back repeats fold into ×n")
         local seg0 = {}
         for i = a0 + 1, #chan.added do
             local m = chan.added[i]

@@ -63,7 +63,15 @@ local function build_model(login, payload)
             local r = payload.recent[i]
             local msg = type(r) == "table" and net.safe_text(r.message, 400)
             if msg then
-                m.recent[#m.recent + 1] = { channel = net.safe_text(r.channel, 25), text = u.preview(msg, 90) }
+                local ch = net.safe_text(r.channel, 25)
+                local text = u.preview(msg, 90)
+                local prev = m.recent[#m.recent]
+                -- a pasted-again line (a streamer's link posted 5× in a row) folds into ×n
+                if prev and prev.text == text and prev.channel == ch then
+                    prev.n = prev.n + 1
+                else
+                    m.recent[#m.recent + 1] = { channel = ch, text = text, n = 1 }
+                end
             end
         end
     end
@@ -109,7 +117,8 @@ local function render(channel, chan_name, m)
         u.sysmsg({ channel = channel }, line)
     end
     for _, r in ipairs(m.recent) do
-        u.sysmsg({ channel = channel }, (r.channel and ("#" .. r.channel .. " · ") or "") .. r.text)
+        u.sysmsg({ channel = channel }, (r.channel and ("#" .. r.channel .. " · ") or "") .. r.text ..
+            (r.n > 1 and (" ×" .. tostring(r.n)) or ""))
     end
     u.linkmsg({ channel = channel }, "card: " .. m.name, net.ORIGIN .. "/u/" .. net.percent_encode(m.name))
 end
