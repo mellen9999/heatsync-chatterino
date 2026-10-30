@@ -111,6 +111,8 @@ function M.register(get_login)
         "heatsync users' picked name color on merged youtube lines")
     flag_command("/hsbackfill", "history backfill", store.backfill_enabled, store.set_backfill,
         "a linked kick/youtube source loads its last ~50 lines when merged")
+    flag_command("/hsmentions", "mention highlights", store.mentions_enabled, store.set_mentions,
+        "a merged kick/youtube line that mentions you gets chatterino's mention highlight")
     flag_command("/hsimages", "inline images", store.images_enabled, store.set_images,
         "an image link shows the image under the line, loaded through heatsync's proxy so the image host never sees your ip (off by default)")
 
@@ -178,6 +180,8 @@ function M.register(get_login)
         u.sysmsg(ctx, "name colors: " .. (store.colors_enabled() and "on" or "off") .. " (/hscolors on|off) · " ..
             tostring(nc) .. " cached, " .. tostring(np) .. " pending")
         u.sysmsg(ctx, "history backfill: " .. (store.backfill_enabled() and "on" or "off") .. " (/hsbackfill on|off)")
+        u.sysmsg(ctx, "mention highlights: " .. (store.mentions_enabled() and "on" or "off") ..
+            " (/hsmentions on|off)" .. (caps.highlight and "" or " · unavailable on this build"))
         local ik, ip = images.stats()
         u.sysmsg(ctx, "inline images: " .. (store.images_enabled() and "on" or "off") .. " (/hsimages on|off) · " ..
             tostring(ik) .. " sized, " .. tostring(ip) .. " pending")
@@ -192,7 +196,7 @@ function M.register(get_login)
         u.sysmsg(ctx, "heatsync commands · build " .. caps.name())
         u.sysmsg(ctx, "emotes: :name tab-complete · /hsemotes menu · /hsfind <q> search · /hsinv <user> [page]")
         u.sysmsg(ctx, "archive: /hssearch <q> posts · /hschat <q> [@user] [#chan] chat-logs · /hslogs <user> [chan] · /hsmoments [<n>h] [plat] [pg] · /hsmoments on|off live spikes · /hshot [plat] [pg] · /hswhois <user> · /hscard <user>")
-        u.sysmsg(ctx, "chat: /hsmulti kick:<slug>|yt:<handle>|off|auto on|off · /hslive · /hspin · /hsflame · /hsbadges · /hsheat · /hsflair · /hscolors · /hsbackfill · /hsimages · /hsblock <name> · /hsunblock <name> · /hsblocklist")
+        u.sysmsg(ctx, "chat: /hsmulti kick:<slug>|yt:<handle>|off|auto on|off · /hslive · /hspin · /hsflame · /hsbadges · /hsheat · /hsflair · /hscolors · /hsbackfill · /hsmentions · /hsimages · /hsblock <name> · /hsunblock <name> · /hsblocklist")
         u.sysmsg(ctx, "system: /hsstatus · /hsrefresh · /hsarchive on|off · /hsclear")
         u.sysmsg(ctx, "syntax: @user #channel narrow a search · plat:value links a multichat source · <n>h = hours")
         if caps.tier < 2 then

@@ -177,7 +177,7 @@ for _, m in ipairs(added) do
 end
 check(carded, "card: POST unavailable on " .. MODE .. " → public-endpoint fallback still renders the card")
 commands["/hscard"]({ words = { "/hscard" }, channel = ctx.channel })
-for _, c in ipairs({ "/hsheat", "/hsflair", "/hscolors", "/hsbackfill" }) do
+for _, c in ipairs({ "/hsheat", "/hsflair", "/hscolors", "/hsbackfill", "/hsmentions" }) do
     commands[c]({ words = { c, "off" }, channel = ctx.channel })
     commands[c]({ words = { c, "on" }, channel = ctx.channel })
     commands[c]({ words = { c }, channel = ctx.channel })
@@ -200,6 +200,17 @@ do
     check(images.element_for("https://i.example.com/a.png") == nil and #http_queue == qn, "images: no element, no request on " .. MODE)
     check(images.detect("https://i.example.com/a.png") ~= nil, "images: pure detection still safe on " .. MODE)
     commands["/hsimages"]({ words = { "/hsimages", "off" }, channel = ctx.channel })
+end
+
+-- mention highlights need the Highlighted message flag: absent here, the toggle
+-- still works but the feature is silently off and a merged line is built as before
+do
+    local mention = require("mention")
+    local senders = require("senders")
+    senders.own_login = "mellen"
+    check(caps.highlight == false, "mentions: no Highlighted flag → caps.highlight false on " .. MODE)
+    check(mention.fields("hey mellen", "kk") == nil, "mentions: silently off without the flag on " .. MODE)
+    check(mention.matches("hey mellen", "mellen"), "mentions: pure matching still safe on " .. MODE)
 end
 
 print(failures == 0 and "ALL PASS (" .. MODE .. ")" or (failures .. " FAILURES (" .. MODE .. ")"))

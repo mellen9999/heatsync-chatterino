@@ -3908,5 +3908,75 @@ do
     store.set_images(false)
 end
 
+-- ===== v1.13 mention highlights on merged kick/youtube lines =====
+do
+    local store = require("store")
+    local mention = require("mention")
+    local m = mention.matches
+    check(m("hey mellen", "mellen") and m("MELLEN!", "mellen") and m("@Mellen hi", "mellen") and m("yo (mellen)", "mellen"), "mentions: whole word, any case, @ optional")
+    check(not m("mellenx", "mellen") and not m("xmellen", "mellen") and not m("a_mellen", "mellen") and not m("mellen_", "mellen") and not m("mellen9", "mellen"), "mentions: embedded in a longer word is not a mention")
+    check(m("mellenx mellen", "mellen"), "mentions: a later whole-word hit counts after an embedded miss")
+    check(not m("", "mellen") and not m("hi", "") and not m("hi", "Bad Name") and not m("hi", string.rep("a", 40)), "mentions: empty / invalid login never matches")
+    check(not m(nil, "a") and not m(42, "a") and not m({}, "a") and not m("a", nil) and not m("a", {}), "mentions: fuzz — non-string inputs are a plain no")
+
+    local function ws_up()
+        for _ = 1, 200 do
+            if ws.connected then break end
+            advance(1000)
+            local sk = sockets[#sockets]
+            if not sk.closed then sk.opts.on_open() end
+        end
+        return sockets[#sockets]
+    end
+    local own_before = senders.own_login
+    senders.own_login = "mellen" -- earlier sections switch the stub account; pin it here
+    local mc = fake_channel("mentchan")
+    channels[#channels + 1] = mc
+    render.discover()
+    commands["/hsmulti"]({ words = { "/hsmulti", "kick:mentsrc" }, channel = mc })
+    for i = #http_queue, 1, -1 do if http_queue[i].url:find("/api/recent/", 1, true) then table.remove(http_queue, i) end end
+    local function kick(id, user, text, extra)
+        local n = #mc.added
+        local d = { platform = "kick", channel = "mentsrc", id = id, username = user, content = text, timestamp = 1761825602000 }
+        for k, v in pairs(extra or {}) do d[k] = v end
+        ws_up().opts.on_text(register_payload({ type = "kick-chat-message", data = d }))
+        return mc.added[n + 1]
+    end
+    check(store.mentions_enabled() == true, "mentions: ON by default")
+    local hit = kick("mn1", "kk", "hey @Mellen you there")
+    check(hit and hit.init.highlight_color == mention.COLOR and (hit.init.flags & c2.MessageFlag.Highlighted) ~= 0, "mentions: merged kick line mentioning you is highlighted")
+    local miss = kick("mn2", "kk", "hello mellenfans")
+    check(miss and miss.init.flags == nil and miss.init.highlight_color == nil, "mentions: no mention → built exactly as before (no flags, no color)")
+    local own = kick("mn3", "Mellen", "talking about mellen")
+    check(own and own.init.flags == nil, "mentions: your own line never highlights")
+    local rep = kick("mn4", "kk", "agreed", { replyTo = { username = "Mellen", content = "x", messageId = "z" } })
+    check(rep and rep.init.highlight_color == mention.COLOR, "mentions: a kick reply aimed at you highlights")
+    local bad1 = kick("mn5", "kk", "agreed", { replyTo = "garbage" })
+    local bad2 = kick("mn6", "kk", "agreed", { replyTo = { username = 42 } })
+    check(bad1 and bad2 and bad1.init.flags == nil and bad2.init.flags == nil, "mentions: malformed replyTo is ignored, line still delivered")
+    commands["/hsmentions"]({ words = { "/hsmentions", "off" }, channel = mc })
+    local off = kick("mn7", "kk", "yo mellen")
+    check(not store.mentions_enabled() and off and off.init.flags == nil, "mentions: /hsmentions off → plain line")
+    commands["/hsmentions"]({ words = { "/hsmentions" }, channel = mc })
+    check(tostring(mc.added[#mc.added]):find("mention highlights is off", 1, true) ~= nil, "mentions: bare /hsmentions reports state")
+    commands["/hsmentions"]({ words = { "/hsmentions", "on" }, channel = mc })
+    -- signed out / account gone: no highlight, no error
+    local saved = senders.own_login
+    senders.own_login = nil
+    local anon = kick("mn8", "kk", "yo mellen")
+    senders.own_login = saved
+    check(anon and anon.init.flags == nil, "mentions: no signed-in login → no highlight")
+    -- a rebuild keeps the highlight (render copies flags + color)
+    local seen = {}
+    local sys = { words = { "/hshelp" }, channel = { add_system_message = function(_, t) seen[#seen + 1] = t end, add_message = function() end, get_name = function() return "x" end } }
+    commands["/hshelp"](sys)
+    commands["/hsstatus"](sys)
+    local blob = table.concat(seen, "\n")
+    check(blob:find("/hsmentions", 1, true) ~= nil and blob:find("mention highlights: on", 1, true) ~= nil, "mentions/wiring: /hshelp lists it, /hsstatus reports it")
+    commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = mc })
+    for i = #channels, 1, -1 do if channels[i] == mc then table.remove(channels, i) end end
+    senders.own_login = own_before
+end
+
 print(failures == 0 and "\nALL PASS" or ("\n" .. failures .. " FAILURES"))
 host_os.exit(failures == 0 and 0 or 1)

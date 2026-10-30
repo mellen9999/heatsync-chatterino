@@ -188,6 +188,7 @@ M.heat_enabled, M.set_heat = flag("heat.txt")
 M.flair_enabled, M.set_flair = flag("flair-badges.txt")
 M.colors_enabled, M.set_colors = flag("namecolors.txt")
 M.backfill_enabled, M.set_backfill = flag("backfill.txt")
+M.mentions_enabled, M.set_mentions = flag("mentions.txt")
 
 -- ----- opt-in flags (off by default) -----
 -- the mirror of flag(): only an explicit "1" on disk turns one on. inline

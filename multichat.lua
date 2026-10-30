@@ -39,6 +39,7 @@ local img = require("img")
 local caps = require("caps")
 local store = require("store")
 local namecolor = require("namecolor")
+local mention = require("mention")
 
 local M = {
     -- fn(routing_tag, status) — wired by init.lua to live.lua's youtube feed.
@@ -523,7 +524,11 @@ local function inject_one(cc_name, line, tag, tag_color, display, uname_color, b
     end
     local uname = type(line.username) == "string" and line.username or display
     if #uname > 100 then uname = uname:sub(1, 100) end
+    -- a line aimed at the signed-in account gets chatterino's mention look
+    local flags, hl = mention.fields(text, uname, line.reply_user)
     ch:add_message(net.new_message({
+        flags = flags,
+        highlight_color = hl,
         login_name = string.lower(uname),
         display_name = display,
         message_text = text,
@@ -620,6 +625,7 @@ local function handle_kick(d)
         color = d.color,
         time_ms = tonumber(d.timestamp),
         hsEmotes = d.hsEmotes,
+        reply_user = type(d.replyTo) == "table" and d.replyTo.username or nil,
     })
 end
 

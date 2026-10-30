@@ -12,6 +12,7 @@ local M = {
     images = false,
     windows = false,
     menus = false,
+    highlight = false, -- message highlight flag (mention look on merged lines)
     msg_hooks = nil, -- lazily confirmed on first real channel object
     tier = 0,
 }
@@ -39,6 +40,12 @@ function M.detect()
     -- context-menu hook just skips menu.lua, same as any other missing api.
     M.menus = probe(function()
         return c2.windows ~= nil and type(c2.windows.on_channelview_context_menu_requested) == "function"
+    end)
+
+    -- the Highlighted message flag; absent on older builds → mention highlights
+    -- silently stay off (multichat lines build exactly as before)
+    M.highlight = probe(function()
+        return type(c2.MessageFlag) == "table" and c2.MessageFlag.Highlighted ~= nil
     end)
 
     if M.later and M.websocket and M.images and M.windows then

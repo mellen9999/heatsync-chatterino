@@ -29,11 +29,12 @@ a single lua plugin (no fork, no patched binary) that brings heatsync into chatt
 - sub flair (`flair-badges.txt`) — **on** (opt-out), `/hsflair on|off`
 - name colors (`namecolors.txt`) — **on** (opt-out), `/hscolors on|off`; youtube lines only (twitch never recolored, painted chatters untouched)
 - history backfill (`backfill.txt`) — **on** (opt-out), `/hsbackfill on|off`
+- mention highlights (`mentions.txt`) — **on** (opt-out), `/hsmentions on|off`; merged kick/yt lines only, local, gated on `caps.highlight`
 - inline images (`images.txt`) — **off** (opt-in), `/hsimages on|off`; only ever loaded through heatsync.org/api/img, never the image host; max 1 per message, 20 new urls/min
 
 ## modules
 
-`caps` feature-detect · `net` http/json/timers/datafiles · `inventory` your emotes · `seventv` catalog search + render cache · `senders` other chatters' sets · `recents` learned usage · `picker` clickable grids · `ws` socket lifecycle · `multichat` kick/yt injection · `pin` heatsync pinned message (view-only) · `lookup` shared batched ttl cache · `heat` / `flair` / `namecolor` batched cosmetic lookups (rendered by `render`, `multichat`) · `cmd_card` /hscard + right-click card · `spike` opt-in moment spikes · `modifiers` emote modifier tokens (tooltip only) · `images` image-link detection + proxy url + webp size probe (rendered by `render`) · `render` hook→rebuild→replace · `store` persisted toggles · `commands` · `menu` right-click context menu · `init` wiring.
+`caps` feature-detect · `net` http/json/timers/datafiles · `inventory` your emotes · `seventv` catalog search + render cache · `senders` other chatters' sets · `recents` learned usage · `picker` clickable grids · `ws` socket lifecycle · `multichat` kick/yt injection · `pin` heatsync pinned message (view-only) · `lookup` shared batched ttl cache · `heat` / `flair` / `namecolor` batched cosmetic lookups (rendered by `render`, `multichat`) · `cmd_card` /hscard + right-click card · `spike` opt-in moment spikes · `modifiers` emote modifier tokens (tooltip only) · `mention` highlight flag+color for merged lines aimed at you (built in `multichat`) · `images` image-link detection + proxy url + webp size probe (rendered by `render`) · `render` hook→rebuild→replace · `store` persisted toggles · `commands` · `menu` right-click context menu · `init` wiring.
 
 ## conventions
 
