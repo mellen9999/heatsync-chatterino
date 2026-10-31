@@ -68,11 +68,12 @@ function M.inv(channel, user, page)
 end
 
 -- local emote block/unblock: hides an emote from rendering + tab-complete.
--- LOCAL ONLY — the plugin is anonymous so it can't sync a block to your
--- heatsync account; use the website/extension for an account-wide block.
+-- local by name; when you're logged in (opt-in) it also blocks/unblocks the same
+-- emote on your heatsync account by hash (cmd_account.sync_block), and says so —
+-- or says it stayed local-only when the hash isn't known yet.
 -- shared by /hsblock, /hsunblock and the right-click "block/unblock" menu
--- actions on a heatsync-rendered emote.
-function M.block(channel, name)
+-- actions on a heatsync-rendered emote (`login`: whose emote the click was on).
+function M.block(channel, name, login)
     local ctx = { channel = channel }
     if not name or name == "" then
         u.sysmsg(ctx, "usage: /hsblock <emote name> — hides it locally in chatterino")
@@ -83,17 +84,20 @@ function M.block(channel, name)
     else
         u.sysmsg(ctx, "'" .. name .. "' already blocked")
     end
+    require("cmd_account").sync_block(channel, name, login)
 end
 
-function M.unblock(channel, name)
+function M.unblock(channel, name, login)
     local ctx = { channel = channel }
     if not name or name == "" then
         u.sysmsg(ctx, "usage: /hsunblock <emote name> — removes a local block")
         return
     end
-    if store.unblock(name) then
+    local was = store.unblock(name)
+    local acct = require("cmd_account").sync_unblock(channel, name, was, login)
+    if was then
         u.sysmsg(ctx, "unblocked '" .. name .. "'")
-    else
+    elseif not acct then
         u.sysmsg(ctx, "'" .. name .. "' wasn't blocked")
     end
 end

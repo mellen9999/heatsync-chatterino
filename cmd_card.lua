@@ -33,6 +33,7 @@ local function build_model(login, payload)
     local st = type(p.stats) == "table" and p.stats or {}
     local m = {
         login = login,
+        id = num(p.id),
         name = net.safe_text(p.display_name, 60) or net.safe_text(p.username, 60) or login,
         shadow = p.is_shadow == true or p.is_shadow_profile == true,
         heat = num(st.user_heat),
@@ -153,7 +154,12 @@ function M.show(channel, user)
     end)
     local function finish(payload)
         local m = build_model(login, payload)
-        if m then return render(channel, chan_name, m) end
+        if m then
+            render(channel, chan_name, m)
+            -- logged in (opt-in): your note on them + whether you follow them
+            pcall(require("cmd_account").card_extras, channel, login, m.id, m.shadow)
+            return
+        end
         u.sysmsg(ctx, "no card for '" .. login .. "'")
     end
     net.post_json(net.ORIGIN .. "/api/card", { platform = "twitch", login = login, channel = chan_name }, 10000,

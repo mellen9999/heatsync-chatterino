@@ -15,6 +15,8 @@ local images = require("images")
 local mutes = require("mutes")
 local gifs = require("gifs")
 local previews = require("previews")
+local account = require("account")
+local sync = require("account_sync")
 local u = require("cmdutil")
 
 local M = {}
@@ -93,11 +95,14 @@ function M.register(get_login)
         end
     end)
 
-    -- pinned message toggle: heatsync's pinned message for the channel, view-only
-    -- (pinning needs a heatsync login; the plugin socket is anonymous)
+    -- pinned message: on|off toggles the 📌 line (view); `clear` removes the pin
+    -- (needs the opt-in login + moderator rights, over the account api — the
+    -- socket itself stays anonymous). pinning a message is the right-click menu.
     c2.register_command("/hspin", function(ctx)
         local arg = ctx.words[2]
-        if arg == "on" then
+        if arg == "clear" then
+            require("cmd_account").pin_clear(ctx)
+        elseif arg == "on" then
             store.set_pin(true)
             u.sysmsg(ctx, "pinned message ON — 📌 line when a channel's heatsync pin is set or cleared")
         elseif arg == "off" then
@@ -105,7 +110,7 @@ function M.register(get_login)
             u.sysmsg(ctx, "pinned message OFF")
         else
             u.sysmsg(ctx, "pinned message is " .. (store.pin_enabled() and "on" or "off") ..
-                " · /hspin on|off · view-only, pin from heatsync.org or the extension")
+                " · /hspin on|off · /hspin clear removes this channel's pin (log in first) · right-click a message to pin it")
         end
     end)
 
@@ -165,7 +170,12 @@ function M.register(get_login)
             " images:" .. tostring(caps.images) ..
             " windows:" .. tostring(caps.windows)
         u.sysmsg(ctx, lines)
-        u.sysmsg(ctx, "ws " .. ws.status())
+        u.sysmsg(ctx, "ws " .. ws.status() .. " (anonymous)")
+        u.sysmsg(ctx, account.status_line())
+        local sum = sync.summary()
+        if sum then u.sysmsg(ctx, "  synced: " .. sum) end
+        local pn = account.take_notice()
+        if pn then u.sysmsg(ctx, pn) end
         local inv = tostring(inventory.count()) .. " emotes" ..
             (inventory.login and (" (" .. inventory.login .. ")") or " (no login)")
         u.sysmsg(ctx, inv .. " · " .. tostring(sc) .. " sender sets cached, " ..
@@ -217,6 +227,7 @@ function M.register(get_login)
         u.sysmsg(ctx, "emotes: :name tab-complete · /hsemotes menu · /hsfind <q> search · /hsinv <user> [page] · /hsgif [query] [page] gifs")
         u.sysmsg(ctx, "archive: /hssearch <q> posts · /hschat <q> [@user] [#chan] chat-logs · /hslogs <user> [chan] · /hsmoments [<n>h] [plat] [pg] · /hsmoments on|off live spikes · /hshot [plat] [pg] · /hswhois <user> · /hscard <user>")
         u.sysmsg(ctx, "chat: /hsmulti kick:<slug>|yt:<handle>|off|auto on|off · /hslive · /hspin · /hsflame · /hsbadges · /hsheat · /hsflair · /hscolors · /hsbackfill · /hsmentions · /hsmutes · /hsimages · /hspreviews · /hsblock <name> · /hsunblock <name> · /hsblocklist")
+        u.sysmsg(ctx, "log in (optional): /hslogin · /hslogout · then /hsnote <user> [text|-] · /hsmute <user> [plat] · /hsunmute <user> · /hsmutelist · /hsfollow <user> · /hsunfollow <user> · /hspin clear · right-click a message to pin it · /hsblock and /hsunblock sync to your account")
         u.sysmsg(ctx, "system: /hsstatus · /hsrefresh · /hsarchive on|off · /hsclear")
         u.sysmsg(ctx, "syntax: @user #channel narrow a search · plat:value links a multichat source · <n>h = hours")
         if caps.tier < 2 then

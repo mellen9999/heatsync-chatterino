@@ -7,8 +7,10 @@
 --                 your inventory + 7tv global, /hsmoments, /hslogs
 --   t0 (older)    tab-complete only, refresh piggybacks on completions
 --
--- no auth tokens ever leave chatterino: every endpoint used is public,
--- and the websocket connects anonymously.
+-- the websocket is always anonymous and nearly every endpoint is public. the one
+-- exception is the opt-in heatsync login (/hslogin, account.lua): its token is sent
+-- only as a Bearer header to https://heatsync.org/api/cli/*, nowhere else. with no
+-- login the plugin behaves exactly as it always has.
 local caps = require("caps")
 local net = require("net")
 local inventory = require("inventory")
@@ -29,6 +31,8 @@ local heat = require("heat")
 local flair = require("flair")
 local namecolor = require("namecolor")
 local mutes = require("mutes")
+local account = require("account")
+local account_sync = require("account_sync")
 
 -- tab-complete popup size (shared ceiling: own inventory fills first, then the
 -- 7tv/bttv/ffz catalog appends into whatever room is left). raised 25→40 so a
@@ -250,6 +254,12 @@ net.log_info("boot: " .. caps.name() ..
     " menus=" .. tostring(caps.menus) .. ")")
 
 commands.register(current_login_safe)
+-- opt-in login: restore a saved session (if any) and let a mute change re-collapse
+-- open channels. inert without a token or a build that can do it.
+if caps.account then
+    account_sync.on_mutes_changed = function() pcall(render.backpass_all) end
+    account.load()
+end
 menu.register() -- no-op unless caps.menus (context menus, chatterino #6961)
 senders.own_map_fn = function() return inventory.map end
 recents.load() -- restore recently-used emotes for the /hsemotes menu
@@ -359,6 +369,8 @@ if caps.later then
         if inventory.boot_failed_at then login_and_refresh_tick() end
     end)
     net.every(2 * 1000, senders.flush)
+    -- account: renew a token near its end + re-pull mutes/blocks/rules (no-op logged out)
+    if caps.account then net.every(5 * 60 * 1000, account_sync.tick) end
     -- cosmetic lookup batches (heat bars, sub flair, name colors, community mutes): one request
     -- per handful of new chatters on a slower beat than senders (never urgent).
     -- each flush is isolated so one failing can't starve the others.

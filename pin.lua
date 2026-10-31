@@ -6,8 +6,8 @@
 -- where it shows: a twitch room → that twitch tab; a kick room → every twitch tab
 -- the kick source is merged into (tagged [K] like multichat lines).
 --
--- pinning itself needs a heatsync login and the plugin socket is anonymous by
--- design, so there is deliberately no way to pin or unpin from here.
+-- this module only ever shows the pin (the socket is anonymous). setting or
+-- clearing one is the opt-in login's job: cmd_account.pin_message / pin_clear.
 --
 -- on (default) / off via /hspin. off still swallows the frames, shows nothing
 -- and remembers nothing.

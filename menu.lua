@@ -10,6 +10,8 @@ local store = require("store")
 local cmd_emotes = require("cmd_emotes")
 local cmd_archive = require("cmd_archive")
 local cmd_card = require("cmd_card")
+local cmd_account = require("cmd_account")
+local multichat = require("multichat")
 
 local M = {}
 
@@ -69,6 +71,29 @@ local function resolve_channel(args)
     return nil
 end
 
+-- "pin message" (needs a login with the account permission; the server decides
+-- whether you're a moderator there and says so)
+local function add_pin(sub, channel, platform, chan, id)
+    if not cmd_account.can_pin() then return end
+    if type(id) ~= "string" or id == "" then return end
+    sub:add_action("pin message", function() cmd_account.pin_message(channel, platform, chan, id) end)
+end
+
+-- a merged kick line carries no channel name; multichat remembers which kick
+-- channel each recent line id came from
+local function add_kick_pin(args, msg)
+    if not cmd_account.can_pin() then return end
+    local ok, id = pcall(function() return msg.id end)
+    local info = ok and multichat.line_info(id) or nil
+    if not info then return end
+    local channel = resolve_channel(args)
+    local menu = args.menu
+    if not channel or menu == nil then return end
+    local sub = menu:add_menu("heatsync")
+    if sub == nil then return end
+    add_pin(sub, channel, info.platform, info.channel, id)
+end
+
 -- the whole handler runs under ONE pcall from M.register — a bad/absent field
 -- anywhere here (a virtual channel with a stub message, a future chatterino
 -- shape change) degrades to "no menu added", never a thrown error into
@@ -87,7 +112,10 @@ local function on_context_menu(args)
     local ok_sys, is_sys = pcall(function() return (msg.flags & c2.MessageFlag.System) ~= 0 end)
     if ok_sys and is_sys then return end
     local ok_cn, cn = pcall(function() return msg.channel_name end)
-    if not ok_cn or type(cn) ~= "string" or cn == "" then return end
+    if not ok_cn or type(cn) ~= "string" or cn == "" then
+        add_kick_pin(args, msg)
+        return
+    end
 
     local ok_login, raw_login = pcall(function() return msg.login_name end)
     if not ok_login then return end
@@ -106,15 +134,19 @@ local function on_context_menu(args)
     sub:add_action("chat logs", function() cmd_archive.logs(channel, login, nil) end)
     sub:add_action("whois", function() cmd_archive.whois(channel, login) end)
     sub:add_action("card", function() cmd_card.show(channel, login) end)
+    do
+        local okid, mid = pcall(function() return msg.id end)
+        if okid then add_pin(sub, channel, "twitch", cn, mid) end
+    end
 
     -- only when the click landed on a heatsync emote the plugin itself drew.
     local name = hs_emote_name(args.message_element)
     if name then
         sub:add_separator()
         if store.is_blocked(name) then
-            sub:add_action("unblock " .. name, function() cmd_emotes.unblock(channel, name) end)
+            sub:add_action("unblock " .. name, function() cmd_emotes.unblock(channel, name, login) end)
         else
-            sub:add_action("block " .. name, function() cmd_emotes.block(channel, name) end)
+            sub:add_action("block " .. name, function() cmd_emotes.block(channel, name, login) end)
         end
     end
 end
