@@ -2,8 +2,28 @@
 local net = require("net")
 local M = {}
 
+-- the channel the last command ran in: where background account events (a login
+-- that expired, a finished pairing) speak, since they have no ctx of their own.
+M.last_channel = nil
+
 function M.sysmsg(ctx, text)
-    pcall(function() ctx.channel:add_system_message("[heatsync] " .. text) end)
+    pcall(function()
+        M.last_channel = ctx.channel
+        -- nothing printed to chat may carry a login token
+        ctx.channel:add_system_message("[heatsync] " .. net.redact(text))
+    end)
+end
+
+-- say something from a background callback (no ctx): on the last command's
+-- channel when it's still open. returns false when there's nowhere to say it.
+function M.notify(text)
+    local ch = M.last_channel
+    if ch == nil then return false end
+    local ok = pcall(function()
+        if ch.is_valid and not ch:is_valid() then error("gone", 0) end
+        ch:add_system_message("[heatsync] " .. net.redact(text))
+    end)
+    return ok
 end
 
 -- a clickable line: chatterino system messages can't carry links, so this
@@ -15,7 +35,7 @@ function M.linkmsg(ctx, text, url)
                 { type = "text", text = "[heatsync]", color = "system" },
                 {
                     type = "text",
-                    text = text,
+                    text = net.redact(text),
                     color = "link",
                     tooltip = url,
                     link = { type = c2.LinkType.Url, value = url },

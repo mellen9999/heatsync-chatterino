@@ -13,6 +13,7 @@ local M = {
     windows = false,
     menus = false,
     highlight = false, -- message highlight flag (mention look on merged lines)
+    account = false, -- timers + every http verb the opt-in login needs (get/post/put/delete)
     msg_hooks = nil, -- lazily confirmed on first real channel object
     tier = 0,
 }
@@ -46,6 +47,15 @@ function M.detect()
     -- silently stay off (multichat lines build exactly as before)
     M.highlight = probe(function()
         return type(c2.MessageFlag) == "table" and c2.MessageFlag.Highlighted ~= nil
+    end)
+
+    -- the opt-in heatsync login (account.lua): timers for the pairing poll + the
+    -- four http verbs the /api/cli routes use. absent → the account commands say
+    -- so and nothing else changes.
+    M.account = M.later and probe(function()
+        local m = c2.HTTPMethod
+        return type(c2.HTTPRequest) ~= "nil" and type(m) == "table"
+            and m.Get ~= nil and m.Post ~= nil and m.Put ~= nil and m.Delete ~= nil
     end)
 
     if M.later and M.websocket and M.images and M.windows then

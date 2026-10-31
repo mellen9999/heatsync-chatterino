@@ -5,12 +5,35 @@ M.ORIGIN = "https://heatsync.org"
 
 local json = require("chatterino.json")
 
+-- nothing the plugin logs or prints may carry a heatsync login token. every
+-- log line goes through redact(): any "hscli_…" shaped token, plus the exact
+-- secret(s) account.lua registers, becomes [REDACTED].
+local secrets = {}
+function M.add_secret(s)
+    if type(s) == "string" and #s >= 8 then secrets[s] = true end
+end
+function M.clear_secrets() secrets = {} end
+function M.redact(s)
+    s = tostring(s)
+    s = string.gsub(s, "hscli_[%w%-_%.]+", "[REDACTED]")
+    for sec in pairs(secrets) do
+        local from = 1
+        while true do
+            local a, b = string.find(s, sec, from, true)
+            if not a then break end
+            s = string.sub(s, 1, a - 1) .. "[REDACTED]" .. string.sub(s, b + 1)
+            from = a + 10
+        end
+    end
+    return s
+end
+
 function M.log_info(msg)
-    c2.log(c2.LogLevel.Info, "[heatsync] " .. msg)
+    c2.log(c2.LogLevel.Info, "[heatsync] " .. M.redact(msg))
 end
 
 function M.log_warn(msg)
-    c2.log(c2.LogLevel.Warning, "[heatsync] " .. msg)
+    c2.log(c2.LogLevel.Warning, "[heatsync] " .. M.redact(msg))
 end
 
 -- Minimal percent-encoding for URL path/query segments. Charset validators
@@ -33,6 +56,22 @@ local mono_s = 0
 
 function M.now()
     return mono_s
+end
+
+-- best-effort wall clock (epoch ms) for the few things that need a calendar
+-- (token expiry). there is no os.time, so it is anchored on server-provided
+-- timestamps — a live chat line's server time, a note's updated_at, the last
+-- value we persisted — and advanced by the monotonic counter. only ever moves
+-- forward (a stale timestamp can't pull it back). nil until anything anchors it.
+local wall_base = nil
+function M.note_wall(ms)
+    if type(ms) ~= "number" or ms ~= ms or ms < 1.7e12 or ms > 4.1e12 then return end
+    local base = ms - mono_s * 1000
+    if wall_base == nil or base > wall_base then wall_base = base end
+end
+function M.wall_ms()
+    if wall_base == nil then return nil end
+    return wall_base + mono_s * 1000
 end
 
 -- second half of M.every is defined below; the clock tick is armed at the
@@ -210,6 +249,15 @@ function M.is_cw_blocked(e)
     return false
 end
 
+-- an emote content hash (the key account emote blocks use): a short opaque token.
+-- anything else is dropped, never guessed at.
+function M.safe_hash(h)
+    if type(h) == "string" and #h >= 4 and #h <= 128 and string.match(h, "^[%w%-_%.:=+/]+$") then
+        return h
+    end
+    return nil
+end
+
 function M.parse_emote_row(e)
     if type(e) ~= "table" then return nil end
     if M.is_cw_blocked(e) then return nil end
@@ -225,6 +273,7 @@ function M.parse_emote_row(e)
         -- and img.for_hs_emote clamps to that anyway — so 32 is the honest basis
         h = M.pick_first_num(e, "height") or 32,
         zw = e.zero_width == true,
+        hash = M.safe_hash(e.hash) or M.safe_hash(e.emote_hash),
         -- render.lua's time gate: `a` (added_at) is a lower bound, `u` (until/
         -- last_seen) an upper bound on when a message may show this emote for
         -- its sender. live rows carry added_at only; historical (name-reuse)
@@ -268,14 +317,28 @@ end
 -- unavailable, so every existing 2-arg callback keeps working untouched.
 -- Never throws; the callback always fires exactly once. `payload` (a string)
 -- makes it a JSON POST body; nil is a plain GET.
-local function request_json(method, url, timeout_ms, payload, cb)
+local BEARER_PREFIX = "https://heatsync.org/api/cli/"
+
+-- opts (all optional): payload (string body), timeout, bearer (the login token),
+-- empty_ok (an empty 2xx body is {} instead of "unparseable"). the bearer token
+-- is attached ONLY to https://heatsync.org/api/cli/* — any other url is refused
+-- before a request is built, so it can't reach another host or path by mistake.
+local function request_core(method, url, opts, cb)
     local ok, err = pcall(function()
+        if opts.bearer ~= nil then
+            if string.sub(url, 1, #BEARER_PREFIX) ~= BEARER_PREFIX or string.find(url, "%c")
+                or string.find(url, "..", 1, true) then
+                error("refused: token only goes to heatsync.org/api/cli", 0)
+            end
+        end
+        if method == nil then error("unsupported method", 0) end
         local req = c2.HTTPRequest.create(method, url)
-        req:set_timeout(timeout_ms or 10000)
+        req:set_timeout(opts.timeout or 10000)
         req:set_header("Accept", "application/json")
-        if payload then
+        if opts.bearer ~= nil then req:set_header("Authorization", "Bearer " .. opts.bearer) end
+        if opts.payload then
             req:set_header("Content-Type", "application/json")
-            req:set_payload(payload)
+            req:set_payload(opts.payload)
         end
         -- the callback runs LATER (async), outside the setup pcall below, so it
         -- must be guarded here or a bug in any handler — indexing a wrong-shaped
@@ -297,7 +360,10 @@ local function request_json(method, url, timeout_ms, payload, cb)
             safe_cb(nil, e, status, body)
         end)
         req:on_success(function(res)
-            local data = M.safe_json_parse(res:data())
+            local raw = nil
+            pcall(function() raw = res:data() end)
+            local data = M.safe_json_parse(raw)
+            if data == nil and opts.empty_ok and (raw == nil or raw == "") then data = {} end
             if data == nil then
                 safe_cb(nil, "unparseable response")
             else
@@ -311,6 +377,23 @@ local function request_json(method, url, timeout_ms, payload, cb)
     if not ok then
         cb(nil, tostring(err))
     end
+end
+
+local function request_json(method, url, timeout_ms, payload, cb)
+    request_core(method, url, { timeout = timeout_ms, payload = payload }, cb)
+end
+
+-- an account (login token) request: `verb` is "Get" | "Post" | "Put" | "Delete".
+-- a build whose HTTPMethod lacks the verb answers "unsupported method" through cb.
+function M.cli_request(verb, url, body, token, cb)
+    local payload = nil
+    if body ~= nil then
+        payload = M.json_stringify(body)
+        if not payload then return cb(nil, "unserializable body") end
+    end
+    local method = nil
+    pcall(function() method = c2.HTTPMethod[verb] end)
+    request_core(method, url, { payload = payload, bearer = token, empty_ok = true, timeout = 10000 }, cb)
 end
 
 function M.get_json(url, timeout_ms, cb)
