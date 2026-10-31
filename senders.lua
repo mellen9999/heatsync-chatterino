@@ -136,7 +136,7 @@ local function rows_to_map(rows)
         if i > MAX_SET_ENTRIES then break end
         local rec = net.parse_emote_row(e)
         if rec then
-            map[rec.name] = { url = rec.url, w = rec.w, h = rec.h, zw = rec.zw, a = rec.a, u = rec.u }
+            map[rec.name] = { url = rec.url, w = rec.w, h = rec.h, zw = rec.zw, a = rec.a, u = rec.u, hash = rec.hash }
             any = true
         end
     end
@@ -308,8 +308,31 @@ function M.feed_broadcast(username, emote_name, emote_data)
         w = net.pick_first_num(emote_data, "width"),
         h = net.pick_first_num(emote_data, "height"),
         zw = emote_data.zero_width == true,
+        hash = net.safe_hash(emote_data.hash),
     }
     if M.on_loaded then pcall(M.on_loaded, login) end
+end
+
+-- an emote's content hash from what's already cached: `login`'s own set first
+-- (a right-click knows whose emote it is), then any cached sender. read-only,
+-- bounded by the sender cache size; nil when no cached set carries the name.
+function M.find_hash(name, login)
+    if type(name) ~= "string" then return nil end
+    local hit = type(login) == "string" and cache[login] or nil
+    if hit and type(hit.map) == "table" and hit.map[name] and hit.map[name].hash then
+        return hit.map[name].hash
+    end
+    -- no hinted owner: only answer when every cached set agrees (two chatters can
+    -- hold different emotes under one name — a guess would block the wrong one)
+    local found = nil
+    for _, e in pairs(cache) do
+        local m = type(e.map) == "table" and e.map[name]
+        if m and m.hash then
+            if found and found ~= m.hash then return nil end
+            found = m.hash
+        end
+    end
+    return found
 end
 
 function M.stats()

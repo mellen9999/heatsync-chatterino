@@ -4,6 +4,7 @@
 --   GET /api/profile/<twitch_login>  → resolve login → numeric user id
 --   GET /api/users/<userId>/emotes   → inventory rows (usage_count, width/height)
 local net = require("net")
+local store = require("store")
 
 local M = {
     login = nil,          -- twitch login the current map belongs to
@@ -41,6 +42,7 @@ local function rebuild_index(entries)
     for _, e in ipairs(entries) do
         table.insert(M.index, {
             name = e.name,
+            hash = e.hash,
             lower = string.lower(e.name),
             usage = e.usage or 0,
         })
@@ -84,9 +86,10 @@ local function apply_rows(rows, login)
         end
         local rec = net.parse_emote_row(e)
         if rec then
-            new_map[rec.name] = { url = rec.url, w = rec.w, h = rec.h, zw = rec.zw, a = rec.a, u = rec.u }
+            new_map[rec.name] = { url = rec.url, w = rec.w, h = rec.h, zw = rec.zw, a = rec.a, u = rec.u, hash = rec.hash }
             table.insert(entries, {
                 name = rec.name,
+                hash = rec.hash,
                 usage = tonumber(type(e) == "table" and (e.usage_count or e.uses) or 0) or 0,
             })
             count = count + 1
@@ -242,11 +245,12 @@ end
 -- prefix-match into values (respecting seen + cap). index is pre-sorted
 -- usage desc then alpha, so results come out in that order.
 function M.match_prefix(q, qlen, values, seen, cap)
+    local hb = store.hash_blocked_set() -- account blocks, by emote hash
     for _, item in ipairs(M.index) do
         -- find(...,1,true) is a plain-text anchored match — no per-entry substring
         -- allocation like string.sub did, on every keystroke over the whole index.
         if string.find(item.lower, q, 1, true) == 1 then
-            if not seen[item.name] then
+            if not seen[item.name] and not (item.hash and hb[item.hash]) then
                 table.insert(values, item.name)
                 seen[item.name] = true
             end

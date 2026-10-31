@@ -112,7 +112,7 @@ local function has_hits(text, sender_map, t)
     for word in string.gmatch(text, "%S+") do
         -- sender_map first: for a sender with no HS inventory (the common case)
         -- this skips a needless is_blocked call + hash lookup on every word.
-        if sender_map and not store.is_blocked(word) and renderable(sender_map[word], t) then
+        if sender_map and renderable(sender_map[word], t) and not store.is_blocked(word, sender_map[word].hash) then
             return true
         end
         if thread_id(word) then return true end
@@ -201,7 +201,7 @@ local function rebuild_text_element(elems, el, sender_map, budget, t)
         if over_budget and budget.pending then flush_run(elems, run, src); release_pending(elems, budget) end
         -- is_blocked only when the word is actually a renderable emote — a plain
         -- word (the majority) skips the lookup via short-circuit.
-        local set = not over_budget and renderable(emote, t) and not store.is_blocked(word)
+        local set = not over_budget and renderable(emote, t) and not store.is_blocked(word, emote.hash)
             and hs_imageset(emote.url, emote.h) or nil
         local cls = nil
         if not set and (budget.last or not over_budget) then cls = modifiers.classify(word) end
@@ -575,6 +575,7 @@ local function do_process(ch, msg, hint)
     local want_flame = store.flame_enabled() and login ~= senders.own_login
         and senders.is_known_hs(login)
     local t = msg_time(msg)
+    net.note_wall(t) -- a live message's server time anchors the wall clock (net.lua)
     local heat_info = heat.info(login)
     local want_flair = flair.has(msg.user_id, login)
     local under = under_for(msg, text)
@@ -762,6 +763,12 @@ function M.backpass_preview(url)
             end
         end)
     end
+end
+
+-- an account-mute change: re-run every hooked channel's recent lines
+function M.backpass_all()
+    if not M.started then return end
+    for name in pairs(hooked) do M.backpass_channel(name) end
 end
 
 -- a channel's community-mute list just landed: collapse its muted chatters' recent lines

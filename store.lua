@@ -1,11 +1,13 @@
 -- persisted plugin config: local emote block list + flame-marker toggle.
 -- kept out of the render/net hot paths as a tiny single-purpose module.
 --
--- block is LOCAL-ONLY by design: the plugin connects to heatsync.org
--- anonymously and every server block endpoint requires a bearer token, so a
--- block can't sync to your heatsync account. this matches how heatsync itself
--- models blocks anyway — a viewer-side render preference (the server never
--- filters blocked emotes out of the inventory it ships).
+-- blocks are LOCAL by name (blocks.txt). when you log in (opt-in, account.lua) the
+-- account's blocks — which are keyed by emote HASH — are merged in as an in-memory
+-- hash set: an emote whose row carries a blocked hash is hidden in render and
+-- tab-complete exactly like a name block. the hash set is never written to disk
+-- (it is re-pulled on login and every few minutes); a viewer-side render
+-- preference either way — the server never filters blocked emotes out of what
+-- it ships.
 local net = require("net")
 
 local M = {}
@@ -22,6 +24,8 @@ local PIN_FILE = "pin.txt"         -- "0" = pinned message off (ON by default, o
 
 -- blocked[name] = true
 local blocked = {}
+-- account blocks: hash_blocked[hash] = true (in memory only, see header)
+local hash_blocked = {}
 local flame_on = true
 local archive_on = true -- default ON (opt-out) — tells heatsync which public
                          -- twitch channels you're watching so it archives them
@@ -68,9 +72,30 @@ local function persist_blocks()
 end
 
 -- ----- blocks -----
-function M.is_blocked(name)
-    return blocked[name] == true
+-- `hash` (optional): the emote row's content hash — an account block hides it
+-- whatever name it goes by.
+function M.is_blocked(name, hash)
+    if blocked[name] == true then return true end
+    return hash ~= nil and hash_blocked[hash] == true
 end
+
+-- replace the account-block hash set (login / periodic sync / logout = empty)
+function M.set_hash_blocks(set)
+    local out = {}
+    if type(set) == "table" then
+        for h in pairs(set) do
+            if type(h) == "string" then out[h] = true end
+        end
+    end
+    hash_blocked = out
+end
+
+function M.add_hash_block(h) if type(h) == "string" then hash_blocked[h] = true end end
+function M.remove_hash_block(h) if type(h) == "string" then hash_blocked[h] = nil end end
+function M.is_hash_blocked(h) return h ~= nil and hash_blocked[h] == true end
+
+-- read-only view for the completion hot path (iterate/index, never mutate)
+function M.hash_blocked_set() return hash_blocked end
 
 function M.block(name)
     if type(name) ~= "string" or name == "" then return false end

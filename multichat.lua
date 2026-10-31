@@ -98,7 +98,7 @@ end
 -- the plain word). dims are unknown on a ref (see HsEmoteRef) — 32 matches the
 -- 1x tier height for_hs_emote already clamps every heatsync emote to.
 local function build_hs_elem(word, ref)
-    if store.is_blocked(word) then return nil end
+    if store.is_blocked(word, net.safe_hash(ref.hash)) then return nil end
     local set = caps.images and img.for_hs_emote(ref.url, 32) or nil
     if not set then return nil end
     return {
@@ -498,6 +498,33 @@ function M.on_ws_up()
     end
 end
 
+-- which kick channel a merged line came from, by message id, so the right-click
+-- menu can pin it (a merged line carries no channel name of its own). a bounded
+-- ring: the last 400 kick lines only.
+local LINE_META_MAX = 400
+local line_meta, line_ring, line_ring_i = {}, {}, 0
+local function remember_line(line)
+    if line.platform ~= "kick" or type(line.id) ~= "string" or line.id == "" or #line.id > 80 then return end
+    line_ring_i = line_ring_i % LINE_META_MAX + 1
+    local old = line_ring[line_ring_i]
+    if old then line_meta[old] = nil end
+    line_ring[line_ring_i] = line.id
+    line_meta[line.id] = { platform = "kick", channel = string.lower(line.channel) }
+end
+
+function M.line_info(id)
+    return type(id) == "string" and line_meta[id] or nil
+end
+
+-- the channel names a line is "in", for account mention rules: the platform
+-- source's own channel and the twitch tab it landed in (lowercase)
+local function mention_channels(cc_name, line)
+    local out = {}
+    if type(cc_name) == "string" then out[#out + 1] = string.lower(cc_name) end
+    if type(line.channel) == "string" and #line.channel <= 60 then out[#out + 1] = string.lower(line.channel) end
+    return out
+end
+
 -- ----- injection -----
 -- built ONCE at load, not re-created as a closure per target per message (a
 -- 250-line flood × N tabs would otherwise allocate a closure + upvalues each
@@ -525,8 +552,10 @@ local function inject_one(cc_name, line, tag, tag_color, display, uname_color, b
     local uname = type(line.username) == "string" and line.username or display
     if #uname > 100 then uname = uname:sub(1, 100) end
     -- a line aimed at the signed-in account gets chatterino's mention look
-    local flags, hl = mention.fields(text, uname, line.reply_user)
+    local plat = line.platform == "yt" and "youtube" or line.platform
+    local flags, hl = mention.fields(text, uname, line.reply_user, plat, mention_channels(cc_name, line))
     ch:add_message(net.new_message({
+        id = type(line.id) == "string" and line.id ~= "" and #line.id <= 80 and line.id or nil,
         flags = flags,
         highlight_color = hl,
         login_name = string.lower(uname),
@@ -577,6 +606,8 @@ function inject(line, only)
     -- bound field lengths from the untrusted ws payload: a multi-MB username or
     -- text would otherwise be built straight into a chat element (cheap DoS knob)
     if #text > 2000 then text = text:sub(1, 2000) end
+    net.note_wall(line.time_ms) -- a server timestamp anchors the wall clock (token expiry)
+    remember_line(line)
     local display = line.display
     if type(display) ~= "string" or display == "" then display = line.username or "?" end
     if #display > 100 then display = display:sub(1, 100) end

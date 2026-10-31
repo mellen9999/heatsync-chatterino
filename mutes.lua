@@ -38,13 +38,20 @@ local PLATFORM = { twitch = "twitch", kick = "kick", youtube = "youtube", yt = "
 -- /api/community-mutes mutes[] → { any = {name=true}, twitch = {...}, kick = {...},
 -- youtube = {...} }, or false when nothing usable (an empty list included). a
 -- null/unknown platform means "that name on every platform", as on the site.
-function M.parse(list)
+-- `wall_ms` / `limit` are for your own account list: rows whose expires_at has
+-- passed are skipped, and the cap is higher than the community list's.
+function M.parse(list, wall_ms, limit)
     if type(list) ~= "table" then return false end
     local out = { any = {}, twitch = {}, kick = {}, youtube = {} }
     local n = 0
-    for i = 1, math.min(#list, LIMIT) do
+    for i = 1, math.min(#list, limit or LIMIT) do
         local e = list[i]
-        if type(e) == "table" and type(e.username) == "string" and e.username ~= ""
+        local gone = false
+        if wall_ms and type(e) == "table" and e.expires_at ~= nil then
+            local x = net.iso_to_ms(e.expires_at)
+            gone = x ~= nil and x <= wall_ms
+        end
+        if not gone and type(e) == "table" and type(e.username) == "string" and e.username ~= ""
             and #e.username <= NAME_MAX and not string.find(e.username, "%c") then
             local name = string.lower(e.username)
             local bucket = type(e.platform) == "string" and PLATFORM[string.lower(e.platform)] or nil
@@ -83,9 +90,31 @@ function M.set_on_loaded(fn)
     end
 end
 
--- needs render's replace_message (t2); opt-in
+-- your own account mutes (opt-in login, account_sync.lua): the same bucket shape as
+-- a community list, but not per channel — a mute follows the chatter everywhere.
+-- these collapse through the exact same path as a community mute.
+local account_set = nil
+
+function M.set_account(set)
+    account_set = type(set) == "table" and set or nil
+end
+
+function M.account_count()
+    local n = 0
+    if account_set then
+        for _, b in pairs(account_set) do for _ in pairs(b) do n = n + 1 end end
+    end
+    return n
+end
+
+-- needs render's replace_message (t2). community mutes are opt-in (/hsmutes);
+-- account mutes apply whenever you're logged in and have some.
 function M.enabled()
-    return store.mutes_enabled() and caps.tier == 2
+    return caps.tier == 2 and (store.mutes_enabled() or account_set ~= nil)
+end
+
+local function in_set(set, login, platform)
+    return set.any[login] == true or (set[platform] ~= nil and set[platform][login] == true)
 end
 
 -- is `login` (lowercase) on `platform` ("twitch" | "kick" | "youtube") muted in
@@ -95,10 +124,12 @@ function M.is_muted(channel, login, platform)
     if type(channel) ~= "string" or type(login) ~= "string" then return false end
     if #channel > 25 or not string.match(channel, CHANNEL_RE) then return false end
     if login == senders.own_login then return false end
+    login = string.lower(login)
+    if account_set and in_set(account_set, login, platform) then return true end
+    if not store.mutes_enabled() then return false end
     local set = cache:resolve(channel)
     if not set then return false end
-    login = string.lower(login)
-    return set.any[login] == true or (set[platform] ~= nil and set[platform][login] == true)
+    return in_set(set, login, platform)
 end
 
 function M.flush() cache:flush() end
