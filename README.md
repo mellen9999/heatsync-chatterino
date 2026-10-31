@@ -62,7 +62,7 @@ the same two lines also show for **twitch**, in that channel's own open tab — 
 
 heatsync keeps one pinned message per channel (twitch and kick), shown to every heatsync viewer. here it shows up as a system-style line in the tab: `📌 pinned` · the pinner's name · the message. on twitch, clicking the text jumps to the original message if it's still in scrollback. a kick pin lands in the twitch tab the kick chat is merged into, tagged `[K]`. when the pin is removed you get a `📌 pin cleared` line. on by default; `/hspin off` hides it.
 
-pins are view-only here; pin from heatsync.org or the extension (pinning needs a heatsync login and the plugin's socket is anonymous). it costs nothing extra: the pin rides the room the plugin already joins, plus one public `GET /api/pin` when a tab opens.
+seeing a pin is free and anonymous: it rides the room the plugin already joins, plus one public `GET /api/pin` when a tab opens. *setting* one needs the optional heatsync login ([log in](#log-in-optional)): right-click a twitch or kick line → heatsync → `pin message`, and `/hspin clear` removes this channel's pin (`/hspin clear kick:<slug>` for a kick one). heatsync decides whether you're a moderator there — if not you get "you're not a moderator here"; a very new message says "too new: try again in a few seconds". the socket itself never pins anything.
 
 ## live sync
 
@@ -86,7 +86,7 @@ a heatsync user's picked name color applies to their name on merged **youtube** 
 
 ## mention highlights
 
-a merged `[K]` / `[Y]` line that mentions your twitch login gets chatterino's own mention look (the default highlight row, and it lands in your mentions tab), so a ping from kick or youtube doesn't slip by. the rule is the extension's: your login as a whole word, any case, `@` optional (`mellen` yes, `mellenfans` no), never your own lines, and a kick reply aimed at you. on by default, `/hsmentions off` to stop. purely local — nothing is sent anywhere. limits: chatterino's account api gives the plugin your login only (no display name, no kick/youtube alias names), the plugin can't read a custom highlight color, and the extension's server-side mention rules need a heatsync login the anonymous socket doesn't have. needs a build that exposes the highlight flag; without it the toggle is accepted and does nothing.
+a merged `[K]` / `[Y]` line that mentions your twitch login gets chatterino's own mention look (the default highlight row, and it lands in your mentions tab), so a ping from kick or youtube doesn't slip by. the rule is the extension's: your login as a whole word, any case, `@` optional (`mellen` yes, `mellenfans` no), never your own lines, and a kick reply aimed at you. on by default, `/hsmentions off` to stop. purely local — nothing is sent anywhere. if you [log in](#log-in-optional), your heatsync account's mention rules count too (see below). limits: chatterino's account api gives the plugin your login only (no display name, no kick/youtube alias names) and the plugin can't read a custom highlight color. needs a build that exposes the highlight flag; without it the toggle is accepted and does nothing.
 
 ## community mutes
 
@@ -110,6 +110,35 @@ the data comes from heatsync, anonymously: `GET /api/embed/resolve` for the prov
 
 `/hscard <user>` (or right-click → heatsync → card) prints a chatter's heatsync card in the tab: heat, posts, followers, live, how long they've followed this channel, what heatsync's archive has on them, and their last few lines. the name is a link — click it for chatterino's own usercard. it's one anonymous `POST /api/card`; if that ever comes back unusable it falls back to the plain profile + followage endpoints.
 
+## log in (optional)
+
+everything above works without an account. logging in is **opt-in** and unlocks the things that need to know who you are: notes on chatters, an account-wide mute list, emote blocks that follow you between devices, your account's mention rules, following people, and pinning. skip it and the plugin behaves exactly as before.
+
+**log in, 3 steps:**
+
+1. type `/hslogin` in any chat. it prints a short code and a link.
+2. click the link (heatsync.org/cli), sign in, type the code, and **tick `account`** (`chat` and `mod` are optional extras), then approve.
+3. come back to chatterino — within a few seconds it says `logged in as <you> · <permissions>`. that's it. `/hsstatus` shows your login state any time; `/hslogout` signs out.
+
+what you get once logged in (every command says `log in first: /hslogin` if you aren't):
+
+| command | what |
+|---|---|
+| `/hsnote <user> [text]` | no text shows your private note on a chatter, with text sets it, `/hsnote <user> -` clears it. synced to your account (the same note the extension's user card shows); `/hscard` shows it too |
+| `/hsmute <user> [twitch\|kick\|yt]` · `/hsunmute <user> [platform]` · `/hsmutelist` | your account's mute list. a muted chatter's lines collapse to the same `[muted by the community]` placeholder community mutes use (never your own lines, never deleted). no platform = everywhere. refreshed every ~5 min, so a mute from the site or extension shows up here too |
+| `/hsblock` · `/hsunblock` | also block/unblock the emote on your account, by its hash, and say so. an emote the plugin hasn't learned the hash of yet stays local-only (it tells you). on login your account's blocked emotes are hidden here too — in chat and in tab-complete |
+| mention rules | your account's `word` and `phrase` mention rules highlight merged kick/youtube lines (platform and channel scopes respected; `/hsmentions off` turns them off too). `regex` rules can't run here and are skipped (`/hsstatus` counts them) |
+| `/hsfollow <user>` · `/hsunfollow <user>` | follow on heatsync; `/hscard` shows `following` / `not following` |
+| right-click → heatsync → `pin message` · `/hspin clear` | pin or unpin on twitch and kick (moderators; heatsync says if you aren't) |
+
+**permissions & privacy of the login:**
+
+- the token is a long random string heatsync gives your pairing. it can use *your account's* notes, mutes, emote blocks, mention rules and follows (the `account` permission) and pin (if you're a moderator); `chat` and `mod` aren't used by the plugin yet. it only works against heatsync.org's `/api/cli/*` routes, and only for the permissions you ticked.
+- it is sent **only** as an `Authorization: Bearer` header on https requests to `https://heatsync.org/api/cli/…`. the websocket stays anonymous, no other site or path ever sees it, and it is never written to chatterino's log or printed in chat (`/hsstatus` and `/hsdump` redact it).
+- it's stored in the plugin's data folder (`Plugins/heatsync/data/account.txt`), as plain text, like any chat client's token. anyone who can read that folder can use the login — treat it like a saved password.
+- it lasts 30 days and renews itself when under 7 days are left (for up to 90 days after you first logged in, then `/hslogin` again). if it ever stops working the plugin says so once and signs you out.
+- **revoke it any time:** `/hslogout` (revokes it on heatsync and wipes the file), or heatsync.org/cli to revoke from the site. deleting `account.txt` signs out locally.
+
 ## the 🔥 marker
 
 heatsync users get a 🔥 before their name in any chat, so they're identifiable even on plain-text lines. it appears once we've seen someone post heatsync content (no lookup storm on silent chat), and never on your own messages (you know it's you). `/hsflame off` turns it off.
@@ -130,7 +159,11 @@ heatsync users get a 🔥 before their name in any chat, so they're identifiable
 | `/hswhois <user>` | heatsync profile card for any streamer (heat, followers, live, posts) |
 | `/hscard <user>` | a chatter's card: heat, posts, follows this channel since, archive stats, last lines; the name opens chatterino's usercard |
 | `/hsarchive on\|off` | tell heatsync which public twitch channels you watch, so it archives them itself (on by default; `off` to opt out) |
-| `/hsblock <name>` \| `/hsunblock` \| `/hsblocklist` | locally hide an emote (render + tab-complete) |
+| `/hsblock <name>` \| `/hsunblock` \| `/hsblocklist` | hide an emote (render + tab-complete); local, and synced to your account too when [logged in](#log-in-optional) |
+| `/hslogin` · `/hslogout` | optional heatsync login: a 3-step pairing, then the account commands below |
+| `/hsnote <user> [text\|-]` | your private note on a chatter (view / set / clear), synced; needs login |
+| `/hsmute <user> [plat]` · `/hsunmute <user> [plat]` · `/hsmutelist` | your account's mutes; muted lines collapse; needs login |
+| `/hsfollow <user>` · `/hsunfollow <user>` | follow / unfollow on heatsync; needs login |
 | `/hsflame on\|off` | toggle the 🔥 heatsync-user marker |
 | `/hsheat on\|off` | heat bars before chatters' names (on by default) |
 | `/hsflair on\|off` | sub-flair badges before chatters' names (on by default) |
@@ -141,7 +174,8 @@ heatsync users get a 🔥 before their name in any chat, so they're identifiable
 | `/hsmutes on\|off` | collapse the lines of chatters your channel's heatsync community muted to a short placeholder (opt-in) |
 | `/hsimages on\|off` | show image links as inline images, loaded through heatsync's proxy (opt-in) |
 | `/hsbadges on\|off` | show chatterino global badges on chatters (opt-in) |
-| `/hspin on\|off` | the channel's heatsync pinned message as a 📌 line, view-only (on by default) |
+| `/hspin on\|off` | the channel's heatsync pinned message as a 📌 line (on by default) |
+| `/hspin clear [kick:<slug>]` | remove this channel's pin (moderators; needs login). pin a message from the right-click menu |
 | `/hslive on\|off` | 🔴/⚫ go-live + offline lines for your linked kick/youtube sources, and 🎮/📝 game + title switch lines for those and your open twitch tabs (opt-in) |
 | `/hsmoments on\|off` | 🔥 line when a chat you have open spikes (opt-in) |
 | `/hsmoments [<n>h] [platform] [page]` | top live chat moments, clickable permalinks; `48h` sets the window, a bare number pages, filter by platform |
@@ -151,11 +185,11 @@ heatsync users get a 🔥 before their name in any chat, so they're identifiable
 
 a leading `:` is optional — `:pog` and `pog` both match. `/hsstatus` also shows multichat's per-tab links and any lines it's had to drop (a tab closed mid-merge), so a merge is legible instead of silent. new to the plugin? `/hshelp`.
 
-`/hsblock` is **local-only**: the plugin connects anonymously, so a block can't sync to your heatsync account (use the website/extension for that). that also matches how heatsync models blocks — a viewer-side render preference, not a server-side filter.
+`/hsblock` is a viewer-side render preference (heatsync never filters blocked emotes out of what it ships): by name on this machine, and — only if you [log in](#log-in-optional) — also on your account by the emote's hash, so it follows you to the extension and back. logged out it is local-only, exactly as before.
 
 ## what a plugin can't do (vs the browser extension)
 
-the extension rewrites twitch.tv's page, so it can add right-click menus, username paints, settings panels, overlays. a chatterino plugin only has chat commands, tab-completion, message building, and (on builds that expose it) a right-click menu — **no settings UI, no username paints, no injecting into chatterino's own emote picker, no server-synced blocks, no pinning or moderation (the plugin's socket is anonymous)**. those need a fork, and this is deliberately not a fork. everything above is what's reachable *without* one, built to the edge of that line.
+the extension rewrites twitch.tv's page, so it can add right-click menus, username paints, settings panels, overlays. a chatterino plugin only has chat commands, tab-completion, message building, and (on builds that expose it) a right-click menu — **no settings UI, no username paints, no injecting into chatterino's own emote picker, nothing that needs the website's cookie session (the account features go through heatsync's separate, revocable login token instead)**. those need a fork, and this is deliberately not a fork. everything above is what's reachable *without* one, built to the edge of that line.
 
 ## install
 
@@ -178,8 +212,8 @@ from source: clone this repo into `Plugins/heatsync` instead. `./release.sh` bui
 
 | permission | why |
 |---|---|
-| `Network` | public heatsync.org endpoints (`/api/profile`, `/api/users/<id>/emotes`, `/api/users/emotes/batch`, `/api/emote-search`, `/api/search`, `/api/archive/search`, `/api/moments`, `/api/live/top`, `/api/pin`, `/api/chatter/<...>/stats`, `/api/chatterino-badges`, `/api/users/heat`, `/api/users/flair`, `/api/paints`, `/api/card`, `/api/twitch/followage`, `/api/img` (inline images, opt-in; gif thumbnails), `/api/gifs/search` + `/api/gifs/top` (`/hsgif`), `/api/community-mutes/<channel>` (community mutes, opt-in), `/api/embed/resolve` + `/api/link-preview` (link previews, opt-in), `/api/recent/<kick\|youtube>/<channel>`) plus one anonymous websocket for live sync and multichat. |
-| `FilesystemRead` / `FilesystemWrite` | remembers your settings, block list, multichat links, and recently-used emotes in the plugin's own data folder. local only. |
+| `Network` | public heatsync.org endpoints (`/api/profile`, `/api/users/<id>/emotes`, `/api/users/emotes/batch`, `/api/emote-search`, `/api/search`, `/api/archive/search`, `/api/moments`, `/api/live/top`, `/api/pin`, `/api/chatter/<...>/stats`, `/api/chatterino-badges`, `/api/users/heat`, `/api/users/flair`, `/api/paints`, `/api/card`, `/api/twitch/followage`, `/api/img` (inline images, opt-in; gif thumbnails), `/api/gifs/search` + `/api/gifs/top` (`/hsgif`), `/api/community-mutes/<channel>` (community mutes, opt-in), `/api/embed/resolve` + `/api/link-preview` (link previews, opt-in), `/api/recent/<kick\|youtube>/<channel>`) plus one anonymous websocket for live sync and multichat. **only if you log in:** `https://heatsync.org/api/cli/*` (pairing, `/me`, `/rotate`, `/token`, `/user-notes`, `/mutes`, `/mention-rules`, `/emote-blocks`, `/following`, `/follow`, `/pin`) with your token — see [log in](#log-in-optional). |
+| `FilesystemRead` / `FilesystemWrite` | remembers your settings, block list, multichat links, and recently-used emotes in the plugin's own data folder — plus your login token (`account.txt`, plain text) if you log in. local only. |
 
 **what leaves chatterino:**
 
@@ -191,11 +225,12 @@ from source: clone this repo into `Plugins/heatsync` instead. `./release.sh` bui
 - while `/hsmutes` is **on** (opt-in): the name of each twitch channel you have open is sent to heatsync (`/api/community-mutes/<channel>`) to fetch its muted list — no chatter, message or account. `/hsmutes off` stops it.
 - `/hsgif` sends the query you typed to heatsync (`/api/gifs/search`) and loads the stills through its image proxy; only when you run it.
 - `/hscard` sends the one login you ask about, and the tab it's in. a merged kick/youtube source's history request sends the source's channel name (`/hsbackfill off` skips it).
-- nothing else. no auth tokens (the socket is anonymous), no whispers/DMs, no browsing history, no telemetry.
+- **only if you log in:** your heatsync login token goes to heatsync.org's `/api/cli/*` as a Bearer header, plus what each account command carries (the chatter you note/mute/follow, the note text, the emote's hash, the message id you pin). never on the websocket, never anywhere else, never logged. `/hslogout` stops it.
+- nothing else. no whispers/DMs, no browsing history, no telemetry. with no login, no token exists and the socket is anonymous.
 
 ## architecture
 
-small single-purpose modules: `caps` (feature detection), `net` (http / json / timers / data files), `inventory` (your emotes), `seventv` (catalog search + render cache), `senders` (other chatters' sets), `recents` (learned usage), `img` (image-set builder + CDN allowlist), `picker` (clickable emote / gif grids), `gifs` (gif search + cache), `ws` (socket lifecycle), `multichat` (kick/youtube injection), `live` (opt-in go-live status), `mention` (mention highlights), `pin` (view-only pinned message), `badges` (chatterino badges), `images` (inline image detection, proxy url, size probe), `previews` (opt-in link previews, drawn by `render`), `mutes` (opt-in community-mute lists, collapsed by `render`), `lookup` (the shared batched ttl cache behind `heat` / `flair` / `namecolor` / `mutes`: heat bars, sub-flair badges, youtube name colors), `render` (hook → rebuild → replace), `store` (persisted toggles), and the command layer — `cmdutil` (shared helpers) plus `cmd_emotes` / `cmd_archive` / `cmd_card` / `cmd_multichat` / `cmd_system`, all wired by `init`. every hook is pcall-guarded and every capability is feature-detected, so a missing API degrades one feature instead of erroring. if chatterino ever exposes first-class plugin emote providers, `render.lua` is the only file that needs to change.
+small single-purpose modules: `caps` (feature detection), `net` (http / json / timers / data files), `inventory` (your emotes), `seventv` (catalog search + render cache), `senders` (other chatters' sets), `recents` (learned usage), `img` (image-set builder + CDN allowlist), `picker` (clickable emote / gif grids), `gifs` (gif search + cache), `ws` (socket lifecycle), `multichat` (kick/youtube injection), `live` (opt-in go-live status), `mention` (mention highlights), `pin` (view-only pinned message), `badges` (chatterino badges), `images` (inline image detection, proxy url, size probe), `previews` (opt-in link previews, drawn by `render`), `mutes` (opt-in community-mute lists + your account mutes, collapsed by `render`), `account` (the opt-in login: token file, the single authenticated request door, auto-renew), `pairing` (`/hslogin` flow), `account_sync` (pulls mutes / emote blocks / mention rules / follows), `cmd_account` (login + notes / mutes / follow / pin commands), `lookup` (the shared batched ttl cache behind `heat` / `flair` / `namecolor` / `mutes`: heat bars, sub-flair badges, youtube name colors), `render` (hook → rebuild → replace), `store` (persisted toggles), and the command layer — `cmdutil` (shared helpers) plus `cmd_emotes` / `cmd_archive` / `cmd_card` / `cmd_multichat` / `cmd_system`, all wired by `init`. every hook is pcall-guarded and every capability is feature-detected, so a missing API degrades one feature instead of erroring. if chatterino ever exposes first-class plugin emote providers, `render.lua` is the only file that needs to change.
 
 ## tests
 
