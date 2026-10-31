@@ -102,7 +102,7 @@ local function advance(ms)
     now_ms = target
 end
 
-c2.HTTPMethod = { Get = "GET", Post = "POST" }
+c2.HTTPMethod = { Get = "GET", Post = "POST", Put = "PUT", Delete = "DELETE" }
 local HTTPRequest = {}
 HTTPRequest.__index = HTTPRequest
 c2.HTTPRequest = {}
@@ -116,7 +116,8 @@ function HTTPRequest:set_header(k, v) self.headers[k] = v end
 function HTTPRequest:on_success(cb) self.success = cb end
 function HTTPRequest:on_error(cb) self.err = cb end
 function HTTPRequest:finally(cb) self.fin = cb end
-function HTTPRequest:execute() http_queue[#http_queue + 1] = self end
+local all_reqs = {} -- every request ever executed (token-scope assertions)
+function HTTPRequest:execute() http_queue[#http_queue + 1] = self; all_reqs[#all_reqs + 1] = self end
 
 -- answer the oldest pending request matching pattern with a payload table
 local LAST_REQ = nil -- the request http_answer last answered (method/payload checks)
@@ -306,6 +307,7 @@ end
 -- =====================================================================
 -- load the plugin  (os stripped: emulate chatterino's sandbox)
 -- =====================================================================
+host_os.remove("account.txt") -- a stale login file from a failed run must not auto-login the suite
 os = nil
 dofile(PLUGIN .. "/init.lua")
 
@@ -4751,6 +4753,1019 @@ do
     clear_net()
     for i = #channels, 1, -1 do if channels[i] == ch then table.remove(channels, i) end end
     store.set_previews(false)
+end
+
+-- ===== v1.14 opt-in heatsync login + account features =====
+-- (spliced into harness.lua; shares its stubs)
+do
+    local store = require("store")
+    local mutes = require("mutes")
+    local mention = require("mention")
+    local account = require("account")
+    local sync = require("account_sync")
+    local net = require("net")
+    local u = require("cmdutil")
+
+    local TOKEN = "hscli_SECRETTOKEN0123456789abcdef"
+    local TOKEN2 = "hscli_ROTATEDTOKEN0123456789abcdef"
+    local DAY = 86400 * 1000
+    local own_before = senders.own_login
+    senders.own_login = "mellen"
+    local function iso(ms) return host_os.date("!%Y-%m-%dT%H:%M:%S", math.floor(ms / 1000)) .. ".000Z" end
+    net.note_wall(1761825602000)
+    local function wall() return net.wall_ms() end
+
+    local ch = fake_channel("acctchan")
+    channels[#channels + 1] = ch
+    render.discover()
+    local function ctx(words) return { words = words, channel = ch } end
+    local clear_cli -- defined below; stale background requests (the 5 min sync timer) must not be mistaken for a command's
+    local function run(cmdline, keep)
+        if not keep then clear_cli() end
+        local words = {}
+        for w in cmdline:gmatch("%S+") do words[#words + 1] = w end
+        commands[words[1]](ctx(words))
+    end
+    local function texts()
+        local out = {}
+        for _, m in ipairs(ch.added) do
+            if type(m) == "string" then out[#out + 1] = m
+            elseif type(m) == "table" and m.init then
+                for _, e in ipairs(m.init.elements) do if e.text then out[#out + 1] = e.text end end
+            end
+        end
+        return table.concat(out, "\n")
+    end
+    local function says(frag, from)
+        return texts():find(frag, 1, true) ~= nil
+    end
+    local seen_all = {}
+    local function reset_out()
+        for _, m in ipairs(ch.added) do if type(m) == "string" then seen_all[#seen_all + 1] = m end end
+        ch.added = {}
+    end
+    local function find_req(pat)
+        for _, r in ipairs(http_queue) do if r.url:find(pat, 1, true) then return r end end
+        return nil
+    end
+    function clear_cli()
+        for i = #http_queue, 1, -1 do if http_queue[i].url:find("/api/cli/", 1, true) then table.remove(http_queue, i) end end
+    end
+    local function count_req(pat)
+        local n = 0
+        for _, r in ipairs(http_queue) do if r.url:find(pat, 1, true) then n = n + 1 end end
+        return n
+    end
+    local DEFAULTS = {
+        ["/api/cli/mutes"] = { mutes = {}, v = 0 },
+        ["/api/cli/emote-blocks"] = { blocked_emotes = {}, count = 0 },
+        ["/api/cli/mention-rules"] = { rules = {} },
+    }
+    local function settle()
+        for _ = 1, 8 do
+            local did = false
+            for pat, body in pairs(DEFAULTS) do if http_answer(pat, body) then did = true end end
+            if not did then break end
+        end
+    end
+    local function pair_login(scopes, exp_ms)
+        run("/hslogin", true)
+        http_answer("/api/cli/pair/start", { device_code = "dev-code-1", user_code = "ABCD-EFGH",
+            verification_uri = "https://heatsync.org/cli", expires_in = 300, interval = 3 })
+        advance(3100)
+        http_answer("/api/cli/pair/poll", { status = "approved", token = TOKEN, expires_at = iso(exp_ms or (wall() + 30 * DAY)),
+            scopes = scopes or { "account", "chat" } })
+        http_answer("/api/cli/me", { user = { id = 5, username = "mellen", display_name = "Mellen" } })
+        settle()
+    end
+    local function logged_out()
+        if account.logged_in() then
+            run("/hslogout")
+            http_answer("/api/cli/token", {})
+        end
+        clear_cli()
+        reset_out()
+    end
+    local function logs_have(frag)
+        for _, l in ipairs(log_lines) do if l:find(frag, 1, true) then return true end end
+        return false
+    end
+
+    -- ---- logged out: every command points at /hslogin, nothing is sent ----
+    check(not account.logged_in() and caps.account == true, "account: logged out at boot, build can log in")
+    local before = #all_reqs
+    for _, line in ipairs({ "/hsnote bob hi", "/hsnote bob", "/hsmute bob", "/hsunmute bob", "/hsmutelist",
+        "/hsfollow bob", "/hsunfollow bob", "/hspin clear" }) do
+        reset_out()
+        run(line)
+        check(says("log in first: /hslogin"), "account/logged-out: " .. line .. " says 'log in first: /hslogin'")
+    end
+    check(#all_reqs == before, "account/logged-out: no request went out for any of them")
+    do -- /hsblock stays exactly local
+        reset_out()
+        run("/hsblock acctLocalOnly")
+        check(says("blocked 'acctLocalOnly' locally") and #all_reqs == before, "account/logged-out: /hsblock is local-only, no request")
+        run("/hsunblock acctLocalOnly")
+        check(#all_reqs == before, "account/logged-out: /hsunblock sends nothing")
+    end
+    do -- status reads clean, the pin menu has no pin item
+        reset_out()
+        run("/hsstatus")
+        check(says("account: logged out (/hslogin to log in)") and says("(anonymous)"), "account/logged-out: /hsstatus says logged out and the socket is anonymous")
+    end
+    check(select(1, sync.counts()) == 0 and mutes.account_count() == 0 and mention.rule_count() == 0, "account/logged-out: nothing synced")
+
+    -- ---- the bearer guard: the token can only go to heatsync.org/api/cli ----
+    do
+        local n = #all_reqs
+        local got
+        for _, bad in ipairs({ "https://evil.example/api/cli/mutes", "https://heatsync.org/api/other", "https://heatsync.org.evil.example/api/cli/x",
+            "http://heatsync.org/api/cli/mutes", "https://heatsync.org/api/cli/../admin", "https://heatsync.org/api/cli/mutes\n" }) do
+            got = nil
+            net.cli_request("Get", bad, nil, TOKEN, function(d, e) got = e end)
+            check(type(got) == "string" and got:find("refused", 1, true), "bearer guard: refuses " .. bad:gsub("%c", "?"))
+        end
+        check(#all_reqs == n, "bearer guard: a refused url never becomes a request")
+    end
+
+    -- ---- pairing: start → pending → slow_down → approved (once) ----
+    run("/hslogin", true)
+    do
+        local r = find_req("/api/cli/pair/start")
+        check(r ~= nil and r.method == "POST" and r.payload:find("chatterino", 1, true) and r.headers.Authorization == nil,
+            "pairing: start is a tokenless POST labelled chatterino")
+        http_answer("/api/cli/pair/start", { device_code = "dev-code-1", user_code = "ABCD-EFGH",
+            verification_uri = "https://heatsync.org/cli", expires_in = 300, interval = 3 })
+        local linkmsg = nil
+        for _, m in ipairs(ch.added) do
+            if type(m) == "table" and m.init then
+                for _, e in ipairs(m.init.elements) do
+                    if e.link and e.link.type == c2.LinkType.Url then linkmsg = e end
+                end
+            end
+        end
+        check(says("ABCD-EFGH") and says("tick 'account'"), "pairing: shows the code and says to tick 'account'")
+        check(linkmsg and linkmsg.link.value == "https://heatsync.org/cli", "pairing: a clickable Url link to the verification page")
+        check(require("pairing").pending() and find_req("/pair/poll") == nil, "pairing: no poll before the interval")
+        advance(2800)
+        check(find_req("/pair/poll") == nil, "pairing: still nothing at 2.8s")
+        advance(400)
+        local pr = find_req("/pair/poll")
+        check(pr ~= nil and pr.method == "POST" and pr.payload:find("dev-code-1", 1, true) and pr.headers.Authorization == nil,
+            "pairing: polls after the interval with the device code, no token")
+        http_answer("/pair/poll", { status = "pending" })
+        advance(3100)
+        check(find_req("/pair/poll") ~= nil, "pairing: pending → polls again at the same interval")
+        http_error("/pair/poll", 429, { error_code = "slow_down" })
+        advance(7800)
+        check(find_req("/pair/poll") == nil, "pairing: slow_down backs the poll off (8s)")
+        advance(400)
+        check(find_req("/pair/poll") ~= nil, "pairing: polls again after the backoff")
+        -- a second /hslogin while waiting re-shows the code, never starts another pairing
+        reset_out()
+        run("/hslogin", true)
+        check(says("ABCD-EFGH") and find_req("/pair/start") == nil, "pairing: /hslogin while waiting re-shows the same code")
+        -- junk poll answers don't crash or log anyone in
+        http_answer("/pair/poll", { status = 42, token = TOKEN })
+        advance(8100)
+        check(not account.logged_in(), "pairing: a junk poll answer does not log in")
+        http_answer("/pair/poll", { status = "approved", token = "not a token!", expires_at = iso(wall() + 30 * DAY), scopes = { "account" } })
+        check(not account.logged_in() and says("something unexpected"), "pairing: an approved answer with a malformed token is refused")
+    end
+    -- approved once
+    run("/hslogin", true)
+    http_answer("/api/cli/pair/start", { device_code = "dev-code-2", user_code = "WXYZ-2345", interval = 3, expires_in = 300 })
+    reset_out()
+    advance(3100)
+    http_answer("/pair/poll", { status = "approved", token = TOKEN, expires_at = iso(wall() + 30 * DAY), scopes = { "account", "chat" } })
+    check(account.logged_in(), "pairing: approved → logged in")
+    local me = find_req("/api/cli/me")
+    check(me and me.headers.Authorization == "Bearer " .. TOKEN, "pairing: /me is asked with the new token as a Bearer header")
+    http_answer("/api/cli/me", { user = { id = 5, username = "mellen", display_name = "Mellen" } })
+    settle()
+    check(says("logged in as Mellen · account chat"), "pairing: prints 'logged in as <name> · <scopes>'")
+    advance(60000)
+    check(find_req("/pair/poll") == nil, "pairing: polling stops once approved (the token is handed out once)")
+    check(account.has_scope("account") and account.has_scope("chat") and not account.has_scope("mod"), "account: scopes parsed")
+    do
+        local f = net.read_data("account.txt") or ""
+        check(f:find(TOKEN, 1, true) and f:find("scopes=account,chat", 1, true), "account: token + scopes persisted in the plugin data file")
+    end
+    do
+        local ok_old = account.logged_in()
+        account.load() -- a restart reads the same file back
+        check(ok_old and account.logged_in() and account.name() == "Mellen", "account: a saved login is restored from the data file")
+        settle(); clear_cli()
+    end
+
+    -- ---- the token never leaks: logs, status, dump, sockets, other hosts ----
+    do
+        reset_out()
+        run("/hsstatus")
+        local blob = texts()
+        check(blob:find("account: logged in as Mellen · account chat", 1, true) and blob:find("expires ", 1, true), "status: shows login, scopes and expiry date")
+        check(not blob:find("SECRETTOKEN", 1, true) and not blob:find("hscli_", 1, true), "status: never shows the token")
+        -- a chat line that happens to contain a token is redacted by /hsdump's log
+        local m = fake_msg("dumper", "1", "oops " .. TOKEN)
+        ch.msgs[#ch.msgs + 1] = m
+        run("/hsdump")
+        check(not logs_have("SECRETTOKEN") and logs_have("[REDACTED]"), "dump: a token in the dumped line is redacted in the log")
+        net.log_info("manual " .. TOKEN)
+        net.log_warn("manual " .. TOKEN)
+        check(not logs_have("SECRETTOKEN"), "logs: net.log_info/log_warn redact the token")
+        net.add_secret("odd-secret-value-9")
+        check(net.redact("x odd-secret-value-9 y") == "x [REDACTED] y", "logs: an exact registered secret is redacted too")
+        net.clear_secrets(); net.add_secret(TOKEN)
+        ch.msgs[#ch.msgs] = nil
+        reset_out()
+        u.sysmsg(ctx({}), "echo " .. TOKEN)
+        check(not texts():find("SECRETTOKEN", 1, true), "chat output: system messages redact the token")
+        for _, sk in ipairs(sockets) do
+            local leak = sk.url:find("SECRETTOKEN", 1, true) ~= nil
+            for _, snt in ipairs(sk.sent) do if snt:find("SECRETTOKEN", 1, true) then leak = true end end
+            check(not leak, "socket stays anonymous: no token in the url or any frame")
+        end
+    end
+
+    -- ---- notes (the /api/cli/user-notes system the extension's card uses) ----
+    reset_out()
+    run("/hsnote bob")
+    http_answer("/api/profile/bob", { profile = { id = 77 } })
+    do
+        local r = find_req("/api/cli/user-notes/77")
+        check(r and r.method == "GET" and r.headers.Authorization == "Bearer " .. TOKEN, "notes: view asks GET /api/cli/user-notes/<id> with the bearer")
+        http_answer("/api/cli/user-notes/77", { note = "likes cats", updated_at = iso(wall()) })
+        check(says("note on bob: likes cats"), "notes: view prints the note")
+    end
+    reset_out()
+    run("/hsnote bob")
+    http_answer("/api/cli/user-notes/77", { note = "", updated_at = iso(wall()) })
+    check(says("no note on bob yet"), "notes: an empty note says there isn't one")
+    reset_out()
+    run("/hsnote bob met at the raid  party")
+    do
+        local r = find_req("/api/cli/user-notes/77")
+        check(r and r.method == "PUT" and r.payload:find("met at the raid party", 1, true), "notes: set sends PUT {note}")
+        http_answer("/api/cli/user-notes/77", { ok = true, note = "met at the raid party", updated_at = iso(wall()) })
+        check(says("note on bob saved"), "notes: set confirms")
+    end
+    reset_out()
+    run("/hsnote bob -")
+    do
+        local r = find_req("/api/cli/user-notes/77")
+        check(r and r.method == "PUT" and r.payload:find('"note":""', 1, true), "notes: '-' clears with an empty note")
+        http_answer("/api/cli/user-notes/77", { ok = true, note = "", updated_at = iso(wall()) })
+        check(says("note on bob cleared"), "notes: clear confirms")
+    end
+    reset_out()
+    run("/hsnote bob " .. string.rep("x", 2001))
+    check(says("too long") and find_req("/api/cli/user-notes") == nil, "notes: over 2000 chars is refused locally")
+    reset_out()
+    run("/hsnote mellen hi")
+    check(says("not yourself") and find_req("/api/profile/mellen") == nil, "notes: no note on yourself")
+    reset_out()
+    run("/hsnote bad!name x")
+    check(says("usage: /hsnote"), "notes: a bad name shows usage")
+    reset_out()
+    run("/hsnote ghost x")
+    http_answer("/api/profile/ghost", { profile = { id = "kick_9", is_shadow = true } })
+    check(says("doesn't know 'ghost'"), "notes: a shadow profile has no account to note")
+    reset_out()
+    run("/hsnote carol x")
+    http_answer("/api/profile/carol", { profile = { id = 78 } })
+    http_error("/api/cli/user-notes/78", 404, { error = "not found" })
+    check(says("doesn't know 'carol'"), "notes: 404 → unknown user")
+    reset_out()
+    run("/hsnote bob x")
+    http_error("/api/cli/user-notes/77", 400, { error = "cannot note yourself" })
+    check(says("notes are for other people"), "notes: 400 → plain line")
+    reset_out()
+    run("/hsnote bob x")
+    http_error("/api/cli/user-notes/77", 429, { error_code = "rate_limited" })
+    check(says("slow down"), "notes: 429 → slow down line")
+    reset_out()
+    run("/hsnote bob x")
+    http_error("/api/cli/user-notes/77", 500, {})
+    check(says("hit a snag"), "notes: 500 → snag line")
+    reset_out()
+    run("/hsnote bob x")
+    http_fail("/api/cli/user-notes/77")
+    check(says("hit a snag") or says("couldn't reach"), "notes: transport failure is a plain line")
+
+    -- ---- card: shows the note + following when logged in ----
+    do
+        reset_out()
+        run("/hscard bob")
+        http_answer("/api/card", { profile = { id = 77, username = "bob", display_name = "bob", stats = {} } })
+        http_answer("/api/cli/user-notes/77", { note = "likes cats", updated_at = iso(wall()) })
+        http_answer("/api/cli/following", { following = { { id = 12 }, { id = 77 } } })
+        check(says("note: likes cats"), "card: shows your note on them when logged in")
+        check(says("following bob"), "card: shows 'following' when you follow them")
+        reset_out()
+        run("/hscard bob")
+        http_answer("/api/card", { profile = { id = 77, username = "bob", display_name = "bob", stats = {} } })
+        http_answer("/api/cli/user-notes/77", { note = "", updated_at = iso(wall()) })
+        check(says("following bob") and not says("note:"), "card: following comes from the cached list, empty notes are skipped")
+        reset_out()
+        run("/hscard dave")
+        http_answer("/api/card", { profile = { id = 79, username = "dave", display_name = "dave", stats = {} } })
+        http_answer("/api/cli/user-notes/79", { note = "", updated_at = iso(wall()) })
+        check(says("not following dave"), "card: 'not following' when you don't")
+        reset_out()
+        run("/hscard ghost2")
+        http_answer("/api/card", { profile = { id = 99, username = "ghost2", display_name = "ghost2", is_shadow = true, stats = {} } })
+        check(find_req("/api/cli/user-notes") == nil, "card: a shadow profile asks nothing of the account")
+    end
+
+    -- ---- follow / unfollow ----
+    reset_out()
+    run("/hsfollow bob")
+    do
+        local r = find_req("/api/cli/follow/77")
+        check(r and r.method == "POST" and r.headers.Authorization == "Bearer " .. TOKEN, "follow: POST /api/cli/follow/<id>")
+        http_answer("/api/cli/follow/77", { ok = true })
+        check(says("following bob on heatsync"), "follow: confirms")
+    end
+    reset_out(); run("/hsfollow bob"); http_error("/api/cli/follow/77", 409, { error = "already" })
+    check(says("already following bob"), "follow: 409 → already following")
+    reset_out(); run("/hsfollow bob"); http_error("/api/cli/follow/77", 400, { error = "self" })
+    check(says("can't follow yourself"), "follow: 400 → can't follow yourself")
+    reset_out(); run("/hsfollow bob"); http_error("/api/cli/follow/77", 404, {})
+    check(says("doesn't know 'bob'"), "follow: 404 → unknown user")
+    reset_out(); run("/hsunfollow bob")
+    do
+        local r = find_req("/api/cli/follow/77")
+        check(r and r.method == "DELETE", "unfollow: DELETE /api/cli/follow/<id>")
+        http_answer("/api/cli/follow/77", { ok = true })
+        check(says("unfollowed bob"), "unfollow: confirms")
+    end
+    reset_out(); run("/hsunfollow bob"); http_error("/api/cli/follow/77", 404, {})
+    check(says("isn't someone you follow"), "unfollow: 404 → not followed")
+    reset_out(); run("/hsfollow"); check(says("usage: /hsfollow"), "follow: no name shows usage")
+    check(sync.parse_following({ 5, "6", { user_id = 7 }, { id = "8" }, "x", {} })["7"] and sync.parse_following({ users = { { id = 3 } } })["3"]
+        and sync.parse_following("x") == nil and sync.parse_following({ nothing = 1 }) == nil, "follow: list parser accepts the sane shapes, rejects junk")
+
+    -- ---- mutes: pull, collapse through the community path, own user never ----
+    local mch = fake_channel("acctmute")
+    channels[#channels + 1] = mch
+    render.discover()
+    local function msend(login, text, extra)
+        local m = fake_msg(login, "8" .. #login, text)
+        m.channel_name = "acctmute"
+        for k, v in pairs(extra or {}) do m[k] = v end
+        mch.msgs[#mch.msgs + 1] = m
+        mch.appended_cb(m, nil)
+        return m
+    end
+    local function mcollapsed(rep)
+        local els = rep.new.init.elements
+        local last = els[#els]
+        return type(last) == "table" and last.tooltip == mutes.TIP
+    end
+    check(store.mutes_enabled() == false, "mutes/account: community mutes still off (opt-in) — account mutes stand alone")
+    local early = msend("bob", "early spam")
+    msend("alice", "fine")
+    local r0 = #mch.replaced
+    reset_out()
+    run("/hsmute bob")
+    do
+        local r = find_req("/api/cli/mutes")
+        check(r and r.method == "POST" and r.payload:find('"username":"bob"', 1, true) and not r.payload:find("platform", 1, true)
+            and r.headers.Authorization == "Bearer " .. TOKEN, "mutes: /hsmute POSTs {username} (no platform = everywhere)")
+        http_answer("/api/cli/mutes", { ok = true })
+        check(says("muted bob everywhere"), "mutes: confirms")
+        local changed = 0
+        sync.on_mutes_changed = (function(prev) return function() changed = changed + 1; if prev then prev() end end end)(sync.on_mutes_changed)
+        -- the confirm pull
+        local g = find_req("/api/cli/mutes")
+        check(g and g.method == "GET", "mutes: a successful change re-pulls the list")
+        http_answer("/api/cli/mutes", { mutes = { { username = "Bob", platform = "twitch" }, { username = "kk", platform = "kick" },
+            { username = "mellen" }, { username = "old", expires_at = iso(wall() - DAY) }, { username = "later", expires_at = iso(wall() + DAY) } }, v = 3 })
+        check(mutes.account_count() >= 4 and mutes.enabled(), "mutes: pulled list applied (expired entries skipped), enabled with community off")
+        check(changed == 1, "mutes: the change re-runs open channels")
+        local reps = {}
+        for i = r0 + 1, #mch.replaced do reps[#reps + 1] = mch.replaced[i] end
+        local hit = false
+        for _, rp in ipairs(reps) do if rp.old == early and mcollapsed(rp) then hit = true end end
+        check(hit and #reps == 1, "mutes: the muted chatter's earlier line collapses through the community-mute path, others untouched")
+        local n = #mch.replaced
+        msend("bob", "live spam")
+        check(#mch.replaced == n + 1 and mcollapsed(mch.replaced[#mch.replaced]), "mutes: a later line collapses as it arrives")
+        msend("old", "x"); msend("alice", "y")
+        check(#mch.replaced == n + 1, "mutes: expired mute and non-muted chatters untouched")
+        msend("mellen", "my own line")
+        check(#mch.replaced == n + 1, "mutes: your own line is never collapsed, even if the list names you")
+        -- v unchanged + same list → no re-run
+        clear_cli(); sync.pull_mutes(false)
+        http_answer("/api/cli/mutes", { mutes = { { username = "Bob", platform = "twitch" }, { username = "kk", platform = "kick" },
+            { username = "mellen" }, { username = "old", expires_at = iso(wall() - DAY) }, { username = "later", expires_at = iso(wall() + DAY) } }, v = 3 })
+        check(changed == 1, "mutes: same v and same list → nothing re-applied")
+        -- community mutes stay off: no community lookup was ever queued
+        advance(4100)
+        check(find_req("/api/community-mutes/") == nil, "mutes: account mutes never trigger a community lookup while /hsmutes is off")
+    end
+    -- merged kick/youtube lines collapse the same way
+    do
+        local mc = fake_channel("acctmc")
+        channels[#channels + 1] = mc
+        render.discover()
+        commands["/hsmulti"]({ words = { "/hsmulti", "kick:acctsrc" }, channel = mc })
+        for i = #http_queue, 1, -1 do if http_queue[i].url:find("/api/recent/", 1, true) then table.remove(http_queue, i) end end
+        local function ws_up()
+            for _ = 1, 200 do
+                if ws.connected then break end
+                advance(1000)
+                local sk = sockets[#sockets]
+                if not sk.closed then sk.opts.on_open() end
+            end
+            return sockets[#sockets]
+        end
+        local function hooked(m)
+            local els = {}
+            for _, e in ipairs(m.init.elements) do
+                if e.type == "text" then els[#els + 1] = { type = "text", words = { e.text }, flags = e.flags or c2.MessageElementFlag.Text, tooltip = e.tooltip }
+                else els[#els + 1] = e end
+            end
+            return { flags = 0, id = m.init.id or "", login_name = m.init.login_name, display_name = m.init.display_name, message_text = m.init.message_text,
+                search_text = m.init.message_text, channel_name = "", frozen = true, elements = function() return els end }
+        end
+        local function kick_line(id, user, text)
+            local k = #mc.added
+            ws_up().opts.on_text(register_payload({ type = "kick-chat-message", data = { platform = "kick", channel = "acctsrc", id = id, username = user, content = text, timestamp = 1761825602000 } }))
+            local m = mc.added[k + 1]
+            if m then mc.msgs[#mc.msgs + 1] = hooked(m); mc.appended_cb(mc.msgs[#mc.msgs], nil) end
+            return m
+        end
+        local n = #mc.replaced
+        kick_line("ak1", "kk", "kick spam")
+        check(#mc.replaced == n + 1 and mcollapsed(mc.replaced[#mc.replaced]), "mutes/kick: a muted kick chatter's merged line collapses (platform-scoped mute)")
+        kick_line("ak2", "someoneelse", "hello")
+        check(#mc.replaced == n + 1, "mutes/kick: other merged chatters untouched")
+        local km = kick_line("ak3", "ytonly", "x")
+        commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = mc })
+        for i = #channels, 1, -1 do if channels[i] == mc then table.remove(channels, i) end end
+    end
+    reset_out()
+    run("/hsmutelist")
+    do
+        http_answer("/api/cli/mutes", { mutes = { { username = "bob", platform = "twitch" }, { username = "kk", platform = "kick" } }, v = 3 })
+        check(says("2 muted: bob@twitch kk@kick"), "mutes: /hsmutelist prints the list")
+    end
+    reset_out()
+    run("/hsmutelist")
+    http_answer("/api/cli/mutes", { mutes = {}, v = 3 })
+    check(says("nobody muted"), "mutes: an empty list says so")
+    reset_out(); run("/hsmute mellen"); check(says("can't mute yourself") and find_req("/api/cli/mutes") == nil, "mutes: you can't mute yourself")
+    reset_out(); run("/hsmute bob kick"); do
+        local r = find_req("/api/cli/mutes")
+        check(r and r.payload:find('"platform":"kick"', 1, true), "mutes: platform argument is sent")
+        http_error("/api/cli/mutes", 400, { error = "Bad Name" })
+        check(says("heatsync said no: bad name"), "mutes: 400 shows the server's reason, lowercased")
+    end
+    reset_out(); run("/hsmute bob nosuch"); check(says("usage: /hsmute"), "mutes: unknown platform shows usage")
+    reset_out(); run("/hsmute bob"); http_error("/api/cli/mutes", 429, { error_code = "rate_limited" }); check(says("slow down"), "mutes: 429 → slow down")
+    reset_out(); run("/hsmute bob"); http_error("/api/cli/mutes", 500, {}); check(says("hit a snag"), "mutes: 500 → snag")
+    reset_out(); run("/hsunmute bob kick")
+    do
+        local r = find_req("/api/cli/mutes/bob")
+        check(r and r.method == "DELETE" and r.url:find("?platform=kick", 1, true), "mutes: /hsunmute DELETEs /mutes/<name>?platform=")
+        http_error("/api/cli/mutes/bob", 404, {})
+        check(says("bob wasn't muted"), "mutes: unmute 404 → wasn't muted")
+    end
+    reset_out(); run("/hsunmute bob")
+    http_answer("/api/cli/mutes/bob", { ok = true })
+    check(says("unmuted bob"), "mutes: unmute confirms")
+    http_answer("/api/cli/mutes", { mutes = {}, v = 4 })
+    check(mutes.account_count() == 0 and not mutes.enabled(), "mutes: empty pull → account mutes off again")
+    check(select(1, sync.counts()) == 0, "mutes: counts follow the pull")
+
+    -- ---- emote blocks: sync by hash; merge on pull; unknown hash stays local ----
+    do
+        check(net.parse_emote_row({ name = "a", url = "https://x/a.webp", hash = "abcd1234" }).hash == "abcd1234"
+            and net.parse_emote_row({ name = "a", url = "https://x/a.webp", hash = "bad hash!" }).hash == nil
+            and net.parse_emote_row({ name = "a", url = "https://x/a.webp", hash = 12 }).hash == nil, "blocks: emote rows keep a sane hash, drop junk")
+        -- own inventory rows as inventory.apply_rows builds them (the refresh path itself is
+        -- covered by the inventory section; here we only need rows that carry a hash)
+        local saved_map, saved_index = inventory.map, inventory.index
+        inventory.map = {
+            zzHashed = { url = "https://cdn.heatsync.org/e/9.webp", w = 56, h = 56, hash = "hashZZ" },
+            zzOther = { url = "https://cdn.heatsync.org/e/10.webp", w = 56, h = 56, hash = "hashOTHER" },
+            zzNoHash = { url = "https://cdn.heatsync.org/e/11.webp", w = 56, h = 56 },
+        }
+        inventory.index = {
+            { name = "zzHashed", lower = "zzhashed", hash = "hashZZ", usage = 3 },
+            { name = "zzOther", lower = "zzother", hash = "hashOTHER", usage = 2 },
+            { name = "zzNoHash", lower = "zznohash", usage = 1 },
+        }
+        -- a chatter's emote learned from a broadcast carries its hash too
+        senders.feed_broadcast("hashchatter", "bcEmote", { url = "https://cdn.heatsync.org/e/20.webp", height = 32, hash = "bchash99" })
+        check(senders.find_hash("bcEmote", "hashchatter") == "bchash99" and senders.find_hash("bcEmote") == "bchash99" and senders.find_hash("nope") == nil,
+            "blocks: sender sets keep an emote's hash (find_hash by owner, or when every cached set agrees)")
+        senders.feed_broadcast("hashchatter2", "bcEmote", { url = "https://cdn.heatsync.org/e/21.webp", height = 32, hash = "otherhash77" })
+        check(senders.find_hash("bcEmote") == nil and senders.find_hash("bcEmote", "hashchatter2") == "otherhash77", "blocks: two chatters' same-name emotes with different hashes are never guessed between")
+        reset_out()
+        run("/hsblock zzHashed")
+        local r = find_req("/api/cli/emote-blocks")
+        check(r and r.method == "POST" and r.payload:find('"emote_hash":"hashZZ"', 1, true) and r.headers.Authorization == "Bearer " .. TOKEN,
+            "blocks: logged in, /hsblock also POSTs the emote's hash")
+        http_answer("/api/cli/emote-blocks", { ok = true })
+        check(says("blocked 'zzHashed' locally") and says("blocked on your account too") and store.is_hash_blocked("hashZZ"), "blocks: says it synced")
+        reset_out()
+        run("/hsblock zzNoHash")
+        check(says("kept 'zzNoHash' local-only") and find_req("/api/cli/emote-blocks") == nil and store.is_blocked("zzNoHash"), "blocks: unknown hash → local-only, said out loud, no request")
+        reset_out()
+        run("/hsblock zzOther")
+        http_error("/api/cli/emote-blocks", 500, {})
+        check(says("blocked locally only") and store.is_blocked("zzOther") and not store.is_hash_blocked("hashOTHER"), "blocks: a failed sync keeps the local block and says so")
+        run("/hsunblock zzOther")
+        reset_out()
+        run("/hsunblock zzHashed")
+        local d = find_req("/api/cli/emote-blocks/hashZZ")
+        check(d and d.method == "DELETE", "blocks: /hsunblock DELETEs by hash")
+        http_answer("/api/cli/emote-blocks/hashZZ", { ok = true })
+        check(says("unblocked 'zzHashed'") and says("on your account too") and not store.is_hash_blocked("hashZZ") and not store.is_blocked("zzHashed"), "blocks: unblock syncs and clears")
+        run("/hsunblock zzNoHash")
+        clear_cli()
+
+        -- merge on pull: an account block hides the emote (any name) in render + tab-complete
+        clear_cli(); sync.pull_blocks()
+        http_answer("/api/cli/emote-blocks", { blocked_emotes = { { hash = "hashZZ", blocked_at = iso(wall()) }, { hash = "bad hash" }, 7 }, count = 3 })
+        check(store.is_hash_blocked("hashZZ") and not store.is_hash_blocked("hashOTHER") and select(2, sync.counts()) == 1, "blocks: pull merges the account's hashes (junk skipped)")
+        local rc = #ch.replaced
+        local function say_emote(word)
+            local m = fake_msg("mellen", "42", "hello " .. word .. " there")
+            m.channel_name = "acctchan"
+            ch.msgs[#ch.msgs + 1] = m
+            ch.appended_cb(m, nil)
+            local rep = ch.replaced[#ch.replaced]
+            local imgs = 0
+            if #ch.replaced > rc and rep.new then
+                for _, e in ipairs(rep.new.init.elements) do if e.type == "scaling-image" then imgs = imgs + 1 end end
+            end
+            return imgs
+        end
+        check(say_emote("zzHashed") == 0, "blocks: an emote with a blocked hash does not render")
+        rc = #ch.replaced
+        check(say_emote("zzOther") == 1, "blocks: an emote with an unblocked hash still renders")
+        local vals = completion_cb({ query = "zz" }).values
+        local has = {}
+        for _, v in ipairs(vals) do has[v] = true end
+        check(not has["zzHashed "] and has["zzOther "], "blocks: tab-complete hides the hash-blocked emote only")
+        inventory.map, inventory.index = saved_map, saved_index
+        -- logout drops the merged set
+        sync.clear()
+        check(not store.is_hash_blocked("hashZZ"), "blocks: clearing the session un-merges account blocks")
+        clear_cli(); sync.pull_blocks(); http_answer("/api/cli/emote-blocks", { blocked_emotes = { { hash = "hashZZ" } } })
+        clear_cli()
+    end
+
+    -- ---- mention rules on merged lines ----
+    do
+        local mc = fake_channel("acctment")
+        channels[#channels + 1] = mc
+        render.discover()
+        commands["/hsmulti"]({ words = { "/hsmulti", "kick:mentsrc2" }, channel = mc })
+        for i = #http_queue, 1, -1 do if http_queue[i].url:find("/api/recent/", 1, true) then table.remove(http_queue, i) end end
+        local function ws_up()
+            for _ = 1, 200 do
+                if ws.connected then break end
+                advance(1000)
+                local sk = sockets[#sockets]
+                if not sk.closed then sk.opts.on_open() end
+            end
+            return sockets[#sockets]
+        end
+        local function kick(id, user, text, channel)
+            local n = #mc.added
+            ws_up().opts.on_text(register_payload({ type = "kick-chat-message", data = { platform = "kick", channel = channel or "mentsrc2", id = id, username = user, content = text, timestamp = 1761825602000 } }))
+            return mc.added[n + 1]
+        end
+        local function hl(m) return m and m.init.highlight_color == mention.COLOR and (m.init.flags & c2.MessageFlag.Highlighted) ~= 0 end
+        check(not hl(kick("mr0", "kk", "hydra time")), "rules: no rules → no highlight")
+        clear_cli(); sync.pull_rules()
+        http_answer("/api/cli/mention-rules", { rules = {
+            { id = 1, rule_type = "word", pattern = "Hydra", enabled = true, case_sensitive = false, platforms = { "kick" } },
+            { id = 2, rule_type = "phrase", pattern = "big win", enabled = true },
+            { id = 3, rule_type = "regex", pattern = "x+y", enabled = true },
+            { id = 4, rule_type = "word", pattern = "offrule", enabled = false },
+            { id = 5, rule_type = "word", pattern = "dormantrule", enabled = true, dormant = true },
+            { id = 6, rule_type = "word", pattern = "chanonly", enabled = true, channels = { "OtherSrc" } },
+            { id = 7, rule_type = "word", pattern = "mysrc", enabled = true, channels = { "mentsrc2" } },
+            { id = 8, rule_type = "word", pattern = "CaseSens", enabled = true, case_sensitive = true },
+            { id = 9, rule_type = "word", pattern = "yt-only", enabled = true, platforms = { "youtube" } },
+            5, "x", { pattern = 3 },
+        } })
+        local rules, skipped = mention.rule_count()
+        check(rules == 6 and skipped == 1 and select(3, sync.counts()) == 6, "rules: word/phrase kept (enabled, not dormant), regex counted as skipped, junk ignored")
+        check(hl(kick("mr1", "kk", "hey HYDRA!")), "rules: a word rule highlights a merged line (whole word, any case)")
+        check(not hl(kick("mr2", "kk", "hydras and hydra_x")), "rules: word rules need word boundaries")
+        check(hl(kick("mr3", "kk", "that was a Big Win today")), "rules: a phrase rule is a substring")
+        check(not hl(kick("mr4", "kk", "xxxy")), "rules: regex rules are not run here")
+        check(not hl(kick("mr5", "kk", "offrule dormantrule")), "rules: disabled and dormant rules are ignored")
+        check(not hl(kick("mr6", "kk", "chanonly please")), "rules: a channel-scoped rule needs a matching channel")
+        check(hl(kick("mr7", "kk", "mysrc please")), "rules: a channel-scoped rule matches the source channel")
+        check(hl(kick("mr8", "kk", "CaseSens")) and not hl(kick("mr9", "kk", "casesens")), "rules: case_sensitive is honoured")
+        check(not hl(kick("mr10", "kk", "yt-only")), "rules: a youtube-only rule skips kick lines")
+        check(not hl(kick("mr11", "mellen", "hydra")), "rules: your own lines never highlight")
+        check(hl(kick("mr12", "kk", "hello mellen")), "rules: the login match still works alongside rules")
+        commands["/hsmentions"]({ words = { "/hsmentions", "off" }, channel = mc })
+        check(not hl(kick("mr13", "kk", "hydra")), "rules: /hsmentions off turns rules off too")
+        commands["/hsmentions"]({ words = { "/hsmentions", "on" }, channel = mc })
+        clear_cli(); sync.pull_rules(); http_answer("/api/cli/mention-rules", { rules = "garbage" })
+        check(mention.rule_count() == 6, "rules: a malformed answer keeps the previous rules")
+        clear_cli(); sync.pull_rules(); http_answer("/api/cli/mention-rules", { rules = {} })
+        check(not hl(kick("mr14", "kk", "hydra")), "rules: an empty list clears them")
+        -- keep a rule for the pin tests below? no: clean up
+        commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = mc })
+        for i = #channels, 1, -1 do if channels[i] == mc then table.remove(channels, i) end end
+    end
+
+    -- ---- pin: right-click item gating, errors, clear ----
+    do
+        local function new_fake_menu()
+            local m = { actions = {}, submenus = {} }
+            function m:add_action(text, cb) self.actions[text] = cb end
+            function m:add_menu(title) local sub = new_fake_menu(); self.submenus[title] = sub; return sub end
+            function m:add_separator() end
+            return m
+        end
+        local function fire(msg, channel)
+            local top = new_fake_menu()
+            menu_cb({ message = msg, channel = channel or ch, menu = top })
+            return top
+        end
+        local function pin_item(top) return top.submenus["heatsync"] and top.submenus["heatsync"].actions["pin message"] end
+        local tmsg = fake_msg("chatter1", "9100", "pin me")
+        tmsg.channel_name = "acctchan"
+        check(type(pin_item(fire(tmsg))) == "function", "pin: logged in with 'account' → right-click has 'pin message'")
+        local pin = pin_item(fire(tmsg))
+        reset_out()
+        pin()
+        local r = find_req("/api/cli/pin")
+        check(r and r.method == "POST" and r.payload:find('"platform":"twitch"', 1, true) and r.payload:find('"channel":"acctchan"', 1, true)
+            and r.payload:find('"message_id":"' .. tmsg.id .. '"', 1, true), "pin: POST /api/cli/pin {platform, channel, message_id} for a twitch line")
+        http_answer("/api/cli/pin", { pin = { text = "x" } })
+        check(says("pinned that message in #acctchan"), "pin: confirms")
+        for _, case in ipairs({ { 403, "you're not a moderator here" }, { 409, "too new: try again in a few seconds" },
+            { 503, "pinning isn't available right now" }, { 429, "slow down" }, { 500, "hit a snag" } }) do
+            reset_out()
+            pin()
+            http_error("/api/cli/pin", case[1], { error = "x" })
+            check(says(case[2]), "pin: " .. case[1] .. " → '" .. case[2] .. "'")
+        end
+        reset_out()
+        pin()
+        http_error("/api/cli/pin", 403, { error_code = "scope_missing", scope = "account" })
+        check(says("run /hslogin again and tick 'account'"), "scope: 403 scope_missing → re-run /hslogin and tick account")
+        -- a message with no usable id gets no item
+        local noid = fake_msg("chatter1", "9100", "pin me"); noid.id = ""
+        check(pin_item(fire(noid)) == nil, "pin: a line with no message id gets no pin item")
+        -- kick line, remembered by id
+        local mc = fake_channel("acctpinmc")
+        channels[#channels + 1] = mc
+        render.discover()
+        commands["/hsmulti"]({ words = { "/hsmulti", "kick:pinsrc" }, channel = mc })
+        for i = #http_queue, 1, -1 do if http_queue[i].url:find("/api/recent/", 1, true) then table.remove(http_queue, i) end end
+        for _ = 1, 200 do
+            if ws.connected then break end
+            advance(1000)
+            local sk = sockets[#sockets]
+            if not sk.closed then sk.opts.on_open() end
+        end
+        local n = #mc.added
+        sockets[#sockets].opts.on_text(register_payload({ type = "kick-chat-message", data = { platform = "kick", channel = "PinSrc", id = "kpin-1", username = "kk", content = "hi", timestamp = 1761825602000 } }))
+        check(mc.added[n + 1] and mc.added[n + 1].init.id == "kpin-1", "pin: a merged kick line carries its message id")
+        local kmsg = { flags = 0, id = "kpin-1", channel_name = "", login_name = "kk", display_name = "kk" }
+        local ktop = new_fake_menu()
+        menu_cb({ message = kmsg, channel = mc, menu = ktop })
+        local kp = pin_item(ktop)
+        check(type(kp) == "function", "pin: a merged kick line gets 'pin message' even with no channel name")
+        reset_out()
+        kp()
+        local kr = find_req("/api/cli/pin")
+        check(kr and kr.payload:find('"platform":"kick"', 1, true) and kr.payload:find('"channel":"pinsrc"', 1, true) and kr.payload:find('"message_id":"kpin-1"', 1, true),
+            "pin: a kick pin sends platform kick + the source slug + the line id")
+        http_answer("/api/cli/pin", { pin = {} })
+        local unknown = new_fake_menu()
+        menu_cb({ message = { flags = 0, id = "never-seen", channel_name = "", login_name = "kk" }, channel = mc, menu = unknown })
+        check(unknown.submenus["heatsync"] == nil, "pin: a merged line we never injected gets no menu")
+        commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = mc })
+        for i = #channels, 1, -1 do if channels[i] == mc then table.remove(channels, i) end end
+        -- clear
+        reset_out()
+        run("/hspin clear")
+        local c1 = find_req("/api/cli/pin")
+        check(c1 and c1.method == "DELETE" and c1.url:find("?platform=twitch&channel=acctchan", 1, true), "pin: /hspin clear DELETEs this tab's twitch pin")
+        http_answer("/api/cli/pin", { pin = nil })
+        check(says("pin cleared in #acctchan"), "pin: clear confirms")
+        reset_out()
+        run("/hspin clear kick:PinSrc")
+        local c2r = find_req("/api/cli/pin")
+        check(c2r and c2r.url:find("?platform=kick&channel=pinsrc", 1, true), "pin: /hspin clear kick:<slug>")
+        http_error("/api/cli/pin", 403, {})
+        check(says("not a moderator"), "pin: clear by a non-mod → plain line")
+        reset_out(); run("/hspin clear twitch:x"); check(says("usage: /hspin clear"), "pin: bad clear target shows usage")
+        reset_out(); run("/hspin")
+        check(says("/hspin clear"), "pin: bare /hspin mentions clear")
+        -- scope gating: a login without 'account' gets no menu item and a clear message
+        logged_out()
+        pair_login({ "chat" })
+        check(account.logged_in() and not account.has_scope("account"), "pin: login without 'account' scope")
+        check(pin_item(fire(tmsg)) == nil, "pin: no 'pin message' without the account scope")
+        reset_out()
+        run("/hsmute bob")
+        check(says("tick 'account'") and find_req("/api/cli/mutes") == nil, "scope: commands explain a missing account scope without a request")
+        check(find_req("/api/cli/mutes") == nil and select(1, sync.counts()) == 0, "scope: nothing is pulled without the account scope")
+        logged_out()
+        check(pin_item(fire(tmsg)) == nil, "pin: logged out → no 'pin message'")
+    end
+
+    -- ---- 403 / 401 from the server ----
+    pair_login({ "account" })
+    do
+        reset_out()
+        run("/hsmute bob")
+        http_error("/api/cli/mutes", 403, { error_code = "scope_missing", scope = "account" })
+        check(says("run /hslogin again and tick 'account'") and account.logged_in(), "scope: 403 scope_missing keeps the login, tells the user what to do")
+        -- 401: clear + one notice even with two requests in flight
+        reset_out()
+        run("/hsmute bob"); run("/hsmutelist", true)
+        http_error("/api/cli/mutes", 401, { error_code = "cli_token_invalid" })
+        http_error("/api/cli/mutes", 401, { error_code = "cli_token_invalid" })
+        local blob = texts()
+        local _, n = blob:gsub("ran out or was revoked", "")
+        check(not account.logged_in() and n == 1, "401: logged out, the token cleared, told exactly once")
+        check((net.read_data("account.txt") or "") == "", "401: the data file is wiped")
+        reset_out()
+        run("/hsnote bob x")
+        check(says("log in first: /hslogin"), "401: afterwards commands say to log in first")
+        check(mutes.account_count() == 0 and mention.rule_count() == 0 and not store.is_hash_blocked("hashZZ"), "401: synced state is dropped")
+    end
+
+    -- ---- logout ----
+    pair_login({ "account" })
+    reset_out()
+    run("/hslogout")
+    do
+        local r = find_req("/api/cli/token")
+        check(r and r.method == "DELETE" and r.headers.Authorization == "Bearer " .. TOKEN, "logout: DELETE /api/cli/token with the token")
+        check(not account.logged_in() and (net.read_data("account.txt") or "") == "", "logout: wiped here at once")
+        http_answer("/api/cli/token", {})
+        check(says("logged out: the login was revoked"), "logout: confirms the server revoked it")
+        reset_out(); run("/hslogout")
+        check(says("not logged in"), "logout: when logged out says so")
+        pair_login({ "account" })
+        reset_out()
+        run("/hslogout"); http_fail("/api/cli/token")
+        check(says("heatsync.org/cli") and not account.logged_in(), "logout: unreachable server → wiped here, told where to revoke")
+        clear_cli()
+    end
+
+    -- ---- pairing: expiry ----
+    do
+        reset_out()
+        run("/hslogin", true)
+        http_answer("/api/cli/pair/start", { device_code = "dev-code-3", user_code = "EXPR-0001", interval = 3, expires_in = 60 })
+        advance(3100)
+        http_error("/pair/poll", 410, { error_code = "expired" })
+        check(says("login code expired") and not account.logged_in(), "pairing: 410 → expired, back to idle")
+        advance(30000)
+        check(find_req("/pair/poll") == nil, "pairing: no polling after expiry")
+        reset_out()
+        run("/hslogin", true)
+        http_answer("/api/cli/pair/start", { device_code = "dev-code-4", user_code = "EXPR-0002", interval = 3, expires_in = 60 })
+        for _ = 1, 40 do
+            advance(3100)
+            if not http_answer("/pair/poll", { status = "pending" }) then break end
+        end
+        check(says("login code expired"), "pairing: the local deadline expires a code the server never answered 410 for")
+        reset_out()
+        run("/hslogin", true)
+        http_answer("/api/cli/pair/start", { device_code = "dev-code-5", user_code = "DENY-0001", interval = 3, expires_in = 300 })
+        advance(3100)
+        http_answer("/pair/poll", { status = "denied" })
+        check(says("denied") and not account.logged_in(), "pairing: denied on the site → stops")
+        -- five failed polls in a row give up
+        reset_out()
+        run("/hslogin", true)
+        http_answer("/api/cli/pair/start", { device_code = "dev-code-6", user_code = "FAIL-0001", interval = 3, expires_in = 300 })
+        for _ = 1, 6 do
+            advance(3100)
+            http_fail("/pair/poll")
+        end
+        check(says("couldn't reach heatsync to finish logging in"), "pairing: gives up after repeated failures")
+        -- start failures
+        for i, body in ipairs({ {}, { device_code = 42 }, { device_code = "x", user_code = "bad code!" }, { device_code = "x", user_code = "OK-1", verification_uri = 5 } }) do
+            reset_out()
+            run("/hslogin", true)
+            local ok = pcall(http_answer, "/api/cli/pair/start", body)
+            check(ok, "pairing: malformed start answer " .. i .. " does not throw")
+            if i < 4 then
+                check(says("couldn't start logging in"), "pairing: malformed start answer " .. i .. " → plain line")
+            else
+                check(says("OK-1"), "pairing: a junk verification_uri falls back to heatsync.org/cli")
+                require("pairing").cancel()
+            end
+        end
+        reset_out()
+        run("/hslogin", true)
+        http_error("/api/cli/pair/start", 429, {})
+        check(says("slow down"), "pairing: start 429 → slow down")
+        -- a foreign verification host is never offered
+        reset_out()
+        run("/hslogin", true)
+        http_answer("/api/cli/pair/start", { device_code = "dev-code-7", user_code = "HOST-0001", verification_uri = "https://evil.example/cli", interval = 3, expires_in = 300 })
+        local offered = nil
+        for _, m in ipairs(ch.added) do
+            if type(m) == "table" and m.init then
+                for _, e in ipairs(m.init.elements) do if e.link and e.link.value then offered = e.link.value end end
+            end
+        end
+        check(offered == "https://heatsync.org/cli", "pairing: a verification link on another host is replaced by heatsync.org/cli")
+        require("pairing").cancel()
+        pair_login({ "account" })
+        reset_out()
+        run("/hslogin", true)
+        check(says("already logged in as Mellen") and find_req("/pair/start") == nil, "pairing: /hslogin while logged in doesn't start a second pairing")
+        logged_out()
+    end
+
+    -- ---- rotation: timing, the 12 min gap, the 90 day cap, failures ----
+    do
+        local function reinstall(exp_ms, first_ms)
+            logged_out()
+            check(account.install(TOKEN, iso(exp_ms), { "account", "chat" }, first_ms, "Mellen", 5), "rotate: setup install")
+            clear_cli()
+        end
+        local base = wall()
+        reinstall(base + 30 * DAY)
+        account.tick()
+        check(find_req("/api/cli/rotate") == nil, "rotate: a fresh token isn't rotated")
+        net.note_wall(base + 22 * DAY)
+        account.tick()
+        check(find_req("/api/cli/rotate") == nil, "rotate: 8 days left is not yet due")
+        net.note_wall(base + 24 * DAY)
+        account.tick()
+        local rr = find_req("/api/cli/rotate")
+        check(rr and rr.method == "POST" and rr.headers.Authorization == "Bearer " .. TOKEN, "rotate: under 7 days left → POST /api/cli/rotate with the old token")
+        account.tick()
+        check(count_req("/api/cli/rotate") == 1, "rotate: one rotate in flight at a time")
+        http_answer("/api/cli/rotate", { token = TOKEN2, expires_at = iso(wall() + 30 * DAY), scopes = { "account", "chat" } })
+        do
+            local f = net.read_data("account.txt") or ""
+            check(account.logged_in() and f:find(TOKEN2, 1, true) and not f:find("SECRETTOKEN", 1, true), "rotate: the new token replaces the old one on disk")
+            net.add_secret(TOKEN2)
+            local r2 = nil
+            account.request("Get", "/me", nil, function() end)
+            r2 = find_req("/api/cli/me")
+            check(r2 and r2.headers.Authorization == "Bearer " .. TOKEN2, "rotate: later requests use the new token")
+            clear_cli()
+            check(not logs_have("ROTATEDTOKEN") and not logs_have("SECRETTOKEN"), "rotate: neither token ever reaches the log")
+        end
+        -- the 12 minute gap after a 429
+        reinstall(wall() + 3 * DAY)
+        account.tick()
+        http_error("/api/cli/rotate", 429, { error_code = "rate_limited" })
+        account.tick()
+        check(find_req("/api/cli/rotate") == nil, "rotate: right after a 429 → no hammering")
+        advance(11 * 60 * 1000)
+        account.tick()
+        check(find_req("/api/cli/rotate") == nil, "rotate: still inside the 12 minute window at 11 min")
+        advance(2 * 60 * 1000)
+        account.tick()
+        check(find_req("/api/cli/rotate") ~= nil, "rotate: allowed again once the 12 minutes have passed")
+        -- malformed answer keeps the old token
+        http_answer("/api/cli/rotate", { token = 42 })
+        check(account.logged_in() and (net.read_data("account.txt") or ""):find("SECRETTOKEN", 1, true), "rotate: a malformed answer keeps the old token")
+        -- a refused rotate (cap reached server-side) tells the user once
+        reinstall(wall() + 3 * DAY)
+        reset_out()
+        account.tick()
+        http_error("/api/cli/rotate", 403, { error = "rotation window closed" })
+        check(says("can't renew itself any more: /hslogin again soon"), "rotate: a refused rotate tells the user to /hslogin again")
+        advance(3700 * 1000); account.tick(); http_error("/api/cli/rotate", 403, {})
+        local _, nn = texts():gsub("can't renew itself", "")
+        check(nn == 1, "rotate: ...only once")
+        -- 90 day cap: past it, never call rotate; tell once
+        reinstall(wall() + 3 * DAY, wall() - 100 * DAY)
+        reset_out()
+        account.tick()
+        check(find_req("/api/cli/rotate") == nil and says("at its limit and can't renew: /hslogin to log in again"), "rotate: past 90 days from first login → no rotate, told to /hslogin again")
+        reset_out(); account.tick(); advance(13 * 60 * 1000); account.tick()
+        check(texts() == "", "rotate: ...told only once")
+        -- 401 on rotate = logged out
+        reinstall(wall() + 3 * DAY)
+        account.tick()
+        http_error("/api/cli/rotate", 401, { error_code = "cli_token_invalid" })
+        check(not account.logged_in(), "rotate: a 401 on rotate clears the login")
+        -- a saved token that's definitely expired isn't resurrected on load
+        logged_out()
+        net.write_data("account.txt", "token=" .. TOKEN .. "\nexpires_at=" .. iso(wall() - 2 * DAY) .. "\nscopes=account\n")
+        account.load()
+        check(not account.logged_in() and (net.read_data("account.txt") or "") == "", "load: an expired saved login is dropped and wiped")
+        -- garbage / hostile file contents never log anyone in
+        for i, junk in ipairs({ "garbage", "token=notatoken\nscopes=account", "token=hscli_" .. string.rep("a", 400), "\0\0\0", "token=hscli_abcdef123456\nscopes=ACCOUNT;rm" }) do
+            net.write_data("account.txt", junk)
+            account.load()
+            local good = i == 5 and account.logged_in() -- this one is a valid token with junk scopes
+            if good then
+                check(#account.scopes() == 0, "load: junk scopes are dropped, not trusted")
+                account.drop(nil)
+            else
+                check(not account.logged_in(), "load: unreadable login file " .. i .. " is ignored")
+            end
+        end
+        net.write_data("account.txt", "")
+    end
+
+    -- ---- malformed-response fuzz on every account endpoint ----
+    do
+        pair_login({ "account" })
+        local junk = { {}, "str", 42, true, { rules = 5 }, { mutes = "x" }, { mutes = { 1, "a", {} } }, { blocked_emotes = 7 }, { blocked_emotes = { {}, "z" } },
+            { rules = { { rule_type = {}, pattern = {} }, 3 } }, { following = "no" }, { user = 5 }, { note = {} }, { token = {} }, { status = {} } }
+        local all_ok = true
+        for i, body in ipairs(junk) do
+            local ok = pcall(function()
+                clear_cli(); sync.pull_mutes(true); http_answer("/api/cli/mutes", body)
+                clear_cli(); sync.pull_blocks(); http_answer("/api/cli/emote-blocks", body)
+                clear_cli(); sync.pull_rules(); http_answer("/api/cli/mention-rules", body)
+                sync.get_following(function() end); http_answer("/api/cli/following", body)
+                run("/hsnote bob"); http_answer("/api/profile/bob", { profile = { id = 77 } }); http_answer("/api/cli/user-notes/77", body)
+                run("/hsmutelist"); http_answer("/api/cli/mutes", body)
+                run("/hsmute zed"); http_answer("/api/cli/mutes", body)
+                run("/hsfollow bob"); http_answer("/api/cli/follow/77", body)
+                run("/hspin clear"); http_answer("/api/cli/pin", body)
+                account.request("Get", "/me", nil, function() end); http_answer("/api/cli/me", body)
+                clear_cli()
+            end)
+            if not ok then all_ok = false end
+        end
+        check(all_ok, "fuzz: malformed answers to every account endpoint never throw")
+        check(account.logged_in(), "fuzz: ...and never log the user out")
+        -- an unparseable / empty body on a 2xx
+        local got_err
+        net.cli_request("Delete", "https://heatsync.org/api/cli/mutes/x", nil, TOKEN, function(d, e) got_err = e end)
+        local rq = http_queue[#http_queue]
+        table.remove(http_queue)
+        rq.success({ data = function() return "" end, status = function() return 204 end })
+        check(got_err == nil, "fuzz: an empty 2xx body counts as success for account calls")
+        local got2
+        net.cli_request("Get", "https://heatsync.org/api/cli/mutes", nil, TOKEN, function(d, e) got2 = e end)
+        rq = http_queue[#http_queue]; table.remove(http_queue)
+        rq.success({ data = function() return "<html>" end, status = function() return 200 end })
+        check(type(got2) == "string", "fuzz: a non-json 200 is an error, not data")
+        -- a missing http verb degrades through the callback
+        local saved = c2.HTTPMethod.Put
+        c2.HTTPMethod.Put = nil
+        local got3
+        net.cli_request("Put", "https://heatsync.org/api/cli/user-notes/1", { note = "x" }, TOKEN, function(d, e) got3 = e end)
+        c2.HTTPMethod.Put = saved
+        check(got3 == "unsupported method", "fuzz: a build without the verb answers 'unsupported method', no throw")
+        logged_out()
+    end
+
+    -- ---- wiring + privacy: every authed request went to /api/cli only ----
+    do
+        local bad = 0
+        for _, r in ipairs(all_reqs) do
+            if r.headers.Authorization and r.url:sub(1, 29) ~= "https://heatsync.org/api/cli/" then bad = bad + 1 end
+        end
+        check(bad == 0, "privacy: an Authorization header only ever went to https://heatsync.org/api/cli/*")
+        local n_auth = 0
+        for _, r in ipairs(all_reqs) do if r.headers.Authorization then n_auth = n_auth + 1 end end
+        check(n_auth > 20, "privacy: (sanity) the suite exercised authed requests (" .. n_auth .. ")")
+        local leak = false
+        for _, l in ipairs(log_lines) do if l:find("SECRETTOKEN", 1, true) or l:find("ROTATEDTOKEN", 1, true) then leak = true end end
+        check(not leak, "privacy: no token in any log line across the whole suite")
+        for _, sk in ipairs(sockets) do
+            local l = sk.url:find("hscli_", 1, true) ~= nil
+            for _, snt in ipairs(sk.sent) do if snt:find("hscli_", 1, true) then l = true end end
+            if l then leak = true end
+        end
+        check(not leak, "privacy: no token on any websocket, ever")
+        local seen = {}
+        reset_out()
+        local sys = { words = { "/hshelp" }, channel = { add_system_message = function(_, t) seen[#seen + 1] = t end, add_message = function() end, get_name = function() return "x" end } }
+        commands["/hshelp"](sys)
+        local blob = table.concat(seen, "\n")
+        for _, cmd in ipairs({ "/hslogin", "/hslogout", "/hsnote", "/hsmute", "/hsunmute", "/hsmutelist", "/hsfollow", "/hsunfollow", "/hspin clear" }) do
+            check(blob:find(cmd, 1, true) ~= nil, "wiring: /hshelp lists " .. cmd)
+        end
+    end
+    clear_cli()
+    reset_out()
+    do -- copy style: every line the account features printed starts lowercase
+        local bad, n = nil, 0
+        for _, line in ipairs(seen_all) do
+            n = n + 1
+            local first = line:match("^%[heatsync%] (.)")
+            if first and first:match("%u") then bad = bad or line end
+        end
+        check(n > 50 and bad == nil, "copy: account lines start lowercase" .. (bad and (" (" .. bad .. ")") or ""))
+    end
+    for i = #channels, 1, -1 do if channels[i] == ch or channels[i] == mch then table.remove(channels, i) end end
+    senders.own_login = own_before
+    host_os.remove("account.txt")
 end
 
 print(failures == 0 and "\nALL PASS" or ("\n" .. failures .. " FAILURES"))

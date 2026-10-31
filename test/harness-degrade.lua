@@ -261,5 +261,57 @@ do
     commands["/hsmutes"]({ words = { "/hsmutes", "off" }, channel = ctx.channel })
 end
 
+
+-- the opt-in login needs timers + get/post/put/delete: this stripped api has only
+-- Get, so every account command explains itself and nothing is ever requested
+do
+    local account = require("account")
+    local qn = #http_queue
+    check(caps.account == false and not account.logged_in(), "account: no http verbs → caps.account false on " .. MODE)
+    for _, line in ipairs({ { "/hslogin" }, { "/hslogout" }, { "/hsnote", "bob", "hi" }, { "/hsmute", "bob" }, { "/hsunmute", "bob" },
+        { "/hsmutelist" }, { "/hsfollow", "bob" }, { "/hsunfollow", "bob" }, { "/hspin", "clear" } }) do
+        local hb = #added
+        local words = { line[1] }
+        for i = 2, #line do words[i] = line[i] end
+        local ok = pcall(commands[line[1]], { words = words, channel = ctx.channel })
+        check(ok and (#added > hb or line[1] == "/hslogout"), "account: " .. line[1] .. " answers without throwing on " .. MODE)
+    end
+    check(#http_queue == qn, "account: nothing is requested on " .. MODE)
+    commands["/hsnote"]({ words = { "/hsnote", "bob", "hi" }, channel = ctx.channel })
+    check(tostring(added[#added]):find("can't log in to heatsync", 1, true) ~= nil, "account: says the build can't log in, in plain words")
+    commands["/hsstatus"](ctx)
+    local blob = {}
+    for _, m in ipairs(added) do if type(m) == "string" then blob[#blob + 1] = m end end
+    check(table.concat(blob, "\n"):find("account: unavailable on this build", 1, true) ~= nil, "account: /hsstatus reports it unavailable on " .. MODE)
+    -- sync + tick are inert, never throw
+    local sync = require("account_sync")
+    check(pcall(sync.tick) and pcall(account.tick) and #http_queue == qn, "account: the background tick is a no-op on " .. MODE)
+    -- hash blocks still hide nothing without a login; /hsblock stays local
+    commands["/hsblock"]({ words = { "/hsblock", "acctDegrade" }, channel = ctx.channel })
+    commands["/hsunblock"]({ words = { "/hsunblock", "acctDegrade" }, channel = ctx.channel })
+    check(#http_queue == qn, "account: /hsblock + /hsunblock stay local on " .. MODE)
+end
+
+-- account features on a build that has the verbs but not the render path (t1):
+-- login state is fine, but collapsing mutes / highlighting rules silently do nothing
+if MODE == "t1" then
+    local account = require("account")
+    local sync = require("account_sync")
+    local mutes = require("mutes")
+    local mention = require("mention")
+    c2.HTTPMethod = { Get = "GET", Post = "POST", Put = "PUT", Delete = "DELETE" }
+    caps.detect()
+    check(caps.account == true and caps.tier == 1, "account/t1: verbs + timers → login available, still tier 1")
+    local ok = account.install("hscli_DEGRADETOKEN12345", "2099-01-01T00:00:00.000Z", { "account" }, nil, "Mellen", 5)
+    check(ok and account.logged_in(), "account/t1: a token installs")
+    http_answer("/api/cli/mutes", { mutes = { { username = "bob" } }, v = 1 })
+    check(not mutes.enabled(), "account/t1: account mutes are silently off below the render path")
+    check(pcall(mutes.is_muted, "somechan", "bob", "twitch"), "account/t1: asking the mute list is harmless")
+    mention.set_rules({ { rule_type = "word", pattern = "hydra", enabled = true } })
+    check(mention.fields("hydra", "kk", nil, "kick", { "x" }) == nil, "account/t1: mention rules need the highlight flag → silently off")
+    account.drop(nil)
+    check(not account.logged_in(), "account/t1: drop clears the session")
+end
+
 print(failures == 0 and "ALL PASS (" .. MODE .. ")" or (failures .. " FAILURES (" .. MODE .. ")"))
 host_os.exit(failures == 0 and 0 or 1)
