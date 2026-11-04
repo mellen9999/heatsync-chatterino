@@ -25,6 +25,7 @@ function M.register(get_login)
         require("cmd_card").register()
         require("cmd_gifs").register()
         require("cmd_multichat").register()
+        require("cmd_layout").register()
         require("cmd_account").register() -- opt-in login: inert until /hslogin
         require("cmd_system").register(get_login) -- only these commands need the login
     end)

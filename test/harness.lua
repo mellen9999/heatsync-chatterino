@@ -5768,5 +5768,45 @@ do
     host_os.remove("account.txt")
 end
 
+-- ===== /hslayout: share-link grammar parity + command =====
+do
+    local layout = require("layout")
+    local function eq(a, b) return layout.build(a) == b end
+    local t = layout.parse("t:xqc,k:xqc+t:asmongold+junk+k:Trainwreck-s+t:xqc,k:xqc")
+    check(#t == 3 and t[1].twitch == "xqc" and t[1].kick == "xqc" and t[3].kick == "trainwreck-s", "layout: parse drops junk + dupes, lowercases")
+    check(layout.build(t) == "t:xqc,k:xqc+t:asmongold+k:trainwreck-s", "layout: build canonical")
+    check(#layout.parse(string.rep("t:a+", 20)) == 1, "layout: dedupes")
+    local many = {}
+    for i = 1, 12 do many[i] = "t:a" .. i end
+    check(#layout.parse(table.concat(many, "+")) == 8, "layout: 8 tab cap")
+    check(#layout.parse(string.rep("t:abc+", 100)) == 0, "layout: >400 chars -> empty")
+    check(#layout.parse(nil) == 0 and #layout.parse("") == 0 and #layout.parse("::,+,") == 0, "layout: total on junk")
+    check(#layout.parse("t:" .. string.rep("a", 31)) == 0, "layout: name over 30 dropped")
+    local uc = "UC" .. string.rep("aB_-", 5) .. "xy"
+    local y = layout.parse("y:" .. uc .. "+y:@LofiGirl")
+    check(y[1].youtube == uc and y[2].youtube == "lofigirl", "layout: UC id keeps case, handle lowers + strips @")
+    check(layout.extract("https://heatsync.org/m/t:a,k:b?x=1#f") == "t:a,k:b" and layout.extract("t:a") == "t:a", "layout: extract url/bare")
+    check(layout.url({}) == nil and layout.url({ { twitch = "a", youtube = "z" } }) == "https://heatsync.org/m/t:a,y:z", "layout: url")
+
+    local cmd = commands["/hslayout"]
+    check(cmd ~= nil, "layout: command registered")
+    local lchan = fake_channel("layoutchan")
+    local mc = require("multichat")
+    cmd({ words = { "/hslayout", "https://heatsync.org/m/t:layoutchan,k:laykick,y:layyt+k:onlykick" }, channel = lchan })
+    local ls = mc.list("layoutchan")
+    check(#ls == 2 and ls[1] == "kick/laykick" and ls[2] == "yt/layyt", "layout: command links kick+yt legs under the twitch tab")
+    cmd({ words = { "/hslayout", "share" }, channel = lchan })
+    local shared = false
+    for _, m in ipairs(lchan.added) do
+        if m.init and m.init.elements then
+            for _, e in ipairs(m.init.elements) do
+                if e.text == "https://heatsync.org/m/t:layoutchan,k:laykick,y:layyt" then shared = true end
+            end
+        end
+    end
+    check(shared, "layout: share prints the canonical link")
+    mc.unlink("layoutchan")
+end
+
 print(failures == 0 and "\nALL PASS" or ("\n" .. failures .. " FAILURES"))
 host_os.exit(failures == 0 and 0 or 1)

@@ -154,6 +154,7 @@ heatsync users get a 🔥 before their name in any chat, so they're identifiable
 | `/hsinv <user> [page]` | **browse anyone's inventory** — a user's heatsync emotes as a click-to-insert grid, paged |
 | `/hssearch <query>` | **search heatsync posts** — click a result to open the thread |
 | `/hschat <query> [@user] [#channel]` | **search the chat archive** — heatsync's twitch-chat archive; click a line to open it at the exact message. narrow with `@user`/`#channel` (a bare query scopes to the current tab), or the server's `from:` `in:` `has:` `before:` `after:` operators |
+| `/hslayout <link>` \| `share` | open a heatsync.org/m/... multichat link (kick/yt legs get linked, twitch tabs are clickable) or build one for this tab |
 | `/hsmulti kick:<slug>` \| `yt:<handle>` \| `off` \| `auto on\|off` | merge kick/youtube chat into this tab; `auto` links a stream's platforms automatically |
 | `/hshot [platform] [page]` | hottest live streams right now (cross-platform, heat-ranked); filter by platform, page through; click a twitch one to open it |
 | `/hswhois <user>` | heatsync profile card for any streamer (heat, followers, live, posts) |
