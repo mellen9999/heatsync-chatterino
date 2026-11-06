@@ -1354,34 +1354,6 @@ rc = #chan.replaced
 chan.appended_cb(inj, nil)
 check(#chan.replaced == rc, "fix: channel_name-less (injected) message skipped by render")
 
--- ===== chatterino badges (v1.5) =====
-local badges = require("badges")
-badges.load()
-http_answer("/api/chatterino-badges", { badges = {
-    { tooltip = "Chatterino Donator", image1 = "https://fourtf.com/chatterino/badge.png", users = { "7007", "1001" } },
-} })
--- off by default → no badge even for a listed user
-require("store").set_badges(false)
-check(not badges.has("7007"), "badges: off by default")
-require("store").set_badges(true)
-check(badges.has("7007"), "badges: listed user recognized when on")
-check(not badges.has("999999"), "badges: unlisted user not matched")
--- a listed user's text-only message now rebuilds to insert the badge
-require("store").set_flame(false)
-local bmsg = fake_msg("flameuser", "7007", "plain text with badge")
-chan.msgs[#chan.msgs + 1] = bmsg
-rc = #chan.replaced
-chan.appended_cb(bmsg, nil)
-check(#chan.replaced == rc + 1, "badges: listed user's message rebuilt to add badge")
-do
-    local imgs = 0
-    for _, e in ipairs(chan.replaced[#chan.replaced].new.init.elements) do
-        if type(e) == "table" and e.type == "scaling-image" then imgs = imgs + 1 end
-    end
-    check(imgs >= 1, "badges: badge image inserted")
-end
-require("store").set_badges(false)
-
 -- http failure on boot path leaves plugin alive
 account.name = "otheruser"
 advance(61000) -- login tick sees account switch
@@ -2877,7 +2849,6 @@ end
 do
     local store = require("store")
     store.set_flame(false)
-    store.set_badges(false)
 
     -- answer every pending request whose url matches; fn(req) builds the payload
     local function answer_all(pattern, fn)

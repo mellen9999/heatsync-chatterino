@@ -10,7 +10,7 @@ local img = require("img")
 
 local M = {}
 
-local BADGE_H = 18 -- badges render smaller than emotes (same as badges.lua)
+local BADGE_H = 18 -- badges render smaller than emotes
 local FLAIR_PX = 72 -- badge_url_4x is twitch's 72px tier; 1x is 18px
 local BATCH_MAX = 50 -- the server reads at most 100 ids
 

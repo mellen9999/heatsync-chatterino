@@ -26,7 +26,6 @@ a single lua plugin (no fork, no patched binary) that brings heatsync into chatt
 - pinned message (`pin.txt`) — **on** (opt-out), view-only over the anonymous socket; pinning/clearing is the opt-in login (`/hspin clear`, right-click → pin message), never the socket
 - moment spikes (`spikes.txt`) — **off** (opt-in), `/hsmoments on|off`
 - live status (`live.txt`) — **off** (opt-in), `/hslive on|off`; 🔴/⚫ for kick/yt only (twitch go-live is native), 🎮/📝 game+title lines for kick/yt AND open twitch tabs — one toggle
-- badges — **off** (opt-in)
 - flame 🔥 — on
 - heat bars (`heat.txt`) — **on** (opt-out), `/hsheat on|off`; never a 🔥 on/next to a heat score
 - sub flair (`flair-badges.txt`) — **on** (opt-out), `/hsflair on|off`

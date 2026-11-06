@@ -14,7 +14,6 @@ local inventory = require("inventory")
 local senders = require("senders")
 local store = require("store")
 local ws = require("ws")
-local badges = require("badges")
 local heat = require("heat")
 local flair = require("flair")
 local recents = require("recents")
@@ -287,12 +286,9 @@ local function is_username_el(el)
     return ok and has
 end
 
--- the marker row prepended before the username: chatterino badge (if opted in
--- and the user has one), the heatsync sub-flair badge, the 🔥 heatsync marker,
+-- the marker row prepended before the username: heatsync sub-flair badge, the 🔥 heatsync marker,
 -- then the heat bar (the bar is its own glyph — never an emoji beside a score).
 local function insert_markers(elems, msg, want_flame, heat_info, want_flair)
-    local badge = badges.element_for(msg.user_id)
-    if badge then table.insert(elems, badge) end
     if want_flair then
         local fl = flair.element_for(msg.user_id)
         if fl then table.insert(elems, fl) end
@@ -348,7 +344,7 @@ local function build_replacement(msg, sender_map, want_flame, t, heat_info, want
         local ok, ty = pcall(read_type, el)
         -- BEFORE the username, strip our own markers from a prior render so
         -- re-processing (backpass) is idempotent — no stacked flames/badges.
-        -- our badges are the only scaling-images that can precede the username
+        -- our flair badges are the only scaling-images that can precede the username
         -- (sender emotes live in the body); our flame/heat bar are lone-glyph
         -- text runs.
         -- native twitch badges are badge-type elements, so they pass through.
@@ -580,10 +576,9 @@ local function do_process(ch, msg, hint)
     local want_flair = flair.has(msg.user_id, login)
     local under = under_for(msg, text)
     -- O(1) checks first; only pay the O(words) has_hits scan when neither the
-    -- flame, a badge, a heat bar nor a flair already forces the rebuild (Lua
+    -- flame, a heat bar nor a flair already forces the rebuild (Lua
     -- `or` short-circuits).
-    if not (want_flame or heat_info or want_flair or under or badges.has(msg.user_id)
-        or has_hits(text, sender_map, t)) then return end
+    if not (want_flame or heat_info or want_flair or under or has_hits(text, sender_map, t)) then return end
 
     local repl = build_replacement(msg, sender_map, want_flame, t, heat_info, want_flair, under)
     if hint then

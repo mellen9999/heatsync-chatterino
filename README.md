@@ -174,7 +174,6 @@ heatsync users get a 🔥 before their name in any chat, so they're identifiable
 | `/hspreviews on\|off` | title + small thumbnail line under a non-image link, loaded through heatsync (opt-in) |
 | `/hsmutes on\|off` | collapse the lines of chatters your channel's heatsync community muted to a short placeholder (opt-in) |
 | `/hsimages on\|off` | show image links as inline images, loaded through heatsync's proxy (opt-in) |
-| `/hsbadges on\|off` | show chatterino global badges on chatters (opt-in) |
 | `/hspin on\|off` | the channel's heatsync pinned message as a 📌 line (on by default) |
 | `/hspin clear [kick:<slug>]` | remove this channel's pin (moderators; needs login). pin a message from the right-click menu |
 | `/hslive on\|off` | 🔴/⚫ go-live + offline lines for your linked kick/youtube sources, and 🎮/📝 game + title switch lines for those and your open twitch tabs (opt-in) |

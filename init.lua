@@ -22,7 +22,6 @@ local commands = require("commands")
 local menu = require("menu")
 local store = require("store")
 local multichat = require("multichat")
-local badges = require("badges")
 local recents = require("recents")
 local live = require("live")
 local pin = require("pin")
@@ -332,7 +331,6 @@ if caps.tier == 2 then
         -- twitch tab closed → drop its ephemeral auto-multichat subscriptions
         if platform == "twitch" then multichat.unlink_auto(channel) end
     end
-    badges.load() -- fetch the chatterino badge list (rendered only if /hsbadges on)
     render.boot_fn = function()
         local n = inventory.count()
         local who = inventory.login and (" as " .. inventory.login) or ""

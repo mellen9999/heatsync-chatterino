@@ -16,7 +16,6 @@ local BLOCKS_FILE = "blocks.txt"  -- newline-separated emote names
 local FLAME_FILE = "flame.txt"    -- "0" = off, anything else = on
 local ARCHIVE_FILE = "archive.txt" -- "0" = channel-signal off (ON by default, opt-out)
 local AUTOMC_FILE = "automulti.txt" -- "0" = auto-multichat off (ON by default)
-local BADGES_FILE = "badges.txt"   -- "1" = badges on (OFF by default, opt-in)
 local LIVE_FILE = "live.txt"       -- "1" = live-status on (OFF by default, opt-in)
 
 local SPIKES_FILE = "spikes.txt"   -- "1" = moment spikes on (OFF by default, opt-in)
@@ -31,7 +30,6 @@ local archive_on = true -- default ON (opt-out) — tells heatsync which public
                          -- twitch channels you're watching so it archives them
                          -- itself; no message content ever leaves the plugin
 local automc_on = true -- default ON (opt-out) — auto-merges a stream's kick/yt chat when publicly linked
-local badges_on = false
 local pin_on = true -- default ON (opt-out) — heatsync's own pinned message, shown to every heatsync viewer
 local spikes_on = false -- default OFF (opt-in) — 🔥 lines when a chat you have open spikes
 local live_on = false -- default OFF (opt-in) — go-live lines for linked kick/yt sources
@@ -59,7 +57,6 @@ local function load()
     if file_is(AUTOMC_FILE, "0") then automc_on = false end
     if file_is(PIN_FILE, "0") then pin_on = false end
     -- default OFF (opt-in): only an explicit "1" turns these on
-    if file_is(BADGES_FILE, "1") then badges_on = true end
     if file_is(LIVE_FILE, "1") then live_on = true end
     if file_is(SPIKES_FILE, "1") then spikes_on = true end
 end
@@ -154,16 +151,6 @@ end
 function M.set_auto_multichat(on)
     automc_on = on and true or false
     net.write_data(AUTOMC_FILE, automc_on and "1" or "0")
-end
-
--- ----- badges toggle (default off, opt-in) -----
-function M.badges_enabled()
-    return badges_on
-end
-
-function M.set_badges(on)
-    badges_on = on and true or false
-    net.write_data(BADGES_FILE, badges_on and "1" or "0")
 end
 
 -- ----- live-status toggle (default off, opt-in) -----
