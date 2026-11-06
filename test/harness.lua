@@ -2618,6 +2618,9 @@ end
 
 do -- /hspin on fetches pins for tabs already open
     require("store").set_pin(false)
+    for i = #http_queue, 1, -1 do -- drop stale pin requests so only this toggle's can match
+        if http_queue[i].url:find("/api/pin?", 1, true) then table.remove(http_queue, i) end
+    end
     commands["/hspin"]({ words = { "/hspin", "on" }, channel = chan })
     local url = http_answer("/api/pin?platform=twitch&channel=somechannel", { pin = { id = "on1", username = "u", content = "after on" } })
     check(url ~= nil, "pin: /hspin on fetches the pin of tabs already open")
