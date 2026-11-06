@@ -441,6 +441,20 @@ function M.unlink_auto(cc_name)
     if next(srcs) == nil then links[cc_name] = nil end
 end
 
+-- drop every auto-merged source on every tab (auto-multichat turned off); manual
+-- links stay. returns how many tabs lost one.
+function M.unlink_all_auto()
+    local tabs = {}
+    for cc_name in pairs(links) do tabs[#tabs + 1] = cc_name end
+    local n = 0
+    for _, cc_name in ipairs(tabs) do
+        local before = M.list(cc_name)
+        M.unlink_auto(cc_name)
+        if #M.list(cc_name) < #before then n = n + 1 end
+    end
+    return n
+end
+
 -- unlink one source, or ALL sources for a tab if platform is nil
 function M.unlink(cc_name, platform, channel)
     if not links[cc_name] then return 0 end

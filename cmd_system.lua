@@ -18,6 +18,7 @@ local previews = require("previews")
 local account = require("account")
 local sync = require("account_sync")
 local u = require("cmdutil")
+local pin = require("pin")
 
 local M = {}
 
@@ -90,6 +91,7 @@ function M.register(get_login)
             require("cmd_account").pin_clear(ctx)
         elseif arg == "on" then
             store.set_pin(true)
+            pcall(pin.refetch, false) -- tabs already open get their pin now
             u.sysmsg(ctx, "pinned message ON — 📌 line when a channel's heatsync pin is set or cleared")
         elseif arg == "off" then
             store.set_pin(false)

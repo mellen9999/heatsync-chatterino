@@ -2616,6 +2616,25 @@ do -- fetch: stubbed GET shows a pin, later pin:set of the same id dedupes
     pin_frame({ type = "pin:clear", platform = "twitch", channel = "somechannel" })
 end
 
+do -- /hspin on fetches pins for tabs already open
+    require("store").set_pin(false)
+    commands["/hspin"]({ words = { "/hspin", "on" }, channel = chan })
+    local url = http_answer("/api/pin?platform=twitch&channel=somechannel", { pin = { id = "on1", username = "u", content = "after on" } })
+    check(url ~= nil, "pin: /hspin on fetches the pin of tabs already open")
+    pin_frame({ type = "pin:clear", platform = "twitch", channel = "somechannel" })
+end
+do -- /hsmulti auto off un-merges auto tabs, keeps manual ones
+    local before = multichat.stats()
+    multichat.link("autoofftab", "kick", "autooffchan", true)
+    multichat.link("manualtab", "kick", "manualchan", false)
+    check(multichat.stats() == before + 2, "automulti: auto + manual links added")
+    commands["/hsmulti"]({ words = { "/hsmulti", "auto", "off" }, channel = chan })
+    check(multichat.stats() == before + 1 and #multichat.list("autoofftab") == 0 and #multichat.list("manualtab") == 1,
+        "automulti: /hsmulti auto off un-merges auto tabs, keeps manual links")
+    multichat.unlink("manualtab")
+    commands["/hsmulti"]({ words = { "/hsmulti", "auto", "on" }, channel = chan })
+end
+
 -- ===== emote modifier tokens: consumed next to a heatsync emote, shown in its tooltip =====
 do
     local modifiers = require("modifiers")

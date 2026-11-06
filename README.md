@@ -40,7 +40,7 @@ recents are learned from the emotes you actually send (the only usage signal a p
 
 `/hsmulti kick:<slug>` or `/hsmulti yt:<handle>` inside a twitch channel tab merges that platform's **live chat** into the tab, tagged `[K]` / `[Y]`. heatsync already ingests kick + youtube chat; the plugin pulls it over the same anonymous websocket and injects it client-side — re-subscribing on reconnect, replaying what a dropped socket missed, deduping by message id, and remembering your links across restarts. a kick/youtube chatter's own heatsync emotes render inline in their merged lines, same rule as twitch.
 
-`/hsmulti auto` (on by default) merges a stream's kick/youtube chat automatically when you open its twitch tab — but only where that streamer has *publicly linked* their cross-platform accounts on heatsync, so channels that haven't stay quiet. `/hsmulti auto off` to disable, `/hsmulti off` to unlink a tab.
+`/hsmulti auto` (on by default) merges a stream's kick/youtube chat automatically when you open its twitch tab — but only where that streamer has *publicly linked* their cross-platform accounts on heatsync, so channels that haven't stay quiet. `/hsmulti auto off` to disable (un-merges the auto-merged tabs; manual links stay), `/hsmulti off` to unlink a tab.
 
 when a source is merged it also loads its last ~50 archived lines (`GET /api/recent/...`), so a fresh tab isn't empty — deduped by id against what the socket delivers, oldest first, once per link per session. kick works by slug; youtube needs the channel's `UC…` id (a typed handle has no archive key, but auto-merge passes the id along). `/hsbackfill off` skips it.
 
@@ -174,7 +174,7 @@ heatsync users get a 🔥 before their name in any chat, so they're identifiable
 | `/hspreviews on\|off` | title + small thumbnail line under a non-image link, loaded through heatsync (opt-in) |
 | `/hsmutes on\|off` | collapse the lines of chatters your channel's heatsync community muted to a short placeholder (opt-in) |
 | `/hsimages on\|off` | show image links as inline images, loaded through heatsync's proxy (opt-in) |
-| `/hspin on\|off` | the channel's heatsync pinned message as a 📌 line (on by default) |
+| `/hspin on\|off` | the channel's heatsync pinned message as a 📌 line (on by default); turning it on fetches pins for open tabs |
 | `/hspin clear [kick:<slug>]` | remove this channel's pin (moderators; needs login). pin a message from the right-click menu |
 | `/hslive on\|off` | 🔴/⚫ go-live + offline lines for your linked kick/youtube sources, and 🎮/📝 game + title switch lines for those and your open twitch tabs (opt-in) |
 | `/hsmoments on\|off` | 🔥 line when a chat you have open spikes (opt-in) |

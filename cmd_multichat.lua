@@ -36,7 +36,8 @@ function M.register()
                 u.sysmsg(ctx, "auto-multichat ON — opening a twitch stream auto-merges its kick/youtube chat (when publicly linked)")
             elseif sub == "off" then
                 store.set_auto_multichat(false)
-                u.sysmsg(ctx, "auto-multichat OFF")
+                local n = multichat.unlink_all_auto()
+                u.sysmsg(ctx, "auto-multichat OFF" .. (n > 0 and (" · un-merged " .. n .. " tab(s)") or ""))
             else
                 u.sysmsg(ctx, "auto-multichat is " .. (store.auto_multichat_enabled() and "on" or "off") .. " · /hsmulti auto on|off")
             end
