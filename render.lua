@@ -828,6 +828,7 @@ function M.start()
     previews.on_ready = function(url) M.backpass_preview(url) end
     images.on_settled = function(url) previews.thumb_settled(url) end
     inventory.on_change = function()
+        pcall(function() require("blockkey").migrate() end)
         if inventory.login then M.backpass(inventory.login) end
     end
     M.discover()

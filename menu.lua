@@ -143,7 +143,7 @@ local function on_context_menu(args)
     local name = hs_emote_name(args.message_element)
     if name then
         sub:add_separator()
-        if store.is_blocked(name) then
+        if store.is_blocked(name, (require("blockkey").resolve(name, login))) then
             sub:add_action("unblock " .. name, function() cmd_emotes.unblock(channel, name, login) end)
         else
             sub:add_action("block " .. name, function() cmd_emotes.block(channel, name, login) end)

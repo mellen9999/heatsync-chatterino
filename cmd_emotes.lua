@@ -5,6 +5,7 @@ local seventv = require("seventv")
 local picker = require("picker")
 local recents = require("recents")
 local store = require("store")
+local blockkey = require("blockkey")
 local u = require("cmdutil")
 
 local M = {}
@@ -67,24 +68,33 @@ function M.inv(channel, user, page)
     end)
 end
 
--- local emote block/unblock: hides an emote from rendering + tab-complete.
--- local by name; when you're logged in (opt-in) it also blocks/unblocks the same
--- emote on your heatsync account by hash (cmd_account.sync_block), and says so —
--- or says it stayed local-only when the hash isn't known yet.
--- shared by /hsblock, /hsunblock and the right-click "block/unblock" menu
--- actions on a heatsync-rendered emote (`login`: whose emote the click was on).
+-- local emote block/unblock: hides ONE exact emote (keyed by its content hash,
+-- never its name) from rendering + tab-complete. a right-click passes the owner's
+-- login; a typed name must resolve to a single emote or nothing is blocked.
+-- logged in (opt-in) it also blocks/unblocks the same emote on your heatsync
+-- account (cmd_account.sync_block). legacy by-name entries are honoured until
+-- migrated to a hash or dropped by /hsunblock.
 function M.block(channel, name, login)
     local ctx = { channel = channel }
     if not name or name == "" then
-        u.sysmsg(ctx, "usage: /hsblock <emote name> — hides it locally in chatterino")
+        u.sysmsg(ctx, "usage: /hsblock <emote name> — hides that exact emote locally in chatterino")
         return
     end
-    if store.block(name) then
-        u.sysmsg(ctx, "blocked '" .. name .. "' locally (won't render or tab-complete) · /hsunblock " .. name .. " to undo")
-    else
-        u.sysmsg(ctx, "'" .. name .. "' already blocked")
+    local hash, why = blockkey.resolve(name, login)
+    if not hash then
+        if why == "ambiguous" then
+            u.sysmsg(ctx, "'" .. name .. "' is more than one emote here — right-click the one you mean, nothing blocked")
+        else
+            u.sysmsg(ctx, "don't know which emote '" .. name .. "' is yet — right-click it instead, nothing blocked")
+        end
+        return
     end
-    require("cmd_account").sync_block(channel, name, login)
+    if store.block_hash(hash, name) then
+        u.sysmsg(ctx, "blocked '" .. name .. "' locally, that exact emote (won't render or tab-complete) · /hsunblock " .. name .. " to undo")
+    else
+        u.sysmsg(ctx, "that '" .. name .. "' is already blocked")
+    end
+    require("cmd_account").sync_block(channel, name, hash)
 end
 
 function M.unblock(channel, name, login)
@@ -93,8 +103,18 @@ function M.unblock(channel, name, login)
         u.sysmsg(ctx, "usage: /hsunblock <emote name> — removes a local block")
         return
     end
-    local was = store.unblock(name)
-    local acct = require("cmd_account").sync_unblock(channel, name, was, login)
+    local hash = blockkey.resolve(name, login)
+    -- by hash when we can name the emote; else any local hash entry carrying this
+    -- name; plus a legacy by-name entry (dropped here)
+    local was = false
+    if hash and store.unblock_hash(hash) then was = true end
+    if not hash then
+        for h, n in pairs(store.local_hash_set()) do
+            if n == name then store.unblock_hash(h); was = true; break end
+        end
+    end
+    if store.unblock(name) then was = true end
+    local acct = hash and require("cmd_account").sync_unblock(channel, name, was, hash) or false
     if was then
         u.sysmsg(ctx, "unblocked '" .. name .. "'")
     elseif not acct then
@@ -233,6 +253,7 @@ function M.register()
     end)
 
     c2.register_command("/hsblocklist", function(ctx)
+        blockkey.migrate()
         local names = store.blocklist()
         if #names == 0 then
             u.sysmsg(ctx, "no locally-blocked emotes")

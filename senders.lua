@@ -335,6 +335,17 @@ function M.find_hash(name, login)
     return found
 end
 
+-- every distinct hash a cached sender holds under `name` (set: hash → true)
+function M.hashes_for(name)
+    local out = {}
+    if type(name) ~= "string" then return out end
+    for _, e in pairs(cache) do
+        local m = type(e.map) == "table" and e.map[name]
+        if m and m.hash then out[m.hash] = true end
+    end
+    return out
+end
+
 function M.stats()
     return cache_count, pending_count
 end

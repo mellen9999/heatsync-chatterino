@@ -246,11 +246,12 @@ end
 -- usage desc then alpha, so results come out in that order.
 function M.match_prefix(q, qlen, values, seen, cap)
     local hb = store.hash_blocked_set() -- account blocks, by emote hash
+    local lh = store.local_hash_set() -- local blocks, by emote hash
     for _, item in ipairs(M.index) do
         -- find(...,1,true) is a plain-text anchored match — no per-entry substring
         -- allocation like string.sub did, on every keystroke over the whole index.
         if string.find(item.lower, q, 1, true) == 1 then
-            if not seen[item.name] and not (item.hash and hb[item.hash]) then
+            if not seen[item.name] and not (item.hash and (hb[item.hash] or lh[item.hash])) then
                 table.insert(values, item.name)
                 seen[item.name] = true
             end

@@ -12,7 +12,7 @@ local net = require("net")
 
 local M = {}
 
-local BLOCKS_FILE = "blocks.txt"  -- newline-separated emote names
+local BLOCKS_FILE = "blocks.txt"  -- "#h <hash> <name>" = exact-emote block; bare "name" = legacy
 local FLAME_FILE = "flame.txt"    -- "0" = off, anything else = on
 local ARCHIVE_FILE = "archive.txt" -- "0" = channel-signal off (ON by default, opt-out)
 local AUTOMC_FILE = "automulti.txt" -- "0" = auto-multichat off (ON by default)
@@ -21,8 +21,12 @@ local LIVE_FILE = "live.txt"       -- "1" = live-status on (OFF by default, opt-
 local SPIKES_FILE = "spikes.txt"   -- "1" = moment spikes on (OFF by default, opt-in)
 local PIN_FILE = "pin.txt"         -- "0" = pinned message off (ON by default, opt-out)
 
--- blocked[name] = true
+-- local blocks key by the exact emote (content hash, same key site/ext/server use):
+-- local_hash[hash] = display name. `blocked[name]` is LEGACY only (pre-hash lines in
+-- blocks.txt): still honoured until migrated to a hash (store.migrate) or dropped
+-- by /hsunblock. file: "name" = legacy line, "#h <hash> <name>" = hash line.
 local blocked = {}
+local local_hash = {}
 -- account blocks: hash_blocked[hash] = true (in memory only, see header)
 local hash_blocked = {}
 local flame_on = true
@@ -42,15 +46,19 @@ local function file_is(filename, want)
     return type(raw) == "string" and string.match(raw, "^%s*(.-)%s*$") == want
 end
 
+local function parse_blocks(raw)
+    for name in string.gmatch(raw, "[^\r\n]+") do
+        local trimmed = string.match(name, "^%s*(.-)%s*$")
+        local h, n = string.match(trimmed, "^#h (%S+) (%S+)$")
+        if h and net.safe_hash(h) then local_hash[h] = n
+        elseif trimmed ~= "" and string.sub(trimmed, 1, 1) ~= "#" then blocked[trimmed] = true end
+    end
+end
+
 -- ----- load on boot -----
 local function load()
     local raw = net.read_data(BLOCKS_FILE)
-    if type(raw) == "string" then
-        for name in string.gmatch(raw, "[^\r\n]+") do
-            local trimmed = string.match(name, "^%s*(.-)%s*$")
-            if trimmed ~= "" then blocked[trimmed] = true end
-        end
-    end
+    if type(raw) == "string" then parse_blocks(raw) end
     if file_is(FLAME_FILE, "0") then flame_on = false end
     -- default ON: only an explicit "0" on disk turns these off
     if file_is(ARCHIVE_FILE, "0") then archive_on = false end
@@ -61,9 +69,17 @@ local function load()
     if file_is(SPIKES_FILE, "1") then spikes_on = true end
 end
 
+-- re-read blocks.txt (also how tests stage a pre-hash legacy file)
+function M.reload_blocks()
+    blocked, local_hash = {}, {}
+    local raw = net.read_data(BLOCKS_FILE)
+    if type(raw) == "string" then parse_blocks(raw) end
+end
+
 local function persist_blocks()
     local names = {}
     for name in pairs(blocked) do names[#names + 1] = name end
+    for h, n in pairs(local_hash) do names[#names + 1] = "#h " .. h .. " " .. n end
     table.sort(names)
     net.write_data(BLOCKS_FILE, table.concat(names, "\n"))
 end
@@ -73,8 +89,47 @@ end
 -- whatever name it goes by.
 function M.is_blocked(name, hash)
     if blocked[name] == true then return true end
-    return hash ~= nil and hash_blocked[hash] == true
+    return hash ~= nil and (hash_blocked[hash] == true or local_hash[hash] ~= nil)
 end
+
+-- local hash blocks (the exact emote). read-only set for the completion hot path.
+function M.local_hash_set() return local_hash end
+function M.is_local_hash(h) return h ~= nil and local_hash[h] ~= nil end
+
+function M.block_hash(hash, name)
+    if not net.safe_hash(hash) or type(name) ~= "string" or not string.match(name, "^%S+$") then return false end
+    if local_hash[hash] then return false end
+    local_hash[hash] = name
+    blocked[name] = nil -- a legacy by-name entry for it is superseded
+    persist_blocks()
+    return true
+end
+
+function M.unblock_hash(hash)
+    if not local_hash[hash] then return false end
+    local_hash[hash] = nil
+    persist_blocks()
+    return true
+end
+
+-- legacy name entries: move each to a hash when `resolve(name)` can say which
+-- exact emote it was (nil = unknown/ambiguous → stays honoured by name). returns
+-- how many moved.
+function M.migrate(resolve)
+    local moved = 0
+    for name in pairs(blocked) do
+        local ok, h = pcall(resolve, name)
+        if ok and net.safe_hash(h) then
+            local_hash[h] = name
+            blocked[name] = nil
+            moved = moved + 1
+        end
+    end
+    if moved > 0 then persist_blocks() end
+    return moved
+end
+
+function M.is_legacy_blocked(name) return blocked[name] == true end
 
 -- replace the account-block hash set (login / periodic sync / logout = empty)
 function M.set_hash_blocks(set)
@@ -94,14 +149,7 @@ function M.is_hash_blocked(h) return h ~= nil and hash_blocked[h] == true end
 -- read-only view for the completion hot path (iterate/index, never mutate)
 function M.hash_blocked_set() return hash_blocked end
 
-function M.block(name)
-    if type(name) ~= "string" or name == "" then return false end
-    if blocked[name] then return false end
-    blocked[name] = true
-    persist_blocks()
-    return true
-end
-
+-- drops a legacy by-name entry (the only name-keyed removal left)
 function M.unblock(name)
     if not blocked[name] then return false end
     blocked[name] = nil
@@ -112,6 +160,7 @@ end
 function M.blocklist()
     local names = {}
     for name in pairs(blocked) do names[#names + 1] = name end
+    for h, n in pairs(local_hash) do names[#names + 1] = n .. " (" .. string.sub(h, 1, 8) .. ")" end
     table.sort(names)
     return names
 end

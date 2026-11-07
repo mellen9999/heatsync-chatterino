@@ -229,25 +229,15 @@ local function follow_command(ctx, verb)
 end
 
 -- ----- emote block sync (called by /hsblock, /hsunblock, the right-click menu) -----
-local function hash_for(name, login)
-    local row = inventory.map and inventory.map[name]
-    if row and row.hash then return row.hash end
-    return senders.find_hash(name, login)
-end
-
 local function acct_ready()
     return account.logged_in() and account.has_scope("account") and caps.account
 end
 
 -- a local block just happened: also block it on the account when we can say which
 -- emote it is. says what happened either way (only when logged in).
-function M.sync_block(channel, name, login)
+function M.sync_block(channel, name, hash)
     if not acct_ready() then return end
     local ctx = { channel = channel }
-    local hash = hash_for(name, login)
-    if not hash then
-        return u.sysmsg(ctx, "kept '" .. name .. "' local-only: heatsync hasn't told me which emote that is yet")
-    end
     account.request("Post", "/emote-blocks", { emote_hash = hash }, function(data, err, status, ebody)
         if type(data) ~= "table" and status ~= 409 then
             return u.sysmsg(ctx, "'" .. name .. "' is blocked locally only: " .. account.explain(status, ebody, err))
@@ -259,9 +249,8 @@ end
 
 -- returns true when the account path will do the talking (it holds a block on
 -- that emote), so the caller doesn't also say "wasn't blocked".
-function M.sync_unblock(channel, name, was_local, login)
+function M.sync_unblock(channel, name, was_local, hash)
     if not acct_ready() then return false end
-    local hash = hash_for(name, login)
     if not hash or not store.is_hash_blocked(hash) then return false end
     local ctx = { channel = channel }
     account.request("Delete", "/emote-blocks/" .. net.percent_encode(hash), nil, function(data, err, status, ebody)

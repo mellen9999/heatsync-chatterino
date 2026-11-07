@@ -330,7 +330,7 @@ require("store").set_flame(false)
 local answered = http_answer("/api/profile/mellen", { profile = { id = 42 } })
 check(answered ~= nil, "boot: profile fetch fired for signed-in account")
 http_answer("/api/users/42/emotes", { emotes = {
-    { custom_name = "peepoHS", url = "https://cdn.heatsync.org/e/1.webp", width = 112, height = 112, usage_count = 9, zero_width = false },
+    { custom_name = "peepoHS", url = "https://cdn.heatsync.org/e/1.webp", width = 112, height = 112, usage_count = 9, zero_width = false, hash = "peepoh1" },
     { custom_name = "OMEGALUL2", url = "https://cdn.heatsync.org/e/2.webp", width = 56, height = 56, usage_count = 3 },
 } })
 check(inventory.count() == 2, "inventory: 2 emotes loaded")
@@ -433,7 +433,7 @@ advance(6000)
 local refetched = http_answer("/api/profile/mellen", { profile = { id = 42 } })
 check(refetched ~= nil, "ws: own-inventory delta (_ch=emotes/<id>) triggers re-fetch")
 local emurl = http_answer("/api/users/42/emotes?v=7", { emotes = {
-    { custom_name = "peepoHS", url = "https://cdn.heatsync.org/e/1.webp", width = 112, height = 112, usage_count = 9 },
+    { custom_name = "peepoHS", url = "https://cdn.heatsync.org/e/1.webp", width = 112, height = 112, usage_count = 9, hash = "peepoh1" },
     { custom_name = "newEmote", url = "https://cdn.heatsync.org/e/3.webp", width = 64, height = 64, usage_count = 0 },
 } })
 check(emurl ~= nil, "ws: own-inventory refetch carries ?v=<seq> cache-bust")
@@ -685,7 +685,7 @@ store.set_flame(true) -- re-enable (core tests above switched it off)
 -- feed a known-HS sender, then a TEXT-ONLY message from them → gets flamed
 sockets[#sockets].opts.on_text(register_payload({
     type = "emote:broadcast", username = "flameuser", emoteName = "peepoHS",
-    emoteData = { url = "https://cdn.heatsync.org/e/1.webp", width = 112, height = 112 },
+    emoteData = { url = "https://cdn.heatsync.org/e/1.webp", width = 112, height = 112, hash = "peepoh1" },
 }))
 check(senders.is_known_hs("flameuser"), "flame: sender known-HS after broadcast")
 local fm = fake_msg("flameuser", "7007", "just plain text no emotes")
@@ -730,7 +730,7 @@ local function has_image(elems)
 end
 check(has_image(chan.replaced[#chan.replaced].new.init.elements), "block: peepoHS renders before block")
 commands["/hsblock"]({ words = { "/hsblock", "peepoHS" }, channel = chan })
-check(store.is_blocked("peepoHS"), "block: /hsblock records the block")
+check(store.is_blocked("peepoHS", "peepoh1") and not store.is_blocked("peepoHS", "otherh2"), "block: /hsblock records the block (by hash)")
 local bm2 = fake_msg("flameuser", "7007", "look peepoHS here")
 chan.msgs[#chan.msgs + 1] = bm2
 chan.appended_cb(bm2, nil)
@@ -740,7 +740,7 @@ local sawblocked = false
 for _, v in ipairs(cres.values) do if v == "peepoHS " then sawblocked = true end end
 check(not sawblocked, "block: peepoHS filtered from tab-complete")
 commands["/hsunblock"]({ words = { "/hsunblock", "peepoHS" }, channel = chan })
-check(not store.is_blocked("peepoHS"), "block: /hsunblock clears it")
+check(not store.is_blocked("peepoHS", "peepoh1"), "block: /hsunblock clears it")
 
 -- ===== global-catalog words do NOT inline-render ('lost' false-positive fix) =====
 -- a search caches name→url for the /hsfind picker, but a word that merely
@@ -1075,8 +1075,12 @@ do
     check(#chan.added == ba + 1 and has_img, "multichat: youtube hsEmotes word rendered as image")
 end
 
+local function legacy_block(name) -- a pre-hash blocks.txt line
+    require("net").write_data("blocks.txt", name)
+    require("store").reload_blocks()
+end
 -- a locally-blocked emote name still gets blocked when it arrives via hsEmotes
-require("store").block("blockedHS")
+legacy_block("blockedHS")
 ba = #chan.added
 sock.opts.on_text(register_payload({
     type = "kick-chat-message",
@@ -2390,16 +2394,17 @@ do
     -- keeps the InsertText link render.lua sets
     local hsElem = { type = "scaling-image", tooltip = "",
         link = { type = c2.LinkType.InsertText, value = "menuTestEmote " } }
+    require("senders").feed_broadcast("menuuser123", "menuTestEmote", { url = "https://cdn.heatsync.org/e/mt.webp", height = 32, hash = "menuhash1" })
     local sub2 = fire(fake_msg("menuuser123", "9001", "look menuTestEmote"), { message_element = hsElem }).submenus["heatsync"]
     check(type(sub2.actions["block menuTestEmote"]) == "function", "menu: block action offered for a heatsync emote element")
-    check(store.is_blocked("menuTestEmote") == false, "menu: precondition — not blocked yet")
+    check(store.is_blocked("menuTestEmote", "menuhash1") == false, "menu: precondition — not blocked yet")
     sub2.actions["block menuTestEmote"]()
-    check(store.is_blocked("menuTestEmote") == true, "menu: block action actually blocks the emote")
+    check(store.is_blocked("menuTestEmote", "menuhash1") == true, "menu: block action actually blocks the emote")
     local sub3 = fire(fake_msg("menuuser123", "9001", "look menuTestEmote"), { message_element = hsElem }).submenus["heatsync"]
     check(type(sub3.actions["unblock menuTestEmote"]) == "function" and sub3.actions["block menuTestEmote"] == nil,
         "menu: already-blocked emote offers unblock instead of block")
     sub3.actions["unblock menuTestEmote"]()
-    check(store.is_blocked("menuTestEmote") == false, "menu: unblock action actually unblocks the emote")
+    check(store.is_blocked("menuTestEmote", "menuhash1") == false, "menu: unblock action actually unblocks the emote")
 
     -- a hostile emote-name tooltip (space in the derived name) never yields a
     -- block/unblock action
@@ -2712,7 +2717,7 @@ do
     local before = #chan.replaced
     run("just w! text")
     check(#chan.replaced == before, "modifiers: a modifier word alone never triggers a rebuild")
-    require("store").block("modMote")
+    legacy_block("modMote")
     ok, sm = run("modMote w! >>abc")
     check(ok == true and sm:find("w!", 1, true) and not sm:find("[modMote", 1, true), "modifiers: blocked emote draws nothing, so its modifier stays text")
     require("store").unblock("modMote")
@@ -2860,6 +2865,37 @@ do
     a0 = #chan.added
     spike({ platform = "twitch", channel = "somechannel", id = "z", rate = 90, baseline = 30 })
     check(not store.spikes_enabled() and #chan.added == a0, "spike: /hsmoments off silences")
+end
+
+-- ===== rule 9: local blocks key by the exact emote, never the name =====
+do
+    local store, senders = require("store"), require("senders")
+    senders.feed_broadcast("collA", "collW", { url = "https://cdn.heatsync.org/e/ca.webp", height = 32, hash = "collhashA" })
+    senders.feed_broadcast("collB", "collW", { url = "https://cdn.heatsync.org/e/cb.webp", height = 32, hash = "collhashB" })
+    local n0 = #chan.added
+    commands["/hsblock"]({ words = { "/hsblock", "collW" }, channel = chan })
+    check(not store.is_blocked("collW", "collhashA") and not store.is_blocked("collW", "collhashB"), "rule9: typed name matching two emotes blocks nothing")
+    check(added_text_has("more than one emote", #chan.added - n0), "rule9: ambiguous typed block says so")
+    -- right-click on collA's W: only that exact emote goes
+    require("cmd_emotes").block(chan, "collW", "colla")
+    check(store.is_blocked("collW", "collhashA") and not store.is_blocked("collW", "collhashB"),
+        "rule9: blocking one owner's W leaves the other owner's W visible")
+    commands["/hsblock"]({ words = { "/hsblock", "neverseenXYZ" }, channel = chan })
+    check(not store.is_blocked("neverseenXYZ"), "rule9: unknown typed name blocks nothing")
+    require("cmd_emotes").unblock(chan, "collW", "colla")
+    check(not store.is_blocked("collW", "collhashA"), "rule9: unblock by exact emote")
+    -- legacy name line: honoured, then migrated to a hash once the name is unambiguous
+    senders.feed_broadcast("legUser", "legW", { url = "https://cdn.heatsync.org/e/lg.webp", height = 32, hash = "leghash1" })
+    require("net").write_data("blocks.txt", "legW\nlegGone")
+    store.reload_blocks()
+    check(store.is_blocked("legW") and store.is_blocked("legGone"), "rule9: legacy name entries are still honoured")
+    require("blockkey").migrate()
+    check(store.is_blocked("legW", "leghash1") and not store.is_legacy_blocked("legW") and not store.is_blocked("legW", "otherhash"),
+        "rule9: legacy entry migrates to its hash when unambiguous")
+    check(store.is_legacy_blocked("legGone") and store.is_blocked("legGone"), "rule9: unresolvable legacy entry is kept, never lost")
+    require("cmd_emotes").unblock(chan, "legGone")
+    check(not store.is_blocked("legGone"), "rule9: /hsunblock drops a legacy entry")
+    require("net").write_data("blocks.txt", ""); store.reload_blocks()
 end
 
 -- ===== youtube path: server says "youtube", multichat keys it "yt", lines are tagged [Y] =====
@@ -4870,6 +4906,7 @@ do
     check(#all_reqs == before, "account/logged-out: no request went out for any of them")
     do -- /hsblock stays exactly local
         reset_out()
+        require("senders").feed_broadcast("acctowner", "acctLocalOnly", { url = "https://cdn.heatsync.org/e/al.webp", height = 32, hash = "acctlh1" })
         run("/hsblock acctLocalOnly")
         check(says("blocked 'acctLocalOnly' locally") and #all_reqs == before, "account/logged-out: /hsblock is local-only, no request")
         run("/hsunblock acctLocalOnly")
@@ -5279,11 +5316,11 @@ do
         check(says("blocked 'zzHashed' locally") and says("blocked on your account too") and store.is_hash_blocked("hashZZ"), "blocks: says it synced")
         reset_out()
         run("/hsblock zzNoHash")
-        check(says("kept 'zzNoHash' local-only") and find_req("/api/cli/emote-blocks") == nil and store.is_blocked("zzNoHash"), "blocks: unknown hash → local-only, said out loud, no request")
+        check(says("don't know which emote 'zzNoHash'") and find_req("/api/cli/emote-blocks") == nil and not store.is_blocked("zzNoHash"), "blocks: unknown emote → nothing blocked, said out loud, no request")
         reset_out()
         run("/hsblock zzOther")
         http_error("/api/cli/emote-blocks", 500, {})
-        check(says("blocked locally only") and store.is_blocked("zzOther") and not store.is_hash_blocked("hashOTHER"), "blocks: a failed sync keeps the local block and says so")
+        check(says("blocked locally only") and store.is_blocked("zzOther", "hashOTHER") and not store.is_hash_blocked("hashOTHER"), "blocks: a failed sync keeps the local block and says so")
         run("/hsunblock zzOther")
         reset_out()
         run("/hsunblock zzHashed")
