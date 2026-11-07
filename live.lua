@@ -14,6 +14,8 @@
 local store = require("store")
 local multichat = require("multichat")
 local net = require("net")
+local rows = require("rows")
+local brand = require("brand")
 
 local M = {}
 
@@ -38,7 +40,9 @@ local function emit(platform, channel, live, game, title)
     -- (control-byte-free + length-capped) so a flood of megabyte-scale titles
     -- can't grow scrollback allocations unbounded.
     local chan_disp = net.safe_text(channel, 100) or channel
-    local line = (live and "🔴 " or "⚫ ") .. chan_disp .. (live and (" is live on " .. platform) or (" went offline on " .. platform))
+    local label = live and "🔴" or "⚫"
+    local lcolor = live and brand.palette.red or brand.palette.white
+    local line = chan_disp .. (live and (" is live on " .. platform) or (" went offline on " .. platform))
     if live then
         local g = net.safe_text(game, 100)
         local t = net.safe_text(title, 140)
@@ -48,7 +52,7 @@ local function emit(platform, channel, live, game, title)
         pcall(function()
             local ch = c2.Channel.by_name(cc)
             if ch and ch:is_valid() then
-                ch:add_system_message("[heatsync] " .. line)
+                rows.add(ch, "olive", label, lcolor, line)
             end
         end)
     end
@@ -95,16 +99,17 @@ local function emit_update(platform, msg)
     end
     last_update[key] = sig
     local chan_disp = net.safe_text(channel, 100) or channel
-    local line
+    local label, line = "📝", nil
     if game_changed then
-        line = "🎮 " .. chan_disp .. " switched to " .. game .. (title_changed and (" · " .. title) or "")
+        label = "🎮"
+        line = chan_disp .. " switched to " .. game .. (title_changed and (" · " .. title) or "")
     else
-        line = "📝 " .. chan_disp .. " · " .. title
+        line = chan_disp .. " · " .. title
     end
     for _, cc in ipairs(tabs) do
         pcall(function()
             local ch = c2.Channel.by_name(cc)
-            if ch and ch:is_valid() then ch:add_system_message("[heatsync] " .. line) end
+            if ch and ch:is_valid() then rows.add(ch, "olive", label, brand.palette.yellow, line) end
         end)
     end
 end

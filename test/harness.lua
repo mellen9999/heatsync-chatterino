@@ -1372,10 +1372,14 @@ local function added_text_has(frag, n)
         if type(m) == "string" then
             if m:find(frag, 1, true) then return true end
         elseif type(m) == "table" and m.init and m.init.elements then
+            local parts = {}
             for _, e in ipairs(m.init.elements) do
-                if type(e) == "table" and e.type == "text" and type(e.text) == "string"
-                    and e.text:find(frag, 1, true) then return true end
+                if type(e) == "table" and e.type == "text" and type(e.text) == "string" then
+                    if e.text:find(frag, 1, true) then return true end
+                    parts[#parts + 1] = e.text
+                end
             end
+            if table.concat(parts, " "):find(frag, 1, true) then return true end -- label + body rows
         end
     end
     return false
@@ -2521,7 +2525,7 @@ do
     check(body and #body.text <= 500 and body.text:sub(1, 8) == "be nice ", "pin: content clamped to 500")
     check(body and body.link and body.link.type == c2.LinkType.JumpToMessage and body.link.value == "abc-123",
         "pin: twitch content jumps to the original message")
-    check(init.flags == c2.MessageFlag.System, "pin: line is flagged system")
+    check(init.flags & c2.MessageFlag.System ~= 0 and init.highlight_color == require("brand").fills.teal, "pin: line is a system row on the teal fill")
     a0 = #chan.added
     pin_frame({ type = "pin:set", platform = "twitch", channel = "somechannel",
         pin = { id = "p1", username = "mod1", content = "be nice" } })
@@ -2787,7 +2791,9 @@ do
     local function line_text()
         local m = chan.added[#chan.added]
         if type(m) == "string" then return m, nil end
-        return m.init.elements[1].text, m.init.elements[1].link
+        local parts, link = {}, nil
+        for _, e in ipairs(m.init.elements) do parts[#parts + 1] = e.text; link = link or e.link end
+        return table.concat(parts, " "), link
     end
     store.set_spikes(false)
     local a0 = #chan.added
@@ -2828,7 +2834,12 @@ do
     local function moments() -- spike lines only; a long clock advance can add unrelated status lines
         local n = 0
         for _, m in ipairs(chan.added) do
-            local t = type(m) == "string" and m or (m.init and m.init.elements[1].text) or ""
+            local t = type(m) == "string" and m or ""
+            if type(m) == "table" and m.init then
+                local ps = {}
+                for _, e in ipairs(m.init.elements) do ps[#ps + 1] = e.text end
+                t = table.concat(ps, " ")
+            end
             if t:find("🔥 moment", 1, true) then n = n + 1 end
         end
         return n
@@ -2862,7 +2873,7 @@ do
     a0 = #chan.added
     pin_frame({ type = "moment:spike", platform = "youtube", channel = "@YtSw", id = "y1", rate = 60, baseline = 20 })
     local m = chan.added[#chan.added]
-    local t = type(m) == "string" and m or m.init.elements[1].text
+    local t = type(m) == "string" and m or (m.init.elements[1].text .. " " .. m.init.elements[2].text)
     check(#chan.added == a0 + 1 and t:find("[Y] 🔥 moment", 1, true), "spike: a merged youtube source lands in the twitch tab, tagged [Y]")
     store.set_spikes(false)
 end
@@ -3998,7 +4009,10 @@ do
     local function last_text()
         local m = tw.added[#tw.added]
         if type(m) == "string" then return m end
-        return m and m.init and m.init.elements and m.init.elements[1] and m.init.elements[1].text or ""
+        if not (m and m.init and m.init.elements) then return "" end
+        local parts = {}
+        for _, e in ipairs(m.init.elements) do parts[#parts + 1] = e.text end
+        return table.concat(parts, " ")
     end
     local a0 = #tw.added
     upd({ isLive = true, game = "Slots", title = "t1", prevGame = "Chatting", prevTitle = "t1" })

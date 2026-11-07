@@ -7,6 +7,8 @@
 local store = require("store")
 local multichat = require("multichat")
 local net = require("net")
+local rows = require("rows")
+local brand = require("brand")
 
 local M = {}
 
@@ -29,19 +31,8 @@ local function tabs_for(platform, channel)
     return multichat.tabs_for(platform, channel)
 end
 
-local function add_line(ch, text, url)
-    if url then
-        local ok = pcall(function()
-            ch:add_message(net.new_message({
-                flags = c2.MessageFlag and c2.MessageFlag.System,
-                message_text = text, search_text = text,
-                elements = { { type = "text", text = text, color = "link",
-                    link = { type = c2.LinkType.Url, value = url }, tooltip = url } },
-            }))
-        end)
-        if ok then return end
-    end
-    pcall(function() ch:add_system_message(text) end)
+local function add_line(ch, tag, text, url)
+    rows.add(ch, "olive", tag .. "🔥", brand.palette.yellow, text, url)
 end
 
 -- returns true for moment:spike (shown or not) so init stops dispatching
@@ -59,7 +50,7 @@ function M.handle(msg)
         local now = net.now()
         if last_shown[key] and (now - last_shown[key]) < THROTTLE_S then return end
 
-        local line = "[heatsync] " .. (TAG[platform] or "") .. "🔥 moment · " .. string.format("%d", math.floor(rate)) .. " msgs/30s"
+        local line = "moment · " .. string.format("%d", math.floor(rate)) .. " msgs/30s"
         if base and base > 0 then line = line .. string.format(", %.1f× the usual", rate / base) end
         local game, title = net.safe_text(msg.game, 100), net.safe_text(msg.title, 140)
         if game then line = line .. " · " .. game end
@@ -73,7 +64,7 @@ function M.handle(msg)
         for _, tab in ipairs(tabs_for(platform, channel)) do
             local ok, ch = pcall(c2.Channel.by_name, tab)
             if ok and ch and ch:is_valid() then
-                add_line(ch, line, url)
+                add_line(ch, TAG[platform] or "", line, url)
                 shown = true
             end
         end

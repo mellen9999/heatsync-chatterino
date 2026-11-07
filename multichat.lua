@@ -49,8 +49,8 @@ local M = {
 }
 
 local LINKS_FILE = "multichat.txt"
-local KICK_COLOR = "#53fc18"
-local YT_COLOR = "#ff0000"
+local KICK_COLOR = require("brand").palette.green
+local YT_COLOR = require("brand").palette.red
 local DEDUP_MAX = 800
 -- kick emotes come embedded in the text as [emote:<id>:<name>] tokens and are
 -- a png/gif at this CDN path, sized within a 70px box (width varies per

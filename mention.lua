@@ -8,18 +8,18 @@
 -- a heatsync login — the plugin socket is anonymous — and chatterino's account
 -- api exposes the login only, no display name (case-insensitive match covers it).
 --
--- the look is chatterino's own default self-mention highlight (a translucent
--- red-brown, #7f7f3f49 ARGB) plus the Highlighted flag, so the line sits in the
--- same row style as a native mention. it can't read the user's custom highlight
--- color — the plugin api doesn't expose settings — so a customised color stays
--- native-only.
+-- the look is the brand for-you row: solid dim red (brand.mention.bg) plus the
+-- Highlighted flag. the zebra-stripe twin (brand.mention.stripe) needs the row's
+-- parity, which the plugin api can't see, so every row uses bg. a customised
+-- native highlight colour stays native-only (settings aren't exposed).
 local caps = require("caps")
 local store = require("store")
+local brand = require("brand")
 local senders = require("senders")
 
 local M = {}
 
-M.COLOR = "#7f7f3f49"
+M.COLOR = brand.mention.bg
 local LOGIN_MAX = 25
 
 -- word chars match the extension's regex \b: letters, digits, underscore

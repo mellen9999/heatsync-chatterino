@@ -14,6 +14,7 @@
 local store = require("store")
 local multichat = require("multichat")
 local net = require("net")
+local brand = require("brand")
 local ws = require("ws")
 
 local M = {}
@@ -78,11 +79,11 @@ end
 -- username-style element and the content can jump to the original twitch line.
 local function build(p, kick, mention)
     local elems = {}
-    if kick then elems[#elems + 1] = { type = "text", text = "[K]", color = "#53fc18" } end
-    elems[#elems + 1] = { type = "text", text = "📌 pinned", color = "#ff8700" }
+    if kick then elems[#elems + 1] = { type = "text", text = "[K]", color = brand.palette.green } end
+    elems[#elems + 1] = { type = "text", text = "📌 pinned", color = brand.palette.cyan }
     if mention then
         elems[#elems + 1] = { type = "mention", display_name = p.name .. ":", login_name = p.login,
-            fallback_color = p.color or "#ffffff", user_color = p.color or "#ffffff", trailing_space = true }
+            fallback_color = p.color or brand.palette.white, user_color = p.color or brand.palette.white, trailing_space = true }
     else
         elems[#elems + 1] = { type = "text", text = p.name .. ":", color = p.color,
             flags = c2.MessageElementFlag and c2.MessageElementFlag.Username }
@@ -95,7 +96,9 @@ local function build(p, kick, mention)
     local text = "📌 " .. p.name .. ": " .. p.content
     return {
         login_name = p.login, display_name = p.name, message_text = text, search_text = text,
-        username_color = p.color, flags = c2.MessageFlag and c2.MessageFlag.System, elements = elems,
+        username_color = p.color, elements = elems,
+        flags = c2.MessageFlag and ((c2.MessageFlag.System or 0) | (c2.MessageFlag.Highlighted or 0)) or nil,
+        highlight_color = brand.fills.teal,
     }
 end
 
