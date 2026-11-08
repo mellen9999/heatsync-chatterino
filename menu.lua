@@ -1,5 +1,5 @@
 -- right-click context menu (chatterino PR #6961, gated by caps.menus — a
--- feature-detected addition, not a fork; see CLAUDE.md). every action body
+-- feature-detected addition, not a fork). every action body
 -- already lives in cmd_emotes.lua / cmd_archive.lua as a (channel, arg)
 -- function shared with the matching /hs* command — this module is only the
 -- menu wiring plus the two checks unique to a right-click: whose message is
