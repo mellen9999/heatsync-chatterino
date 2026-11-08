@@ -41,7 +41,7 @@ local function emit(platform, channel, live, game, title)
     -- can't grow scrollback allocations unbounded.
     local chan_disp = net.safe_text(channel, 100) or channel
     local label = live and "🔴" or "⚫"
-    local lcolor = live and brand.palette.red or brand.palette.white
+    local lcolor = live and brand.palette.yellow or brand.palette.white
     local line = chan_disp .. (live and (" is live on " .. platform) or (" went offline on " .. platform))
     if live then
         local g = net.safe_text(game, 100)
