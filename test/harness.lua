@@ -3341,6 +3341,7 @@ do
         profile = { display_name = "FooBar", username = "foobar", stats = { user_heat = 88, op_count = 3, re_count = 4 },
             twitch_followers = 1200, twitch_is_live = true, is_shadow = false },
         followage = { followedAt = "2024-03-01T10:00:00.000Z", followerCount = 5, channelFollowedAt = nil },
+        pronouns = "she/it/he/they/<b>",
         corpus = { messages = 52, firstDay = "2025-01-02", firstChannel = "x", also = { "a", "b" } },
         recent = { { channel = "x", message = "hi there" }, { channel = "x", message = "hi there" },
             { channel = "y", message = "second" } },
@@ -3364,6 +3365,7 @@ do
             "card: the name is a UserInfo link (opens chatterino's usercard)")
         local all = added_text()
         check(all:find("heat 88", 1, true) and all:find("7 posts", 1, true) and all:find("1200 followers", 1, true) and all:find("live", 1, true), "card: heat, posts, followers, live")
+        check(all:find("she/it/he", 1, true) and not all:find("they", 1, true) and not all:find("<b>", 1, true), "card: pronouns shown, capped at 3 sets")
         check(all:find("following #somechannel since 2024-03-01", 1, true), "card: follow age for this channel")
         check(all:find("52 msgs archived · first seen 2025-01-02 in #x · also in #a #b", 1, true), "card: archive corpus line")
         check(all:find("#x · hi there ×2", 1, true) and all:find("#y · second\n", 1, true), "card: recent lines, back-to-back repeats fold into ×n")

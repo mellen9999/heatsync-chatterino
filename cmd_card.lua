@@ -25,6 +25,17 @@ local function day(s)
     return type(s) == "string" and string.match(s, "^(%d%d%d%d%-%d%d%-%d%d)") or nil
 end
 
+-- "she/it" → bounded: at most 3 short lowercase sets, anything else dropped
+local function clean_pronouns(v)
+    if type(v) ~= "string" or #v > 80 then return nil end
+    local out = {}
+    for set in string.gmatch(v, "[^/]+") do
+        if #out >= 3 then break end
+        if #set <= 8 and string.match(set, "^%a+$") then out[#out + 1] = string.lower(set) end
+    end
+    return #out > 0 and table.concat(out, "/") or nil
+end
+
 -- profile + parts → one flat model, every field shape-checked. nil when there's
 -- no usable profile (the caller then falls back / reports it).
 local function build_model(login, payload)
@@ -39,6 +50,7 @@ local function build_model(login, payload)
         heat = num(st.user_heat),
         followers = math.max(num(st.followers) or 0, num(p.twitch_followers) or 0),
         live = p.twitch_is_live == true,
+        pronouns = clean_pronouns(payload.pronouns),
     }
     local posts = (num(st.op_count) or 0) + (num(st.re_count) or 0) + (num(st.mop_count) or 0)
     m.posts = posts > 0 and posts or num(st.total_posts)
@@ -95,6 +107,7 @@ local function render(channel, chan_name, m)
         name_el.tooltip = "open usercard"
     end
     local bits = {}
+    if m.pronouns then bits[#bits + 1] = m.pronouns end
     if m.heat and m.heat > 0 then bits[#bits + 1] = "heat " .. tostring(m.heat) end
     if m.posts then bits[#bits + 1] = tostring(m.posts) .. " posts" end
     if m.followers > 0 then bits[#bits + 1] = tostring(m.followers) .. " followers" end
