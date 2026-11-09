@@ -3032,6 +3032,21 @@ do
     send("heatuser1", "61001", "second line")
     check(#chan.replaced == rc + 1, "heat: next line from a hot chatter rebuilt immediately from cache")
 
+    -- a known heatsync user who is also hot wears the bar, not the 🔥 beside it
+    do
+        store.set_flame(true)
+        sockets[#sockets].opts.on_text(register_payload({
+            type = "emote:broadcast", username = "heatuser1", emoteName = "peepoHS",
+            emoteData = { url = "https://cdn.heatsync.org/e/1.webp", width = 112, height = 112, hash = "peepoh1" },
+        }))
+        check(senders.is_known_hs("heatuser1"), "heat: precondition — hot chatter is a known heatsync user")
+        rc = #chan.replaced
+        send("heatuser1", "61001", "third line")
+        local m = last_repl()
+        check(#chan.replaced == rc + 1 and marker_count(m, "▌") == 1, "heat: a known hot chatter still gets the bar")
+        check(marker_count(m, "🔥") == 0, "heat: the bar replaces the flame, never both on one name")
+    end
+
     -- idempotent: a message that already carries our bar + badge keeps exactly one
     do
         local m = fake_msg("heatuser1", "61001", "again")

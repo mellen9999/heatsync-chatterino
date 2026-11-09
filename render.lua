@@ -286,8 +286,8 @@ local function is_username_el(el)
     return ok and has
 end
 
--- the marker row prepended before the username: heatsync sub-flair badge, the 🔥 heatsync marker,
--- then the heat bar (the bar is its own glyph — never an emoji beside a score).
+-- the marker row prepended before the username: heatsync sub-flair badge, then the 🔥
+-- heatsync marker OR the heat bar (the caller never asks for both — never an emoji beside a score).
 local function insert_markers(elems, msg, want_flame, heat_info, want_flair)
     if want_flair then
         local fl = flair.element_for(msg.user_id)
@@ -573,6 +573,9 @@ local function do_process(ch, msg, hint)
     local t = msg_time(msg)
     net.note_wall(t) -- a live message's server time anchors the wall clock (net.lua)
     local heat_info = heat.info(login)
+    -- a line wears the flame OR the heat bar, never both side by side (the
+    -- extension's hsMarksWear): a score earns the bar and the bar replaces the 🔥
+    if heat_info then want_flame = false end
     local want_flair = flair.has(msg.user_id, login)
     local under = under_for(msg, text)
     -- O(1) checks first; only pay the O(words) has_hits scan when neither the
