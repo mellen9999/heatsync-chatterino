@@ -94,7 +94,6 @@ end
 
 -- local hash blocks (the exact emote). read-only set for the completion hot path.
 function M.local_hash_set() return local_hash end
-function M.is_local_hash(h) return h ~= nil and local_hash[h] ~= nil end
 
 function M.block_hash(hash, name)
     if not net.safe_hash(hash) or type(name) ~= "string" or not string.match(name, "^%S+$") then return false end
