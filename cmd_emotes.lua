@@ -89,6 +89,12 @@ function M.block(channel, name, login)
         end
         return
     end
+    M.block_hash(channel, name, hash)
+end
+
+-- block an already-known exact emote (a merged [K]/[Y] line remembers its hash)
+function M.block_hash(channel, name, hash)
+    local ctx = { channel = channel }
     if store.block_hash(hash, name) then
         u.sysmsg(ctx, "blocked '" .. name .. "' locally, that exact emote (won't render or tab-complete) · /hsunblock " .. name .. " to undo")
     else
@@ -97,13 +103,13 @@ function M.block(channel, name, login)
     require("cmd_account").sync_block(channel, name, hash)
 end
 
-function M.unblock(channel, name, login)
+function M.unblock(channel, name, login, known_hash)
     local ctx = { channel = channel }
     if not name or name == "" then
         u.sysmsg(ctx, "usage: /hsunblock <emote name> — removes a local block")
         return
     end
-    local hash = blockkey.resolve(name, login)
+    local hash = known_hash or blockkey.resolve(name, login)
     -- by hash when we can name the emote; else any local hash entry carrying this
     -- name; plus a legacy by-name entry (dropped here)
     local was = false

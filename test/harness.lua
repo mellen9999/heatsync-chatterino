@@ -5508,6 +5508,29 @@ do
         local unknown = new_fake_menu()
         menu_cb({ message = { flags = 0, id = "never-seen", channel_name = "", login_name = "kk" }, channel = mc, menu = unknown })
         check(unknown.submenus["heatsync"] == nil, "pin: a merged line we never injected gets no menu")
+
+        -- exact-emote block on a merged line: the ref has a url, no hash — it maps back
+        -- through the sender caches, so a hash block hides it and the menu can add one
+        do
+            local st = require("store")
+            require("senders").feed_broadcast("hsother", "mergedHash", { url = "https://cdn.heatsync.org/e/mh1.webp", height = 32, hash = "mergedh1" })
+            local function send(id)
+                local nn = #mc.added
+                sockets[#sockets].opts.on_text(register_payload({ type = "kick-chat-message", data = { platform = "kick", channel = "PinSrc", id = id, username = "kk", content = "mergedHash",
+                    hsEmotes = { mergedHash = { url = "https://cdn.heatsync.org/e/mh1.webp" } }, timestamp = 1761825603000 } }))
+                return mc.added[nn + 1]
+            end
+            check(has_scaling_image(send("kblk-1")), "block: merged line renders an unblocked ref")
+            local hel = { type = "scaling-image", tooltip = "", link = { type = c2.LinkType.InsertText, value = "mergedHash " } }
+            local bm = new_fake_menu()
+            menu_cb({ message = { flags = 0, id = "kblk-1", channel_name = "", login_name = "kk" }, channel = mc, menu = bm, message_element = hel })
+            local act = bm.submenus["heatsync"] and bm.submenus["heatsync"].actions["block mergedHash"]
+            check(type(act) == "function", "block: merged line right-click offers block for the clicked emote")
+            act()
+            check(st.is_blocked("mergedHash", "mergedh1"), "block: merged-line block stores the exact emote hash")
+            check(not has_scaling_image(send("kblk-2")), "block: an exact-hash block hides the emote on a merged line")
+            st.unblock_hash("mergedh1")
+        end
         commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = mc })
         for i = #channels, 1, -1 do if channels[i] == mc then table.remove(channels, i) end end
         -- clear

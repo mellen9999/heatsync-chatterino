@@ -79,19 +79,30 @@ local function add_pin(sub, channel, platform, chan, id)
     sub:add_action("pin message", function() cmd_account.pin_message(channel, platform, chan, id) end)
 end
 
--- a merged kick line carries no channel name; multichat remembers which kick
+-- a merged kick/youtube line carries no channel name; multichat remembers which source
 -- channel each recent line id came from
-local function add_kick_pin(args, msg)
-    if not cmd_account.can_pin() then return end
+local function add_merged_actions(args, msg)
     local ok, id = pcall(function() return msg.id end)
     local info = ok and multichat.line_info(id) or nil
     if not info then return end
     local channel = resolve_channel(args)
     local menu = args.menu
     if not channel or menu == nil then return end
+    -- an exact-emote block works on any merged line whose emote we could key
+    local name = hs_emote_name(args.message_element)
+    local hash = name and info.hashes and info.hashes[name] or nil
+    local pin = info.platform == "kick" and cmd_account.can_pin()
+    if not pin and not hash then return end
     local sub = menu:add_menu("heatsync")
     if sub == nil then return end
-    add_pin(sub, channel, info.platform, info.channel, id)
+    if pin then add_pin(sub, channel, info.platform, info.channel, id) end
+    if hash then
+        if store.is_blocked(name, hash) then
+            sub:add_action("unblock " .. name, function() cmd_emotes.unblock(channel, name, nil, hash) end)
+        else
+            sub:add_action("block " .. name, function() cmd_emotes.block_hash(channel, name, hash) end)
+        end
+    end
 end
 
 -- the whole handler runs under ONE pcall from M.register — a bad/absent field
@@ -113,7 +124,7 @@ local function on_context_menu(args)
     if ok_sys and is_sys then return end
     local ok_cn, cn = pcall(function() return msg.channel_name end)
     if not ok_cn or type(cn) ~= "string" or cn == "" then
-        add_kick_pin(args, msg)
+        add_merged_actions(args, msg)
         return
     end
 

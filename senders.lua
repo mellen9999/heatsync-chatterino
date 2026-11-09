@@ -346,6 +346,17 @@ function M.hashes_for(name)
     return out
 end
 
+-- the hash of the cached emote `name` whose image is `url` (a merged [K]/[Y]
+-- line's hsEmotes ref has a url but no hash). exact url match only.
+function M.hash_for_url(name, url)
+    if type(name) ~= "string" or type(url) ~= "string" then return nil end
+    for _, e in pairs(cache) do
+        local m = type(e.map) == "table" and e.map[name]
+        if m and m.hash and m.url == url then return m.hash end
+    end
+    return nil
+end
+
 function M.stats()
     return cache_count, pending_count
 end

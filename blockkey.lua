@@ -24,6 +24,15 @@ function M.resolve(name, login)
     return nil, n == 0 and "unknown" or "ambiguous"
 end
 
+-- a merged [K]/[Y] line's ref names an image url, not a hash: map it back through
+-- our own inventory + the sender caches. nil when we've never seen that emote
+-- (then only a legacy name block can match, as before).
+function M.hash_for_ref(name, url)
+    local own = inventory.map and inventory.map[name]
+    if own and own.hash and own.url == url then return own.hash end
+    return senders.hash_for_url(name, url)
+end
+
 -- legacy by-name blocks → hashes wherever the name is unambiguous right now
 function M.migrate()
     return store.migrate(function(name) return (M.resolve(name)) end)

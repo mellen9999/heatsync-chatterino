@@ -38,6 +38,7 @@ local ws = require("ws")
 local img = require("img")
 local caps = require("caps")
 local store = require("store")
+local blockkey = require("blockkey")
 local namecolor = require("namecolor")
 local mention = require("mention")
 
@@ -97,8 +98,11 @@ end
 -- if it's locally blocked or the image fails to build (caller falls back to
 -- the plain word). dims are unknown on a ref (see HsEmoteRef) — 32 matches the
 -- 1x tier height for_hs_emote already clamps every heatsync emote to.
+local line_hashes = nil -- word -> hash for the line being built (menu block target)
 local function build_hs_elem(word, ref)
-    if store.is_blocked(word, net.safe_hash(ref.hash)) then return nil end
+    local hash = net.safe_hash(ref.hash) or blockkey.hash_for_ref(word, ref.url)
+    if store.is_blocked(word, hash) then return nil end
+    if hash and line_hashes then line_hashes[word] = hash end
     local set = caps.images and img.for_hs_emote(ref.url, 32) or nil
     if not set then return nil end
     return {
@@ -517,13 +521,14 @@ end
 -- ring: the last 400 kick lines only.
 local LINE_META_MAX = 400
 local line_meta, line_ring, line_ring_i = {}, {}, 0
-local function remember_line(line)
-    if line.platform ~= "kick" or type(line.id) ~= "string" or line.id == "" or #line.id > 80 then return end
+local function remember_line(line, hashes)
+    if type(line.id) ~= "string" or line.id == "" or #line.id > 80 then return end
+    if line.platform ~= "kick" and not hashes then return end
     line_ring_i = line_ring_i % LINE_META_MAX + 1
     local old = line_ring[line_ring_i]
     if old then line_meta[old] = nil end
     line_ring[line_ring_i] = line.id
-    line_meta[line.id] = { platform = "kick", channel = string.lower(line.channel) }
+    line_meta[line.id] = { platform = line.platform == "yt" and "youtube" or line.platform, channel = string.lower(line.channel), hashes = hashes }
 end
 
 function M.line_info(id)
@@ -621,7 +626,6 @@ function inject(line, only)
     -- text would otherwise be built straight into a chat element (cheap DoS knob)
     if #text > 2000 then text = text:sub(1, 2000) end
     net.note_wall(line.time_ms) -- a server timestamp anchors the wall clock (token expiry)
-    remember_line(line)
     local display = line.display
     if type(display) ~= "string" or display == "" then display = line.username or "?" end
     if #display > 100 then display = display:sub(1, 100) end
@@ -637,11 +641,14 @@ function inject(line, only)
     -- render platform emotes as images: kick's [emote:id:name] tokens,
     -- youtube's per-message shortcode+url list
     local body
+    line_hashes = {}
     if line.platform == "kick" then
         body = build_kick_body(text, line.hsEmotes)
     elseif line.platform == "yt" then
         body = build_yt_body(text, line.emotes, line.hsEmotes)
     end
+    remember_line(line, next(line_hashes) and line_hashes or nil)
+    line_hashes = nil
 
     for cc_name in pairs(targets) do
         local ok, res = pcall(inject_one, cc_name, line, tag, tag_color, display, uname_color, body, text)
