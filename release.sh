@@ -3,6 +3,7 @@
 # publish it as the github release for the version in info.json.
 #
 #   ./release.sh           # build dist/heatsync.zip only
+#   ./release.sh install   # build, then install into this machine's chatterino
 #   ./release.sh publish   # build, then tag + upload as the latest release
 #
 # the zip holds only what chatterino loads: info.json, the lua modules, LICENSE,
@@ -28,6 +29,29 @@ mkdir -p dist
 rm -f dist/heatsync.zip
 (cd "$stage" && zip -qr - heatsync) > dist/heatsync.zip
 echo "built dist/heatsync.zip (v$ver, $(unzip -Z1 dist/heatsync.zip | grep -c '\.lua$') modules)"
+
+# install: the same folder a user unzips, never a link into this checkout (a link
+# puts the login token + state files inside the repo, where `git clean` logs you
+# out). the plugin's own files (data/ + the *.txt state) carry over; the previous
+# install is kept once as .heatsync.prev. close chatterino first.
+if [ "${1:-}" = "install" ]; then
+  if pgrep -x chatterino >/dev/null; then echo "release: close chatterino first" >&2; exit 1; fi
+  plugins=${CHATTERINO_PLUGINS:-$HOME/.local/share/chatterino/Plugins}
+  dest=$plugins/heatsync new=$plugins/.heatsync.new prev=$plugins/.heatsync.prev
+  mkdir -p "$plugins"
+  rm -rf "$new" && mkdir "$new"
+  unzip -q dist/heatsync.zip -d "$new"
+  if [ -e "$dest" ]; then
+    old=$(readlink -f "$dest")
+    [ -d "$old/data" ] && cp -a "$old/data" "$new/heatsync/"
+    find "$old" -maxdepth 1 -name '*.txt' -exec cp -a {} "$new/heatsync/" \;
+    rm -rf "$prev"
+    mv "$dest" "$prev"
+  fi
+  mv "$new/heatsync" "$dest" && rmdir "$new"
+  echo "installed v$ver → $dest (previous kept at $prev)"
+  exit 0
+fi
 
 [ "${1:-}" = "publish" ] || exit 0
 

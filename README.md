@@ -15,7 +15,7 @@ heatsync inside chatterino — one lua plugin, no fork, no patched binary. your 
 4. type `/hshelp` in any chat
 
 update: repeat 1–2 (replace the old `heatsync` folder), restart chatterino.
-from source: clone this repo into `Plugins/heatsync`.
+from source: clone anywhere, close chatterino, run `./release.sh install` — it builds the zip and installs it like step 2, keeping your login.
 
 ## what your build gets
 
