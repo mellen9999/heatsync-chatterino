@@ -948,6 +948,28 @@ sock.opts.on_text(register_payload({
 }))
 check(#chan.added == ba + 1, "multichat: live youtube message after replay still injects")
 
+-- support rows: superchat / membership / kick sub / KICKs gift = solid navy notice
+do
+    local navy = require("brand").fills.navy
+    local function last_navy() local m = chan.added[#chan.added]; return m and m.init.highlight_color == navy and m end
+    ba = #chan.added
+    sock.opts.on_text(register_payload({ type = "youtube:chat", channelId = "@somestreamer",
+        messages = { { type = "superchat", id = "ysc1", user = "Big", amount = "$5.00", text = "gg", timestamp = 1730000000100 } } }))
+    check(#chan.added == ba + 1 and last_navy() and (chan.added[#chan.added].init.message_text or ""):find("$5.00", 1, true), "multichat: youtube superchat is a navy row with the amount")
+    sock.opts.on_text(register_payload({ type = "youtube:chat", channelId = "@somestreamer",
+        messages = { { type = "membership", id = "ymb1", user = "Mem", systemMsg = "Mem became a member", text = "hello", timestamp = 1730000000101 } } }))
+    check(last_navy() and (chan.added[#chan.added].init.message_text or ""):find("became a member", 1, true), "multichat: youtube membership is a navy row")
+    ba = #chan.added
+    sock.opts.on_text(register_payload({ type = "kick-sub-event", channel = "xqc", eventType = "new", username = "subbie", message = "subbie subscribed" }))
+    check(#chan.added == ba + 1 and last_navy() and (chan.added[#chan.added].init.message_text or ""):find("subscribed", 1, true), "multichat: kick sub event is a navy row")
+    sock.opts.on_text(register_payload({ type = "kick-sub-event", channel = "xqc", eventType = "new", username = "subbie", message = "subbie subscribed" }))
+    check(#chan.added == ba + 1, "multichat: a replayed kick sub event doesn't repeat")
+    sock.opts.on_text(register_payload({ type = "kick-kicks-event", channel = "xqc", username = "gifty", amount = 100, giftName = "Rage", message = "" }))
+    check(#chan.added == ba + 2 and last_navy() and (chan.added[#chan.added].init.message_text or ""):find("100 KICKs", 1, true), "multichat: kick KICKs gift is a navy row")
+    sock.opts.on_text(register_payload({ type = "kick-sub-event", channel = "unlinked", eventType = "new", username = "x", message = "x subscribed" }))
+    check(#chan.added == ba + 2, "multichat: a sub event for an unlinked channel is ignored")
+end
+
 -- youtube emote shortcode → image
 ba = #chan.added
 sock.opts.on_text(register_payload({

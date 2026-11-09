@@ -39,6 +39,7 @@ local img = require("img")
 local caps = require("caps")
 local store = require("store")
 local blockkey = require("blockkey")
+local rows = require("rows")
 local namecolor = require("namecolor")
 local mention = require("mention")
 
@@ -650,6 +651,16 @@ function inject(line, only)
     remember_line(line, next(line_hashes) and line_hashes or nil)
     line_hashes = nil
 
+    if line.fill then
+        -- support / membership / sub rows: a solid navy notice, not a chat line
+        for cc_name in pairs(targets) do
+            pcall(function()
+                local ch = c2.Channel.by_name(cc_name)
+                if ch and ch:is_valid() then rows.add(ch, line.fill, tag, tag_color, text) end
+            end)
+        end
+        return
+    end
     for cc_name in pairs(targets) do
         local ok, res = pcall(inject_one, cc_name, line, tag, tag_color, display, uname_color, body, text)
         -- res==false: target tab closed/volatile (a drop). not ok: a systemic
@@ -681,14 +692,48 @@ local function handle_kick(d)
     })
 end
 
+-- kick subs + KICKs gifts arrive as their own frames: one navy support row in
+-- every tab the channel is merged into (the extension's same family). the
+-- server's sentence is untrusted — clamped like every other spliced string.
+local function handle_kick_support(m, kind)
+    if type(m) ~= "table" or type(m.channel) ~= "string" then return end
+    local who = net.safe_text(m.username, 100) or "anonymous"
+    local body, sig
+    if kind == "kicks" then
+        local amt = tonumber(m.amount)
+        if not amt then return end
+        local gift = net.safe_text(m.giftName, 60)
+        body = who .. " gifted " .. string.format("%d", amt) .. " KICKs" .. (gift and (" (" .. gift .. ")") or "")
+        sig = "k|" .. who .. "|" .. amt
+    else
+        body = net.safe_text(m.message, 200)
+        if not body then
+            if m.eventType == "gift" then body = who .. " gifted subs"
+            elseif m.eventType == "renewal" then body = who .. " resubscribed"
+            else body = who .. " subscribed" end
+        end
+        sig = "s|" .. tostring(m.eventType) .. "|" .. who .. "|" .. tostring(tonumber(m.months) or 0)
+    end
+    local note = net.safe_text(kind == "kicks" and m.message or nil, 140)
+    if note then body = body .. " · " .. note end
+    -- the same event can be delivered twice (a rejoin replays it): once per minute
+    local key = "kev\1" .. string.lower(m.channel) .. "\1" .. sig .. "\1" .. tostring(math.floor(net.now() / 60))
+    if is_dup(key) then return end
+    inject({ platform = "kick", channel = m.channel, text = body, fill = "navy", display = who, username = who })
+end
+
 local function handle_yt(m, routing_tag)
     if type(m) ~= "table" then return end
-    -- superchat: prefix the amount; membership/gift: fall back to systemMsg
-    local text = m.text
+    -- superchat / membership / gifts: a navy support row (amount or systemMsg
+    -- leads, the viewer's own words follow)
+    local text, fill = m.text, nil
+    local sys = type(m.systemMsg) == "string" and m.systemMsg ~= "" and m.systemMsg or nil
     if type(m.amount) == "string" and m.amount ~= "" then
-        text = m.amount .. " " .. (text or "")
-    elseif (not text or text == "") and type(m.systemMsg) == "string" then
-        text = m.systemMsg
+        fill = "navy"
+        text = (type(m.user) == "string" and (m.user .. ": ") or "") .. m.amount .. ((text and text ~= "") and (" " .. text) or "")
+    elseif sys then
+        fill = "navy"
+        text = sys .. ((text and text ~= "") and (" · " .. text) or "")
     end
     inject({
         platform = "yt",
@@ -697,6 +742,7 @@ local function handle_yt(m, routing_tag)
         username = m.user,
         display = m.user,
         text = text,
+        fill = fill,
         -- the chatter's picked heatsync color wins over youtube's own (see namecolor)
         color = namecolor.for_youtube(m.authorChannelId) or m.color,
         time_ms = tonumber(m.timestamp),
@@ -732,6 +778,12 @@ function M.dispatch(msg)
     local t = msg.type
     if t == "kick-chat-message" then
         handle_kick(msg.data)
+        return true
+    elseif t == "kick-sub-event" then
+        handle_kick_support(msg, "sub")
+        return true
+    elseif t == "kick-kicks-event" then
+        handle_kick_support(msg, "kicks")
         return true
     elseif t == "kick-chat-backfill" then
         if type(msg.messages) == "table" then
