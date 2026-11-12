@@ -247,12 +247,13 @@ local yt_video = {}
 -- yt_status[routing_tag] = last known status string — dedupes the status line
 -- (and the live.lua feed) to fire only on an actual CHANGE, not every poll.
 local yt_status = {}
--- dedup seen ids: a fixed-size circular buffer instead of a fifo array. the old
--- table.remove(order, 1) was an O(n) shift on EVERY message once full (800-wide
--- at scale) — the ring evicts in O(1) by overwriting the oldest slot.
-local seen = {}          -- id -> true (membership)
-local ring = {}          -- slot(1..DEDUP_MAX) -> id currently occupying it
-local ring_pos = 0       -- monotonic write cursor; slot = (pos % DEDUP_MAX) + 1
+-- dedup memory: one window per scope (a tab's view of one source), so a busy
+-- source can never push a quiet one's ids out, and a tab that gets a line from
+-- the socket and again from history knows it already drew it. each window is a
+-- fixed-size circular buffer: the old table.remove(order, 1) was an O(n) shift on
+-- EVERY message once full — the ring evicts in O(1) by overwriting the oldest slot.
+-- windows[scope] = { seen = id -> true, ring = slot(1..DEDUP_MAX) -> id, pos = write cursor }
+local windows = {}
 -- lines dropped before injection (no routing tag, or target tab gone/volatile).
 -- surfaced in /hsstatus so a silently-vanishing multichat is legible, not a
 -- mystery (multichat.lua injection used to drop with no signal at all).
@@ -311,16 +312,26 @@ local function persist()
 end
 
 -- ----- dedup -----
-local function is_dup(id)
+local function is_dup(scope, id)
     if type(id) ~= "string" or id == "" then return false end
-    if seen[id] then return true end
-    seen[id] = true
-    local slot = (ring_pos % DEDUP_MAX) + 1
-    local evicted = ring[slot]
-    if evicted ~= nil then seen[evicted] = nil end
-    ring[slot] = id
-    ring_pos = ring_pos + 1
+    local w = windows[scope]
+    if not w then
+        w = { seen = {}, ring = {}, pos = 0 }
+        windows[scope] = w
+    end
+    if w.seen[id] then return true end
+    w.seen[id] = true
+    local slot = (w.pos % DEDUP_MAX) + 1
+    local evicted = w.ring[slot]
+    if evicted ~= nil then w.seen[evicted] = nil end
+    w.ring[slot] = id
+    w.pos = w.pos + 1
     return false
+end
+
+-- the scope of one tab's view of one source
+local function tab_scope(cc_name, key)
+    return cc_name .. "\1" .. key
 end
 
 -- ----- history backfill -----
@@ -439,6 +450,8 @@ function M.unlink_auto(cc_name)
         if s.auto then
             srcs[key] = nil
             backfilled[cc_name .. "\1" .. key] = nil
+            -- the tab is gone: so is what it had drawn (a reopened one starts empty)
+            windows[tab_scope(cc_name, key)] = nil
             drop_route(key, cc_name)
             if not routes[key] then unsubscribe(s.platform, s.channel) end
         end
@@ -608,19 +621,29 @@ function inject(line, only)
     local key = source_key(line.platform, line.channel)
     local targets = routes[key]
     if not targets then return end
-    -- `only`: history for ONE freshly linked tab. other tabs already linked to
-    -- the source have seen these ids, so for a shared source the seen-verdict
-    -- must not swallow the new tab's copy (it still records the id).
-    local shared = false
+    -- `only`: history for ONE freshly linked tab; the other tabs on the source
+    -- already have these lines.
     if only then
         if not targets[only] then return end
-        shared = next(targets, next(targets)) ~= nil
         targets = { [only] = true }
     end
-    -- dedup scoped BY SOURCE: two sources linked to the same tab that happen to
-    -- share a message id can't shadow each other. a nil/blank id means "can't
-    -- dedup" and injects (is_dup handles the non-string case for the raw path).
-    if type(line.id) == "string" and line.id ~= "" and is_dup(key .. "\1" .. line.id) and not shared then return end
+    -- one platform message id is one line per tab: each target keeps its own
+    -- memory of the ids it drew from this source, so a replay (the server resends
+    -- every joined room's backlog on reconnect) or history overlapping live lines
+    -- never doubles, and a tab that has not seen the id still gets it. two sources
+    -- sharing an id can't shadow each other. a nil/blank id means "can't dedup"
+    -- and injects (is_dup handles the non-string case for the raw path).
+    if type(line.id) == "string" and line.id ~= "" then
+        local fresh
+        for cc_name in pairs(targets) do
+            if not is_dup(tab_scope(cc_name, key), line.id) then
+                fresh = fresh or {}
+                fresh[cc_name] = true
+            end
+        end
+        if not fresh then return end
+        targets = fresh
+    end
     local text = line.text
     if type(text) ~= "string" or text == "" then return end
     -- bound field lengths from the untrusted ws payload: a multi-MB username or
@@ -718,7 +741,7 @@ local function handle_kick_support(m, kind)
     if note then body = body .. " · " .. note end
     -- the same event can be delivered twice (a rejoin replays it): once per minute
     local key = "kev\1" .. string.lower(m.channel) .. "\1" .. sig .. "\1" .. tostring(math.floor(net.now() / 60))
-    if is_dup(key) then return end
+    if is_dup("kev", key) then return end
     inject({ platform = "kick", channel = m.channel, text = body, fill = "navy", display = who, username = who })
 end
 

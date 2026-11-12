@@ -3594,6 +3594,108 @@ do
         for i = #channels, 1, -1 do if channels[i] == other then table.remove(channels, i) end end
     end
 
+    -- one platform message id is one line per tab, whatever delivers it again
+    do
+        local function texts(ch, from)
+            local out = {}
+            for i = from + 1, #ch.added do
+                local m = ch.added[i]
+                if type(m) == "table" and m.init then out[#out + 1] = m.init.message_text end
+            end
+            return out
+        end
+        local function count_of(list, want)
+            local n = 0
+            for _, t in ipairs(list) do if t == want then n = n + 1 end end
+            return n
+        end
+        local function kick_line(chan_name, id, text)
+            return { platform = "kick", channel = chan_name, id = id, username = "u", content = text }
+        end
+
+        -- a source shared by two tabs: the line the socket delivered to both, then
+        -- the history answer for one of them — that tab must not draw it twice
+        do
+            local other = fake_channel("racetab")
+            channels[#channels + 1] = other
+            commands["/hsmulti"]({ words = { "/hsmulti", "kick:racesrc" }, channel = chan })
+            commands["/hsmulti"]({ words = { "/hsmulti", "kick:racesrc" }, channel = other })
+            wsock().opts.on_text(register_payload({ type = "kick-chat-message", data = kick_line("racesrc", "race1", "raced line") }))
+            local c0, o0 = #chan.added, #other.added
+            answer_all("/api/recent/kick/racesrc", function()
+                return { messages = { { id = "race1", ts = "2026-10-30T20:00:01.000Z", sender = "u", text = "raced line" } } }
+            end)
+            check(#chan.added == c0 and #other.added == o0, "dedup: a live line then the same id as history is drawn once in each tab it reached")
+            commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = chan })
+            commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = other })
+            for i = #channels, 1, -1 do if channels[i] == other then table.remove(channels, i) end end
+        end
+
+        -- busy sources must not make a quiet source forget: the server replays each
+        -- joined room's backlog on every reconnect, and a quiet room's last lines
+        -- are older than anything a shared memory still holds
+        do
+            commands["/hsmulti"]({ words = { "/hsmulti", "kick:quietsrc" }, channel = chan })
+            commands["/hsmulti"]({ words = { "/hsmulti", "kick:busysrc" }, channel = chan })
+            local s = wsock()
+            for i = 1, 5 do
+                s.opts.on_text(register_payload({ type = "kick-chat-message", data = kick_line("quietsrc", "q" .. i, "quiet " .. i) }))
+            end
+            for i = 1, 900 do
+                s.opts.on_text(register_payload({ type = "kick-chat-message", data = kick_line("busysrc", "b" .. i, "busy " .. i) }))
+            end
+            local a0 = #chan.added
+            s.opts.on_text(register_payload({ type = "kick-chat-backfill", channel = "quietsrc", replay = true, messages = {
+                kick_line("quietsrc", "q1", "quiet 1"), kick_line("quietsrc", "q2", "quiet 2"), kick_line("quietsrc", "q3", "quiet 3"),
+                kick_line("quietsrc", "q4", "quiet 4"), kick_line("quietsrc", "q5", "quiet 5"),
+            } }))
+            check(#texts(chan, a0) == 0, "dedup: a quiet source's replayed backlog is not doubled after a busy source churns (got " .. #texts(chan, a0) .. " repeats)")
+            -- the same id from another source stays its own line
+            s.opts.on_text(register_payload({ type = "kick-chat-message", data = kick_line("busysrc", "q1", "same id, other source") }))
+            check(count_of(texts(chan, a0), "same id, other source") == 1, "dedup: an id repeated by a different source is still its own line")
+            commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = chan })
+        end
+
+        -- youtube: a poller restart re-broadcasts its initial messages unflagged; the
+        -- same id again is not a second line, a flagged replay shows nothing at all
+        do
+            commands["/hsmulti"]({ words = { "/hsmulti", "yt:@dupyt" }, channel = chan })
+            local a0 = #chan.added
+            local s = wsock()
+            local batch = { { type = "text", id = "dy1", user = "YT", text = "yt once", timestamp = 1730000000001 } }
+            s.opts.on_text(register_payload({ type = "youtube:chat", channelId = "@dupyt", messages = batch }))
+            s.opts.on_text(register_payload({ type = "youtube:chat", channelId = "@dupyt", messages = batch }))
+            s.opts.on_text(register_payload({ type = "youtube:chat", channelId = "@dupyt", replay = true, messages = batch }))
+            check(count_of(texts(chan, a0), "yt once") == 1, "dedup: a youtube id re-broadcast or replayed is drawn once")
+            commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = chan })
+        end
+
+        -- two people saying the same words are two lines; only the id says "same line"
+        do
+            commands["/hsmulti"]({ words = { "/hsmulti", "kick:wordsrc" }, channel = chan })
+            local a0 = #chan.added
+            local s = wsock()
+            s.opts.on_text(register_payload({ type = "kick-chat-message", data = kick_line("wordsrc", "w1", "same words") }))
+            s.opts.on_text(register_payload({ type = "kick-chat-message", data = kick_line("wordsrc", "w2", "same words") }))
+            check(count_of(texts(chan, a0), "same words") == 2, "dedup: identical text with different ids is two lines")
+            commands["/hsmulti"]({ words = { "/hsmulti", "off" }, channel = chan })
+        end
+
+        -- a tab that closed takes its memory with it: reopening and re-linking shows its lines again
+        do
+            local mc = require("multichat")
+            mc.link("somechannel", "kick", "autosrc", true)
+            local s = wsock()
+            s.opts.on_text(register_payload({ type = "kick-chat-message", data = kick_line("autosrc", "au1", "auto line") }))
+            mc.unlink_auto("somechannel")
+            mc.link("somechannel", "kick", "autosrc", true)
+            local a0 = #chan.added
+            s.opts.on_text(register_payload({ type = "kick-chat-message", data = kick_line("autosrc", "au1", "auto line") }))
+            check(count_of(texts(chan, a0), "auto line") == 1, "dedup: a reaped auto link forgets its ids, so a reopened tab is not left empty")
+            mc.unlink_auto("somechannel")
+        end
+    end
+
     -- ---------------- wiring ----------------
     do
         local seen = {}
