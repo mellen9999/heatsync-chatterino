@@ -2765,7 +2765,9 @@ do
     if not src then
         print("SKIP modifiers: site hs-modifiers.js not found (set HS_SITE_DIR) - token twin guard NOT run")
     else
-        local body = src:match("HS_MOD_TOKENS = Object%.freeze%(%{(.-)%}%)")
+        -- the table's literal, however it is wrapped: Object.freeze({...}) or, since the site's
+        -- prototype-safe fix, Object.freeze(Object.assign(Object.create(null), {...}))
+        local body = src:match("HS_MOD_TOKENS = Object%.freeze%([^{]-%{(.-)%}%)")
         local js, n = {}, 0
         for line in (body or ""):gmatch("[^\n]+") do
             line = line:gsub("//.*", "")
